@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "IPTV Менеджер & Білінг",
+  "short_name": "IPTV Білінг",
+  "description": "Система обліку абонентів інтернет-ТБ, управління підписками число-в-число, автоматичний білінг та Telegram Web App.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#090d16",
+  "theme_color": "#0284c7",
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

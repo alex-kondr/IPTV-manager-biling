@@ -1,0 +1,211 @@
+{
+  "clients": [
+    {
+      "id": "c_1790249808768_siuin",
+      "fullName": "1ццц уу",
+      "phone": "+380",
+      "iptvLogin": "ууу",
+      "deviceInfo": null,
+      "subscriptionPlan": "1usd",
+      "costUsd": 1,
+      "monthlyPrice": 100,
+      "startDate": "2026-09-24",
+      "activeUntil": "2026-10-24",
+      "balance": 0,
+      "status": "active",
+      "providerAccountId": null,
+      "telegramChatId": null,
+      "telegramUsername": null,
+      "viberId": null,
+      "notes": "Окни",
+      "lastReminderDate": null,
+      "lastReminderStatus": null,
+      "createdAt": "2026-09-24T11:36:48.768Z",
+      "updatedAt": "2026-09-24T11:36:48.768Z"
+    }
+  ],
+  "payments": [],
+  "providerAccounts": [],
+  "providerDeposits": [],
+  "settings": {
+    "telegramBotToken": "8508491517:AAFgSfvnHmEg6RiC-tYfqiFvmflTbeacZf0",
+    "telegramBotUsername": "iptv_billing_bot",
+    "telegramSenderName": "IPTV Підтримка",
+    "defaultMonthlyPrice": 100,
+    "reminderDaysBefore": 7,
+    "cardRequisites": "4441 1144 5566 7788 (Монобанк, Шевченко А.)",
+    "reminderMessageTemplate": "Шановний(а) {name}! Нагадуємо, що термін дії вашої підписки IPTV (логін: {login}) закінчується {expiry_date}. Вартість: {price} грн/міс. До сплати: {amount_to_pay} грн. Реквізити картки: {card_number}. Дякуємо за вибір нашого сервісу!",
+    "autoReminderEnabled": true,
+    "viberReminderMessageTemplate": "Доброго дня, {name}! Нагадуємо, що термін дії вашої підписки IPTV (логін: {login}) закінчується {active_until}. Сума до сплати: {amount} грн. Реквізити картки: {card}. Сьогодні {current_date}. Дякуємо, що ви з нами!",
+    "viberRenewalMessageTemplate": "Доброго дня, {name}! Вашу IPTV підписку (логін: {login}) успішно продовжено до {active_until}. Сума оплати: {amount} грн. Дата: {current_date}. Приємного перегляду!",
+    "viberAuthToken": null,
+    "viberSenderName": null,
+    "utilityTariffsSettings": {
+      "waste": {
+        "price": 45,
+        "history": [
+          {
+            "id": "wsh_1",
+            "note": "Базовий тариф на сміття",
+            "price": 45,
+            "validFrom": "2026-01-01"
+          }
+        ],
+        "validFrom": "2026-01-01"
+      },
+      "water": {
+        "price": 30.38,
+        "history": [
+          {
+            "id": "wh_1",
+            "note": "Базовий тариф на воду",
+            "price": 30.38,
+            "validFrom": "2026-01-01"
+          }
+        ],
+        "validFrom": "2026-01-01"
+      },
+      "electricityDual": {
+        "history": [
+          {
+            "id": "edh_1",
+            "note": "Базовий двотарифний",
+            "summerDay": 4.32,
+            "validFrom": "2026-06-01",
+            "winterDay": 4.32,
+            "summerNight": 2.16,
+            "winterNight": 2.16
+          }
+        ],
+        "summerDay": 4.32,
+        "validFrom": "2026-06-01",
+        "winterDay": 4.32,
+        "summerNight": 2.16,
+        "winterNight": 2.16
+      },
+      "electricitySingle": {
+        "rate": 4.32,
+        "history": [
+          {
+            "id": "esh_1",
+            "note": "Єдиний тариф на весь рік",
+            "rate": 4.32,
+            "validFrom": "2026-06-01"
+          }
+        ],
+        "validFrom": "2026-06-01"
+      }
+    }
+  },
+  "utilityAccounts": [
+    {
+      "id": "uacc_water_1",
+      "type": "water_waste",
+      "name": "Квартира (вул. Шевченка)",
+      "accountNumber": "20951340",
+      "address": "м. Київ, вул. Т. Шевченка, буд. 12, кв. 45",
+      "meterNumber": "W-302194",
+      "electricityTariffType": "single",
+      "residentsCount": 2,
+      "initialReadingT1": 0,
+      "initialReadingT2": 0,
+      "initialReadingWater": 124.5,
+      "waterEnabled": true,
+      "wasteEnabled": true,
+      "notes": "Водопостачання та вивіз ТПВ",
+      "createdAt": "2026-09-01T08:00:00.000Z",
+      "updatedAt": null
+    },
+    {
+      "id": "uacc_elec_1",
+      "type": "electricity",
+      "name": "Квартира (вул. Шевченка)",
+      "accountNumber": "10428901",
+      "address": "м. Київ, вул. Т. Шевченка, буд. 12, кв. 45",
+      "meterNumber": "E-884920",
+      "electricityTariffType": "dual",
+      "residentsCount": 2,
+      "initialReadingT1": 1450,
+      "initialReadingT2": 680,
+      "initialReadingWater": 0,
+      "waterEnabled": false,
+      "wasteEnabled": false,
+      "notes": "Двозонний лічильник день/ніч",
+      "createdAt": "2026-09-01T08:00:00.000Z",
+      "updatedAt": "2026-10-04T07:24:20.640Z"
+    }
+  ],
+  "utilityReadings": [
+    {
+      "id": "uread_waste_1",
+      "accountId": "uacc_water_1",
+      "utilityType": "waste",
+      "date": "2026-09-30",
+      "periodMonth": "2026-09",
+      "readingT1": null,
+      "readingT2": null,
+      "consumptionT1": null,
+      "consumptionT2": null,
+      "rateT1": 45,
+      "rateT2": null,
+      "totalCost": 90,
+      "season": null,
+      "isPaid": true,
+      "paidDate": "2026-10-01",
+      "paidAmount": 90,
+      "note": "Вивіз сміття за вересень (2 особи)",
+      "createdAt": "2026-09-30T10:10:00.000Z"
+    },
+    {
+      "id": "uread_elec_1",
+      "accountId": "uacc_elec_1",
+      "utilityType": "electricity",
+      "date": "2026-09-30",
+      "periodMonth": "2026-09",
+      "readingT1": 1570,
+      "readingT2": 740,
+      "consumptionT1": 120,
+      "consumptionT2": 60,
+      "rateT1": 4.32,
+      "rateT2": 2.16,
+      "totalCost": 648,
+      "season": "summer",
+      "isPaid": true,
+      "paidDate": "2026-10-01",
+      "paidAmount": 648,
+      "note": "Оплата за вересень 2026",
+      "createdAt": "2026-09-30T10:00:00.000Z"
+    },
+    {
+      "id": "uread_water_1",
+      "accountId": "uacc_water_1",
+      "utilityType": "water",
+      "date": "2026-09-30",
+      "periodMonth": "2026-09",
+      "readingT1": 130.5,
+      "readingT2": null,
+      "consumptionT1": 6,
+      "consumptionT2": null,
+      "rateT1": 30.38,
+      "rateT2": null,
+      "totalCost": 182.28,
+      "season": null,
+      "isPaid": true,
+      "paidDate": "2026-10-01",
+      "paidAmount": 182.28,
+      "note": "Оплата за вересень 2026 (6 м³)",
+      "createdAt": "2026-09-30T10:05:00.000Z"
+    }
+  ],
+  "users": [
+    {
+      "id": "usr_admin_default",
+      "email": "djsahbok@gmail.com",
+      "name": "Адміністратор (djsahbok)",
+      "picture": "https://ui-avatars.com/api/?name=%D0%90%D0%B4%D0%BC%D1%96%D0%BD%D1%96%D1%81%D1%82%D1%80%D0%B0%D1%82%D0%BE%D1%80&background=0284c7&color=fff",
+      "role": "admin",
+      "createdAt": "2026-10-01T06:24:32.227Z",
+      "lastLoginAt": "2026-10-01T06:24:32.227Z"
+    }
+  ]
+}

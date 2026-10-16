@@ -1,0 +1,979 @@
+@if (!isAuthenticated() || isNewUser()) {
+  <app-auth-view />
+} @else {
+<div id="app-root-wrapper" class="min-h-screen bg-slate-100/70 text-slate-800 font-sans pb-24 md:pb-12 antialiased selection:bg-emerald-500 selection:text-white">
+  <!-- Read-Only Banner if Viewer role -->
+  @if (isViewer()) {
+    <div class="bg-sky-950 text-sky-200 border-b border-sky-800 px-4 py-2.5 text-xs">
+      <div class="max-w-7xl mx-auto flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2">
+          <mat-icon class="text-base text-sky-400 shrink-0">visibility</mat-icon>
+          <span class="font-medium">
+            <strong>Режим «Тільки перегляд»:</strong> Ви маєте доступ до перегляду бази клієнтів, аналітики та історії оплат. Внесення змін та додавання доступні лише адміністратору.
+          </span>
+        </div>
+      </div>
+    </div>
+  }
+
+  <!-- Mobile App Bar (Dedicated Header for Mobile Admin Panel) -->
+  <header id="mobile-header" class="lg:hidden sticky top-0 z-40 bg-slate-900 text-white border-b border-slate-800 px-4 py-2.5 shadow-sm flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+      <div class="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center border border-emerald-500/30">
+        <mat-icon class="text-lg">live_tv</mat-icon>
+      </div>
+      <div>
+        <h1 class="text-xs font-bold leading-tight flex items-center gap-1.5">
+          <span>IPTV Адмін</span>
+          <span class="px-1.5 py-0.2 rounded-md bg-emerald-500/20 text-emerald-400 text-3xs font-mono font-bold">{{ appVersion }}</span>
+        </h1>
+        <div class="flex items-center gap-1.5 mt-0.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span class="text-3xs text-slate-400 font-medium truncate max-w-[130px]">{{ currentUser()?.name || currentUser()?.email }}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-2">
+      <!-- Create Client Quick Button on Mobile Header (Admin only) -->
+      @if (canEdit()) {
+        <button
+          type="button"
+          (click)="openCreateClient()"
+          class="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-semibold text-xs flex items-center gap-1 shadow-xs cursor-pointer active:scale-95 transition-transform"
+          title="Створити нового абонента"
+        >
+          <mat-icon class="text-sm">person_add</mat-icon>
+          <span>+ Клієнт</span>
+        </button>
+      }
+
+      <!-- Sync Button -->
+      <button
+        type="button"
+        (click)="syncCloud()"
+        [disabled]="isSyncingCloud()"
+        class="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+        title="Синхронізувати з хмарою"
+      >
+        <mat-icon [class.animate-spin]="isSyncingCloud()" class="text-base">sync</mat-icon>
+      </button>
+
+      <!-- Logout -->
+      <button
+        type="button"
+        (click)="logout()"
+        class="p-1.5 rounded-xl text-slate-400 hover:text-rose-400 hover:bg-slate-800 transition-colors cursor-pointer"
+        title="Вийти з акаунту"
+      >
+        <mat-icon class="text-base">logout</mat-icon>
+      </button>
+    </div>
+  </header>
+
+  <!-- Desktop Navigation Bar (Structured 2-Tier Layout with Add Client Button) -->
+  <header id="main-header" class="hidden lg:block sticky top-0 z-40 bg-slate-900 text-white border-b border-slate-800 shadow-sm">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <!-- Top Tier: Branding, Data Sync Status, User Profile & Control Actions -->
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between py-3 border-b border-slate-800/80 gap-3">
+        <!-- Brand & DB Status -->
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center border border-emerald-500/30 shrink-0">
+            <mat-icon class="text-xl">live_tv</mat-icon>
+          </div>
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-extrabold tracking-tight">IPTV Менеджер &amp; Білінг</span>
+              <span class="px-1.5 py-0.2 rounded bg-emerald-500/25 text-emerald-400 text-3xs font-mono font-bold">{{ appVersion }}</span>
+            </div>
+            <div class="flex items-center gap-2 mt-0.5 text-3xs text-slate-400">
+              <span class="flex items-center gap-1">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span>Опубл: {{ publishDateTime }}</span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sync, User Profile Badge & Logout -->
+        <div class="flex items-center gap-2.5">
+          <!-- Database status indicator -->
+          <div class="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-800 border border-slate-700 text-2xs font-semibold text-slate-300">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            <span>Cloud SQL (PostgreSQL)</span>
+          </div>
+
+          <!-- Sync Action Button -->
+          <button
+            type="button"
+            (click)="syncCloud()"
+            [disabled]="isSyncingCloud()"
+            class="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer text-2xs font-bold inline-flex items-center gap-1 shrink-0"
+            title="Синхронізувати з хмарою"
+          >
+            <mat-icon [class.animate-spin]="isSyncingCloud()" class="text-xs leading-none">sync</mat-icon>
+            <span>Синхронізація</span>
+          </button>
+
+          <!-- Logged-in User Profile Pill -->
+          @if (currentUser(); as user) {
+            <div class="flex items-center gap-2 px-2.5 py-1 rounded-xl bg-slate-800/90 border border-slate-700 text-xs">
+              <img
+                [src]="user.picture || 'https://ui-avatars.com/api/?name=' + user.name"
+                [alt]="user.name"
+                class="w-6 h-6 rounded-lg object-cover border border-slate-600 shrink-0"
+                referrerpolicy="no-referrer"
+              />
+              <div class="hidden sm:flex flex-col text-left">
+                <span class="text-2xs font-bold text-white leading-tight truncate max-w-[120px]">{{ user.name }}</span>
+                <span class="text-3xs font-semibold" [class.text-emerald-400]="user.role === 'admin'" [class.text-sky-400]="user.role === 'user'">
+                  {{ user.role === 'admin' ? '👑 Адміністратор' : '👁️ Тільки перегляд' }}
+                </span>
+              </div>
+            </div>
+          }
+
+          <!-- Logout Button -->
+          <button
+            type="button"
+            (click)="logout()"
+            class="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-900/50 hover:text-rose-300 border border-slate-700 text-slate-400 transition-colors cursor-pointer text-2xs font-bold inline-flex items-center justify-center shrink-0"
+            title="Вийти з акаунту"
+          >
+            <mat-icon class="text-sm">logout</mat-icon>
+          </button>
+        </div>
+      </div>
+
+      <!-- Bottom Tier: Desktop Navigation Tabs & Primary Actions -->
+      <div class="flex items-center justify-between gap-3 py-2 overflow-x-auto no-scrollbar">
+        <!-- Tabs container -->
+        <nav class="flex items-center gap-1 bg-slate-800/80 p-1 rounded-xl border border-slate-700/60 shrink-0">
+          <button
+            id="tab-btn-clients"
+            type="button"
+            (click)="setTab('clients')"
+            [class.bg-slate-700]="activeTab() === 'clients'"
+            [class.text-white]="activeTab() === 'clients'"
+            [class.text-slate-400]="activeTab() !== 'clients'"
+            class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0"
+          >
+            <mat-icon class="text-base">group</mat-icon>
+            <span>Клієнти</span>
+            <span class="px-1.5 py-0.2 rounded-full bg-slate-600 text-2xs font-mono">
+              {{ clients().length }}
+            </span>
+          </button>
+
+          <button
+            id="tab-btn-accounts"
+            type="button"
+            (click)="setTab('accounts')"
+            [class.bg-slate-700]="activeTab() === 'accounts'"
+            [class.text-white]="activeTab() === 'accounts'"
+            [class.text-slate-400]="activeTab() !== 'accounts'"
+            class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0"
+          >
+            <mat-icon class="text-base">dns</mat-icon>
+            <span>Акаунти IPTV</span>
+            <span class="px-1.5 py-0.2 rounded-full bg-emerald-600/80 text-white text-2xs font-mono">
+              {{ accounts().length }}
+            </span>
+          </button>
+
+          <button
+            id="tab-btn-budget"
+            type="button"
+            (click)="setTab('budget')"
+            [class.bg-slate-700]="activeTab() === 'budget'"
+            [class.text-white]="activeTab() === 'budget'"
+            [class.text-slate-400]="activeTab() !== 'budget'"
+            class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0"
+          >
+            <mat-icon class="text-base">account_balance_wallet</mat-icon>
+            <span>Бюджет ($/₴)</span>
+            <span class="px-1.5 py-0.2 rounded-full bg-teal-600 text-white text-2xs font-mono">
+              ${{ (budgetSummary()?.providerBalanceUsd || 0).toFixed(0) }}
+            </span>
+          </button>
+
+          <button
+            id="tab-btn-analytics"
+            type="button"
+            (click)="setTab('analytics')"
+            [class.bg-slate-700]="activeTab() === 'analytics'"
+            [class.text-white]="activeTab() === 'analytics'"
+            [class.text-slate-400]="activeTab() !== 'analytics'"
+            class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0"
+          >
+            <mat-icon class="text-base">analytics</mat-icon>
+            <span>Аналітика</span>
+          </button>
+
+          <button
+            id="tab-btn-payments"
+            type="button"
+            (click)="setTab('payments')"
+            [class.bg-slate-700]="activeTab() === 'payments'"
+            [class.text-white]="activeTab() === 'payments'"
+            [class.text-slate-400]="activeTab() !== 'payments'"
+            class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0"
+          >
+            <mat-icon class="text-base">receipt_long</mat-icon>
+            <span>Оплати</span>
+          </button>
+
+          <!-- Tab: Electricity (Облік електроенергії) -->
+          <button
+            id="tab-btn-electricity"
+            type="button"
+            (click)="setTab('electricity')"
+            [class.bg-slate-700]="activeTab() === 'electricity'"
+            [class.text-white]="activeTab() === 'electricity'"
+            [class.text-slate-400]="activeTab() !== 'electricity'"
+            class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0"
+          >
+            <mat-icon class="text-base text-amber-400">bolt</mat-icon>
+            <span>Електроенергія</span>
+          </button>
+
+          <!-- Tab: Water & Waste (Водопостачання та вивіз сміття) -->
+          <button
+            id="tab-btn-water-waste"
+            type="button"
+            (click)="setTab('water_waste')"
+            [class.bg-slate-700]="activeTab() === 'water_waste'"
+            [class.text-white]="activeTab() === 'water_waste'"
+            [class.text-slate-400]="activeTab() !== 'water_waste'"
+            class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0"
+          >
+            <mat-icon class="text-base text-cyan-400">water_drop</mat-icon>
+            <span>Вода та сміття</span>
+          </button>
+
+          <!-- Tab: Users & Roles (Admin Only) -->
+          @if (isAdmin()) {
+            <button
+              id="tab-btn-users"
+              type="button"
+              (click)="setTab('users')"
+              [class.bg-slate-700]="activeTab() === 'users'"
+              [class.text-white]="activeTab() === 'users'"
+              [class.text-slate-400]="activeTab() !== 'users'"
+              class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0 relative"
+            >
+              <mat-icon class="text-base">admin_panel_settings</mat-icon>
+              <span>Користувачі</span>
+              @if (pendingUsersCount() > 0) {
+                <span class="px-1.5 py-0.2 rounded-full bg-amber-500 text-slate-900 text-3xs font-black animate-pulse">
+                  {{ pendingUsersCount() }}
+                </span>
+              }
+            </button>
+          }
+
+          <button
+            id="tab-btn-settings"
+            type="button"
+            (click)="setTab('settings')"
+            [class.bg-slate-700]="activeTab() === 'settings'"
+            [class.text-white]="activeTab() === 'settings'"
+            [class.text-slate-400]="activeTab() !== 'settings'"
+            class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0"
+          >
+            <mat-icon class="text-base">settings</mat-icon>
+            <span>Налаштування</span>
+          </button>
+        </nav>
+
+        <!-- Primary Action Pinned to Right (Admin Only) -->
+        @if (canEdit()) {
+          <button
+            id="btn-desktop-add-client-new"
+            type="button"
+            (click)="openCreateClient()"
+            class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1.5 shadow-sm hover:shadow-md transition-all shrink-0 border-0 cursor-pointer"
+            title="Створити нового абонента"
+          >
+            <mat-icon class="text-sm">person_add</mat-icon>
+            <span>+ Додати клієнта</span>
+          </button>
+        }
+      </div>
+    </div>
+  </header>
+
+  <!-- Real-Time Overview Strip (Compact & Mobile-Optimized) -->
+  <div class="bg-white border-b border-slate-200/80 shadow-2xs">
+    <div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-2">
+      <div class="flex items-center justify-between gap-3 overflow-x-auto text-xs no-scrollbar">
+        <div class="flex items-center gap-3 sm:gap-5 shrink-0 text-2xs sm:text-xs">
+          <div class="flex items-center gap-1 text-slate-600">
+            <span class="text-slate-400">Всього:</span>
+            <strong class="text-slate-900 font-bold">{{ stats().totalClients }}</strong>
+          </div>
+          <div class="flex items-center gap-1 text-slate-600">
+            <span class="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-emerald-500"></span>
+            <span class="text-slate-400">Активні:</span>
+            <strong class="text-emerald-700 font-bold">{{ stats().activeClients }}</strong>
+          </div>
+          <div class="flex items-center gap-1 text-slate-600">
+            <span class="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-amber-500"></span>
+            <span class="text-slate-400">≤7 дн:</span>
+            <strong class="text-amber-700 font-bold">{{ stats().expiringSoonClients }}</strong>
+          </div>
+          <div class="flex items-center gap-1 text-slate-600">
+            <span class="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-rose-500"></span>
+            <span class="text-slate-400">Прострочені:</span>
+            <strong class="text-rose-700 font-bold">{{ stats().expiredClients }}</strong>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 sm:gap-3 shrink-0">
+          <!-- Provider Balance Indicator ($) with Low Balance Pulse Alert -->
+          <button
+            id="strip-provider-balance-badge"
+            type="button"
+            (click)="setTab('budget')"
+            class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-2xs sm:text-xs font-bold transition-all cursor-pointer"
+            [class.bg-rose-50]="isProviderBalanceLow()"
+            [class.border-rose-400]="isProviderBalanceLow()"
+            [class.text-rose-800]="isProviderBalanceLow()"
+            [class.bg-slate-50]="!isProviderBalanceLow()"
+            [class.border-slate-200]="!isProviderBalanceLow()"
+            [class.text-slate-700]="!isProviderBalanceLow()"
+            title="Баланс рахунку IPTV-провайдера в доларах"
+          >
+            @if (isProviderBalanceLow()) {
+              <span class="relative flex h-2 w-2">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-2 w-2 bg-rose-600"></span>
+              </span>
+            } @else {
+              <span class="w-1.5 h-1.5 rounded-full bg-teal-500"></span>
+            }
+            <span>Провайдер:</span>
+            <strong [class.text-rose-600]="isProviderBalanceLow()">${{ providerBalanceUsd().toFixed(2) }}</strong>
+          </button>
+
+          <div class="h-5 w-px bg-slate-200 hidden sm:block"></div>
+
+          <div class="text-right">
+            <span class="text-slate-400 text-3xs sm:text-2xs block leading-none">Дохід за місяць</span>
+            <strong class="text-emerald-800 text-xs sm:text-sm font-bold leading-tight">
+              {{ stats().currentMonthRevenue.toLocaleString('uk-UA') }} ₴
+            </strong>
+          </div>
+          <div class="h-5 w-px bg-slate-200 hidden sm:block"></div>
+          <div class="text-right hidden sm:block">
+            <span class="text-slate-400 text-2xs block leading-none">Очікуваний план</span>
+            <strong class="text-slate-800 text-xs sm:text-sm font-semibold leading-tight">
+              {{ stats().projectedMonthlyRevenue.toLocaleString('uk-UA') }} ₴
+            </strong>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Content Container -->
+  <main class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6">
+    <!-- TAB 1: CLIENTS -->
+    @if (activeTab() === 'clients') {
+      <div id="clients-view-wrapper" class="space-y-3.5">
+        <!-- 7-Day Auto Reminder Callout Banner -->
+        @if (urgentCount() > 0) {
+          <div class="p-4 rounded-2xl bg-amber-50 border border-amber-200/90 text-amber-900 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div class="flex items-center gap-3">
+              <div class="w-9 h-9 rounded-xl bg-amber-200/60 text-amber-800 flex items-center justify-center shrink-0">
+                <mat-icon class="text-xl">notification_important</mat-icon>
+              </div>
+              <div>
+                <strong class="text-xs sm:text-sm font-bold block">
+                  Увага: {{ urgentCount() }} {{ urgentCount() === 1 ? 'абонент потребує' : 'абонентів потребують' }} нагадування про оплату!
+                </strong>
+                <p class="text-xs text-amber-800 mt-0.5">
+                  Термін дії закінчується за 7 днів або менше. Надішліть нагадування через Viber в 1 клік.
+                </p>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-2 self-end sm:self-auto shrink-0">
+              <button
+                type="button"
+                (click)="setFilter('expiring_soon')"
+                class="px-3 py-1.5 rounded-xl border border-amber-300 bg-white hover:bg-amber-100/50 text-amber-900 text-xs font-semibold transition-colors cursor-pointer"
+              >
+                Показати список
+              </button>
+              <button
+                type="button"
+                (click)="setTab('payments')"
+                class="px-3.5 py-1.5 rounded-xl bg-[#7360F2] hover:bg-[#604dec] text-white text-xs font-semibold flex items-center gap-1 shadow-2xs transition-colors cursor-pointer"
+              >
+                <mat-icon class="text-sm">campaign</mat-icon>
+                <span>Розсилка Viber</span>
+              </button>
+            </div>
+          </div>
+        }
+
+        <!-- Filter & Search Bar -->
+        <div class="p-4 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-3">
+          <div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+            <!-- Search Input -->
+            <div class="relative flex-1">
+              <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center text-slate-400 pointer-events-none">
+                <mat-icon class="text-lg">search</mat-icon>
+              </span>
+              <input
+                id="client-search-input"
+                type="text"
+                [formControl]="searchControl"
+                placeholder="Швидкий пошук за ім'ям, телефоном, логіном або адресою..."
+                class="w-full pl-10 pr-9 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600 transition-all"
+              />
+              @if (searchControl.value) {
+                <button
+                  type="button"
+                  (click)="searchControl.setValue('')"
+                  class="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 cursor-pointer"
+                >
+                  <mat-icon class="text-base">close</mat-icon>
+                </button>
+              }
+            </div>
+
+            <!-- Add Client Button (Visible on all sizes, responsive and elegant) -->
+            <button
+              type="button"
+              (click)="openCreateClient()"
+              class="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-semibold text-xs flex items-center justify-center gap-1.5 shadow-2xs cursor-pointer select-none transition-all duration-150 border-0 shrink-0"
+            >
+              <mat-icon class="text-base">person_add</mat-icon>
+              <span>+ Створити абонента</span>
+            </button>
+          </div>
+
+          <!-- Filter Pills -->
+          <div class="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs no-scrollbar">
+            <button
+              id="filter-pill-all"
+              type="button"
+              (click)="setFilter('all')"
+              [class.bg-slate-900]="statusFilter() === 'all'"
+              [class.text-white]="statusFilter() === 'all'"
+              [class.bg-slate-100]="statusFilter() !== 'all'"
+              [class.text-slate-700]="statusFilter() !== 'all'"
+              class="px-3 py-1.5 rounded-xl font-semibold whitespace-nowrap transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <span>Всі</span>
+              <span class="text-2xs opacity-75 font-mono">({{ clients().length }})</span>
+            </button>
+
+            <button
+              id="filter-pill-expiring"
+              type="button"
+              (click)="setFilter('expiring_soon')"
+              [class.bg-amber-500]="statusFilter() === 'expiring_soon'"
+              [class.text-slate-950]="statusFilter() === 'expiring_soon'"
+              [class.bg-amber-50]="statusFilter() !== 'expiring_soon'"
+              [class.text-amber-800]="statusFilter() !== 'expiring_soon'"
+              class="px-3 py-1.5 rounded-xl font-semibold whitespace-nowrap transition-colors flex items-center gap-1.5 border border-amber-200 cursor-pointer"
+            >
+              <mat-icon class="text-xs">warning</mat-icon>
+              <span>Закінчуються (≤7 дн)</span>
+              <span class="text-2xs font-mono font-bold">({{ stats().expiringSoonClients }})</span>
+            </button>
+
+            <button
+              id="filter-pill-expired"
+              type="button"
+              (click)="setFilter('expired')"
+              [class.bg-rose-600]="statusFilter() === 'expired'"
+              [class.text-white]="statusFilter() === 'expired'"
+              [class.bg-rose-50]="statusFilter() !== 'expired'"
+              [class.text-rose-800]="statusFilter() !== 'expired'"
+              class="px-3 py-1.5 rounded-xl font-semibold whitespace-nowrap transition-colors flex items-center gap-1.5 border border-rose-200 cursor-pointer"
+            >
+              <mat-icon class="text-xs">error</mat-icon>
+              <span>Прострочені</span>
+              <span class="text-2xs font-mono">({{ stats().expiredClients }})</span>
+            </button>
+
+            <button
+              id="filter-pill-active"
+              type="button"
+              (click)="setFilter('active')"
+              [class.bg-emerald-600]="statusFilter() === 'active'"
+              [class.text-white]="statusFilter() === 'active'"
+              [class.bg-emerald-50]="statusFilter() !== 'active'"
+              [class.text-emerald-800]="statusFilter() !== 'active'"
+              class="px-3 py-1.5 rounded-xl font-semibold whitespace-nowrap transition-colors flex items-center gap-1.5 border border-emerald-200 cursor-pointer"
+            >
+              <mat-icon class="text-xs">check_circle</mat-icon>
+              <span>Активні</span>
+              <span class="text-2xs font-mono">({{ stats().activeClients }})</span>
+            </button>
+
+            <button
+              id="filter-pill-paused"
+              type="button"
+              (click)="setFilter('paused')"
+              [class.bg-slate-600]="statusFilter() === 'paused'"
+              [class.text-white]="statusFilter() === 'paused'"
+              [class.bg-slate-100]="statusFilter() !== 'paused'"
+              [class.text-slate-600]="statusFilter() !== 'paused'"
+              class="px-3 py-1.5 rounded-xl font-semibold whitespace-nowrap transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <mat-icon class="text-xs">pause_circle</mat-icon>
+              <span>Призупинені</span>
+              <span class="text-2xs font-mono">({{ stats().pausedClients }})</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Client Cards Grid (Mobile First Precision) -->
+        @if (filteredClients().length === 0) {
+          <div class="p-12 text-center bg-white rounded-2xl border border-slate-200/90 shadow-2xs">
+            <div class="w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
+              <mat-icon class="text-3xl">people_outline</mat-icon>
+            </div>
+            <h3 class="text-base font-bold text-slate-800">Абонентів не знайдено</h3>
+            <p class="text-xs text-slate-500 max-w-sm mx-auto mt-1">
+              Спробуйте змінити пошуковий запит або створіть нового клієнта.
+            </p>
+            <button
+              type="button"
+              (click)="openCreateClient()"
+              class="mt-4 px-4 py-2 rounded-xl bg-emerald-600 text-white font-semibold text-xs inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <mat-icon class="text-base">add</mat-icon>
+              <span>Створити клієнта</span>
+            </button>
+          </div>
+        } @else {
+          <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3.5">
+            @for (c of filteredClients(); track c.id + '_' + statusFilter(); let idx = $index) {
+              @let days = getClientDays(c.activeUntil);
+              <div
+                class="animate-client-card bg-white rounded-2xl border border-slate-200/90 p-4 shadow-2xs hover:shadow-xs transition-all flex flex-col justify-between"
+                [style.animation-delay]="getCardAnimationDelay(idx)"
+                [class.ring-2]="days >= 0 && days <= 7"
+                [class.ring-amber-400/80]="days >= 0 && days <= 7"
+                [class.border-rose-300]="days < 0"
+              >
+                <!-- Top Header of Card -->
+                <div>
+                  <div class="flex items-start justify-between gap-2 mb-2">
+                    <div>
+                      <h3 class="font-bold text-slate-900 text-base leading-snug">
+                        {{ c.fullName }}
+                      </h3>
+                      <div class="flex items-center gap-2 mt-0.5">
+                        <a
+                          [href]="'tel:' + getCleanPhone(c.phone)"
+                          class="text-xs text-slate-600 hover:text-emerald-700 flex items-center gap-1 font-medium"
+                        >
+                          <mat-icon class="text-xs text-slate-400">phone</mat-icon>
+                          <span>{{ c.phone }}</span>
+                        </a>
+                      </div>
+                    </div>
+
+                    <!-- Status Badge -->
+                    <span
+                      class="px-2.5 py-1 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 flex items-center gap-1"
+                      [class.bg-rose-100]="days < 0"
+                      [class.text-rose-800]="days < 0"
+                      [class.bg-amber-100]="days >= 0 && days <= 7"
+                      [class.text-amber-900]="days >= 0 && days <= 7"
+                      [class.bg-emerald-100]="days > 7"
+                      [class.text-emerald-800]="days > 7"
+                    >
+                      <mat-icon class="text-xs">
+                        {{ days < 0 ? 'error' : (days <= 7 ? 'warning' : 'check_circle') }}
+                      </mat-icon>
+                      <span>{{ getDaysText(days) }}</span>
+                    </span>
+                  </div>
+
+                  <!-- Notes directly below Full Name / Phone -->
+                  @if (c.notes) {
+                    <div class="mb-2 px-2.5 py-1.5 rounded-lg bg-amber-50/90 border border-amber-200/80 text-xs text-slate-700 flex items-start gap-1.5" [title]="c.notes">
+                      <mat-icon class="text-xs text-amber-600 shrink-0 mt-0.5">notes</mat-icon>
+                      <span class="break-words line-clamp-2">{{ c.notes }}</span>
+                    </div>
+                  }
+
+                  <!-- IPTV Login & Plan Pills -->
+                  <div class="flex items-center gap-1.5 flex-wrap my-2.5">
+                    <button
+                      type="button"
+                      (click)="copyLogin(c.iptvLogin, c.id)"
+                      class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-mono text-xs transition-colors cursor-pointer"
+                      title="Натисніть, щоб скопіювати логін"
+                    >
+                      <mat-icon class="text-xs text-slate-500">tv</mat-icon>
+                      <span>{{ c.iptvLogin }}</span>
+                      <mat-icon class="text-xs text-slate-400">
+                        {{ copiedLoginId() === c.id ? 'done' : 'content_copy' }}
+                      </mat-icon>
+                    </button>
+
+                    <!-- Plan Badge -->
+                    <span
+                      class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-2xs font-bold"
+                      [class.bg-emerald-100]="c.subscriptionPlan === '1usd'"
+                      [class.text-emerald-800]="c.subscriptionPlan === '1usd'"
+                      [class.bg-blue-100]="c.subscriptionPlan === '2usd'"
+                      [class.text-blue-800]="c.subscriptionPlan === '2usd'"
+                    >
+                      {{ c.subscriptionPlan === '2usd' ? 'Тариф $2 (150 грн)' : 'Тариф $1 (100 грн)' }}
+                    </span>
+
+                    @if (c.deviceInfo) {
+                      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-50 text-slate-600 text-2xs border border-slate-200">
+                        <mat-icon class="text-2xs text-slate-400">devices</mat-icon>
+                        <span class="truncate max-w-[110px]">{{ c.deviceInfo }}</span>
+                      </span>
+                    }
+                  </div>
+
+                  <!-- Billing Details Grid (Число в число, Тариф, Баланс) -->
+                  <div class="p-3 rounded-xl bg-slate-50 border border-slate-200/80 my-3 text-xs space-y-1.5">
+                    <div class="flex items-center justify-between">
+                      <span class="text-slate-500">Оплачено до:</span>
+                      <strong class="text-slate-900 font-semibold">
+                        {{ formatDate(c.activeUntil) }}
+                        <span class="text-2xs text-slate-400 font-normal">(число в число)</span>
+                      </strong>
+                    </div>
+
+                    <div class="flex items-center justify-between">
+                      <span class="text-slate-500">Тариф:</span>
+                      <strong class="text-slate-800">{{ c.monthlyPrice }} ₴ / міс</strong>
+                    </div>
+
+                    <div class="flex items-center justify-between">
+                      <span class="text-slate-500">Акаунт провайдера:</span>
+                      @if (c.providerAccountId && getAccountName(c.providerAccountId)) {
+                        <button
+                          type="button"
+                          (click)="setTab('accounts')"
+                          class="font-semibold text-emerald-700 hover:underline inline-flex items-center gap-1 text-2xs"
+                        >
+                          <mat-icon class="text-xs">dns</mat-icon>
+                          <span>{{ getAccountName(c.providerAccountId) }}</span>
+                        </button>
+                      } @else {
+                        <button
+                          type="button"
+                          (click)="openEditClient(c)"
+                          class="text-slate-400 hover:text-slate-600 text-2xs italic flex items-center gap-0.5 cursor-pointer"
+                        >
+                          <span>Не прив'язано</span>
+                          <mat-icon class="text-2xs">add</mat-icon>
+                        </button>
+                      }
+                    </div>
+
+                    <div class="flex items-center justify-between pt-1 border-t border-slate-200/60">
+                      <span class="text-slate-500">Залишок на балансі:</span>
+                      <strong
+                        class="px-1.5 py-0.2 rounded text-xs font-bold"
+                        [class.text-emerald-700]="(c.balance || 0) > 0"
+                        [class.bg-emerald-50]="(c.balance || 0) > 0"
+                        [class.text-slate-600]="(c.balance || 0) === 0"
+                      >
+                        {{ c.balance || 0 }} ₴
+                      </strong>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Action Button Row (Touch friendly >= 44px on mobile) -->
+                <div class="pt-3 border-t border-slate-100 flex items-center justify-between gap-1.5">
+                  @if (canEdit()) {
+                    <!-- Top-up / Pay (Primary Action) -->
+                    <button
+                      [id]="'btn-pay-' + c.id"
+                      type="button"
+                      (click)="openPaymentModal(c)"
+                      class="flex-1 py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-semibold text-xs flex items-center justify-center gap-1.5 shadow-2xs transition-colors cursor-pointer min-h-[42px]"
+                    >
+                      <mat-icon class="text-base">payments</mat-icon>
+                      <span>Поповнити</span>
+                    </button>
+
+                    <!-- Viber Reminder Action -->
+                    <button
+                      [id]="'btn-viber-' + c.id"
+                      type="button"
+                      (click)="sendViberReminder(c)"
+                      class="py-2.5 px-3 rounded-xl bg-purple-600 hover:bg-purple-700 active:bg-purple-800 text-white font-semibold text-xs flex items-center justify-center gap-1 shadow-2xs transition-colors cursor-pointer min-h-[42px] border-0"
+                      title="Надіслати нагадування у Viber"
+                    >
+                      <mat-icon class="text-base">chat</mat-icon>
+                      <span class="hidden sm:inline">Viber</span>
+                    </button>
+
+                    <!-- Edit Subscription & Details -->
+                    <button
+                      [id]="'btn-edit-' + c.id"
+                      type="button"
+                      (click)="openEditClient(c)"
+                      class="py-2.5 px-3 rounded-xl border border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100 hover:text-slate-900 active:bg-slate-200 transition-colors cursor-pointer min-h-[42px] flex items-center justify-center gap-1 font-medium text-xs"
+                      title="Редагувати підписку (ціна, термін дії, залишок на балансі)"
+                    >
+                      <mat-icon class="text-base text-slate-500">edit_calendar</mat-icon>
+                      <span class="inline sm:hidden lg:inline">Підписка</span>
+                    </button>
+
+                    <!-- Delete -->
+                    <button
+                      [id]="'btn-delete-' + c.id"
+                      type="button"
+                      (click)="deleteClientConfirm(c)"
+                      class="p-2.5 rounded-xl border border-slate-200 text-rose-500 hover:bg-rose-50 hover:border-rose-300 active:bg-rose-100 transition-colors cursor-pointer min-h-[42px] min-w-[42px] flex items-center justify-center"
+                      title="Видалити абонента"
+                    >
+                      <mat-icon class="text-base">delete_outline</mat-icon>
+                    </button>
+                  } @else {
+                    <!-- View-only details indicator -->
+                    <div class="w-full py-2 px-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-500 text-2xs flex items-center justify-between">
+                      <span class="flex items-center gap-1 font-medium">
+                        <mat-icon class="text-sm text-slate-400">lock</mat-icon>
+                        <span>Режим перегляду</span>
+                      </span>
+                      <span class="font-mono text-3xs text-slate-400">ID: {{ c.id }}</span>
+                    </div>
+                  }
+                </div>
+              </div>
+            }
+          </div>
+        }
+      </div>
+
+      <!-- Mobile Floating Action Button (FAB) for Creating Clients (Admin only) -->
+      @if (canEdit()) {
+        <button
+          id="mobile-fab-add-client"
+          type="button"
+          (click)="openCreateClient()"
+          class="lg:hidden fixed bottom-20 right-4 z-40 w-14 h-14 rounded-2xl bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white shadow-xl flex items-center justify-center transition-all cursor-pointer border-2 border-white/20"
+          title="Створити нового абонента"
+          aria-label="Створити нового абонента"
+        >
+          <mat-icon class="text-2xl">person_add</mat-icon>
+        </button>
+      }
+    }
+
+    <!-- TAB: ACCOUNTS -->
+    @if (activeTab() === 'accounts') {
+      <app-accounts-view />
+    }
+
+    <!-- TAB: BUDGET -->
+    @if (activeTab() === 'budget') {
+      <app-budget-view />
+    }
+
+    <!-- TAB 2: ANALYTICS -->
+    @if (activeTab() === 'analytics') {
+      <app-analytics-view />
+    }
+
+    <!-- TAB 3: PAYMENTS -->
+    @if (activeTab() === 'payments') {
+      <app-payments-view />
+    }
+
+    <!-- TAB: ELECTRICITY -->
+    @if (activeTab() === 'electricity') {
+      <app-electricity-view />
+    }
+
+    <!-- TAB: WATER & WASTE -->
+    @if (activeTab() === 'water_waste') {
+      <app-water-waste-view />
+    }
+
+    <!-- TAB 4: USERS (Admin Only) -->
+    @if (activeTab() === 'users' && isAdmin()) {
+      <app-users-view />
+    }
+
+    <!-- TAB 5: SETTINGS -->
+    @if (activeTab() === 'settings') {
+      <app-settings-view />
+    }
+  </main>
+
+  <!-- Mobile Bottom Navigation Bar (Horizontally scrollable with smooth touch scrolling) -->
+  <nav
+    id="mobile-bottom-nav"
+    class="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 py-1.5 px-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar overscroll-x-contain shadow-2xl"
+  >
+    <button
+      id="mobile-nav-clients"
+      type="button"
+      (click)="setTab('clients')"
+      [class.bg-slate-800]="activeTab() === 'clients'"
+      [class.text-emerald-400]="activeTab() === 'clients'"
+      [class.text-slate-400]="activeTab() !== 'clients'"
+      class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
+    >
+      <mat-icon class="text-lg">group</mat-icon>
+      <span class="mt-0.5 whitespace-nowrap">Клієнти</span>
+    </button>
+
+    <button
+      id="mobile-nav-accounts"
+      type="button"
+      (click)="setTab('accounts')"
+      [class.bg-slate-800]="activeTab() === 'accounts'"
+      [class.text-emerald-400]="activeTab() === 'accounts'"
+      [class.text-slate-400]="activeTab() !== 'accounts'"
+      class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
+    >
+      <mat-icon class="text-lg">dns</mat-icon>
+      <span class="mt-0.5 whitespace-nowrap">Акаунти</span>
+    </button>
+
+    <button
+      id="mobile-nav-budget"
+      type="button"
+      (click)="setTab('budget')"
+      [class.bg-slate-800]="activeTab() === 'budget'"
+      [class.text-emerald-400]="activeTab() === 'budget'"
+      [class.text-slate-400]="activeTab() !== 'budget'"
+      class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
+    >
+      <mat-icon class="text-lg">account_balance_wallet</mat-icon>
+      <span class="mt-0.5 whitespace-nowrap">Бюджет</span>
+    </button>
+
+    <button
+      id="mobile-nav-analytics"
+      type="button"
+      (click)="setTab('analytics')"
+      [class.bg-slate-800]="activeTab() === 'analytics'"
+      [class.text-emerald-400]="activeTab() === 'analytics'"
+      [class.text-slate-400]="activeTab() !== 'analytics'"
+      class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
+    >
+      <mat-icon class="text-lg">analytics</mat-icon>
+      <span class="mt-0.5 whitespace-nowrap">Аналітика</span>
+    </button>
+
+    <button
+      id="mobile-nav-payments"
+      type="button"
+      (click)="setTab('payments')"
+      [class.bg-slate-800]="activeTab() === 'payments'"
+      [class.text-emerald-400]="activeTab() === 'payments'"
+      [class.text-slate-400]="activeTab() !== 'payments'"
+      class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
+    >
+      <mat-icon class="text-lg">receipt_long</mat-icon>
+      <span class="mt-0.5 whitespace-nowrap">Оплати</span>
+    </button>
+
+    <button
+      id="mobile-nav-electricity"
+      type="button"
+      (click)="setTab('electricity')"
+      [class.bg-slate-800]="activeTab() === 'electricity'"
+      [class.text-amber-400]="activeTab() === 'electricity'"
+      [class.text-slate-400]="activeTab() !== 'electricity'"
+      class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
+    >
+      <mat-icon class="text-lg">bolt</mat-icon>
+      <span class="mt-0.5 whitespace-nowrap">Електро</span>
+    </button>
+
+    <button
+      id="mobile-nav-water-waste"
+      type="button"
+      (click)="setTab('water_waste')"
+      [class.bg-slate-800]="activeTab() === 'water_waste'"
+      [class.text-cyan-400]="activeTab() === 'water_waste'"
+      [class.text-slate-400]="activeTab() !== 'water_waste'"
+      class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
+    >
+      <mat-icon class="text-lg">water_drop</mat-icon>
+      <span class="mt-0.5 whitespace-nowrap">Вода/Сміття</span>
+    </button>
+
+    <!-- Mobile Tab: Users (Admin Only) -->
+    @if (isAdmin()) {
+      <button
+        id="mobile-nav-users"
+        type="button"
+        (click)="setTab('users')"
+        [class.bg-slate-800]="activeTab() === 'users'"
+        [class.text-emerald-400]="activeTab() === 'users'"
+        [class.text-slate-400]="activeTab() !== 'users'"
+        class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95 relative"
+      >
+        <mat-icon class="text-lg">admin_panel_settings</mat-icon>
+        <span class="mt-0.5 whitespace-nowrap">Права</span>
+        @if (pendingUsersCount() > 0) {
+          <span class="absolute top-1 right-2 w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+        }
+      </button>
+    }
+
+    <button
+      id="mobile-nav-settings"
+      type="button"
+      (click)="setTab('settings')"
+      [class.bg-slate-800]="activeTab() === 'settings'"
+      [class.text-emerald-400]="activeTab() === 'settings'"
+      [class.text-slate-400]="activeTab() !== 'settings'"
+      class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
+    >
+      <mat-icon class="text-lg">settings</mat-icon>
+      <span class="mt-0.5 whitespace-nowrap">Опції</span>
+    </button>
+  </nav>
+
+  <!-- Modals -->
+  @if (isClientModalOpen()) {
+    <app-client-modal
+      [client]="selectedClientForEdit()"
+      (modalClose)="isClientModalOpen.set(false)"
+    />
+  }
+
+  @if (isPaymentModalOpen() && selectedClientForPayment()) {
+    <app-payment-modal
+      [client]="selectedClientForPayment()!"
+      (modalClose)="isPaymentModalOpen.set(false)"
+    />
+  }
+
+  <!-- Toast Notification Feedback -->
+  @if (dataService.successMessage()) {
+    <div
+      class="fixed bottom-20 md:bottom-6 right-4 md:right-6 z-50 px-4 py-3 bg-slate-900 text-white text-xs font-semibold rounded-2xl shadow-xl border border-slate-700 flex items-center gap-2 max-w-sm animate-fade-in"
+    >
+      <mat-icon class="text-emerald-400 text-base">check_circle</mat-icon>
+      <span>{{ dataService.successMessage() }}</span>
+    </div>
+  }
+
+  @if (dataService.errorMessage()) {
+    <div
+      class="fixed bottom-20 md:bottom-6 right-4 md:right-6 z-50 px-4 py-3 bg-rose-950 text-rose-100 text-xs font-semibold rounded-2xl shadow-xl border border-rose-800 flex items-center gap-2 max-w-sm animate-fade-in"
+    >
+      <mat-icon class="text-rose-400 text-base">error</mat-icon>
+      <span>{{ dataService.errorMessage() }}</span>
+    </div>
+  }
+</div>
+}

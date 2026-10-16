@@ -1,0 +1,8 @@
+{
+  "name": "IPTV Менеджер & Білінг",
+  "description": "Система обліку абонентів інтернет-ТБ, управління підписками число-в-число, автоматичний білінг внесків, нагадування через Telegram та статистика доходів.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
