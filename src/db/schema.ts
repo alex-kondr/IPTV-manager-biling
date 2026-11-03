@@ -103,6 +103,7 @@ export const utilityAccounts = pgTable('utility_accounts', {
   initialReadingWater: real('initial_reading_water').default(0),
   waterEnabled: boolean('water_enabled').default(true),
   wasteEnabled: boolean('waste_enabled').default(true),
+  balanceUah: real('balance_uah').default(0),
   notes: text('notes'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at'),
@@ -126,5 +127,50 @@ export const utilityReadings = pgTable('utility_readings', {
   paidDate: text('paid_date'),
   paidAmount: real('paid_amount'),
   note: text('note'),
+  isControlOnly: boolean('is_control_only').default(false),
+  readingPurpose: text('reading_purpose').default('billing'),
+  daysSinceLastReading: real('days_since_last_reading'),
+  dailyAvgConsumption: real('daily_avg_consumption'),
   createdAt: text('created_at').notNull(),
 });
+
+export const customLedgerEntries = pgTable('custom_ledger_entries', {
+  id: text('id').primaryKey(),
+  type: text('type').notNull(), // 'income' | 'expense' | 'deduction' | 'adjustment'
+  category: text('category').notNull(),
+  date: text('date').notNull(),
+  amountUah: real('amount_uah').notNull().default(0),
+  amountUsd: real('amount_usd'),
+  title: text('title').notNull(),
+  subtitle: text('subtitle'),
+  note: text('note'),
+  paymentMethod: text('payment_method'),
+  clientId: text('client_id'),
+  clientName: text('client_name'),
+  accountId: text('account_id'),
+  accountName: text('account_name'),
+  balanceBeforeUsd: real('balance_before_usd'),
+  balanceAfterUsd: real('balance_after_usd'),
+  createdAt: text('created_at').notNull(),
+});
+
+export const providerBalanceAdjustments = pgTable('provider_balance_adjustments', {
+  id: text('id').primaryKey(),
+  date: text('date').notNull(),
+  amountUsd: real('amount_usd').notNull(),
+  note: text('note'),
+  createdAt: text('created_at').notNull(),
+});
+
+export const accountDeductionOverrides = pgTable('account_deduction_overrides', {
+  id: text('id').primaryKey(),
+  isExcluded: boolean('is_excluded').default(false),
+  amountUsd: real('amount_usd'),
+  amountUah: real('amount_uah'),
+  date: text('date'),
+  title: text('title'),
+  subtitle: text('subtitle'),
+  note: text('note'),
+  createdAt: text('created_at'),
+});
+

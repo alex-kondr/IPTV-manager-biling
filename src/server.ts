@@ -14,25 +14,143 @@ import {
   loadAllFromCloudSql,
   saveSettingsToCloudSql,
   getSettingsFromCloudSql,
+  saveClientToCloudSql,
+  deleteClientFromCloudSql,
+  savePaymentToCloudSql,
+  deletePaymentFromCloudSql,
+  saveProviderAccountToCloudSql,
+  deleteProviderAccountFromCloudSql,
+  saveProviderDepositToCloudSql,
+  deleteProviderDepositFromCloudSql,
   saveUtilityAccountToCloudSql,
   deleteUtilityAccountFromCloudSql,
   saveUtilityReadingToCloudSql,
   deleteUtilityReadingFromCloudSql,
-  deleteClientFromCloudSql,
-  deletePaymentFromCloudSql,
-  deleteProviderAccountFromCloudSql,
-  deleteProviderDepositFromCloudSql,
+  saveCustomLedgerEntryToCloudSql,
+  deleteCustomLedgerEntryFromCloudSql,
+  saveProviderBalanceAdjustmentToCloudSql,
+  deleteProviderBalanceAdjustmentFromCloudSql,
+  saveAccountDeductionOverrideToCloudSql,
   seedInitialDataToCloudSql,
   purgeTestDataFromCloudSql,
 } from './server/cloudsql-sync';
+import { DEFAULT_UTILITY_TARIFFS, UtilityTariffsSettings } from './app/models/utility.model';
+import {
+  BudgetLedgerItem,
+  ProviderBalanceAdjustment,
+  AccountDeductionOverride,
+} from './app/models/client.model';
 
 const browserDistFolder = join(import.meta.dirname, '../browser');
 const dbDir = join(process.cwd(), 'data');
 const dbFile = join(dbDir, 'iptv_database.json');
+const settingsFile = join(dbDir, 'settings.json');
 
 // Ensure db directory exists
 if (!existsSync(dbDir)) {
   mkdirSync(dbDir, { recursive: true });
+}
+
+function deepMergeTariffs(
+  currentTariffs: UtilityTariffsSettings | Record<string, unknown> | undefined,
+  newTariffs: Partial<UtilityTariffsSettings> | Record<string, unknown> | undefined
+): UtilityTariffsSettings {
+  if (!newTariffs && currentTariffs) return currentTariffs as UtilityTariffsSettings;
+  if (!newTariffs && !currentTariffs) return DEFAULT_UTILITY_TARIFFS;
+
+  const base = (currentTariffs as UtilityTariffsSettings) || DEFAULT_UTILITY_TARIFFS;
+  const n = (newTariffs || {}) as Partial<UtilityTariffsSettings>;
+
+  const waterPrice = n.water?.price !== undefined ? Number(n.water.price) : (base.water?.price !== undefined ? Number(base.water.price) : DEFAULT_UTILITY_TARIFFS.water.price);
+  const waterMonthlyFee = n.water?.monthlyFee !== undefined ? Number(n.water.monthlyFee) : (base.water?.monthlyFee !== undefined ? Number(base.water.monthlyFee) : (DEFAULT_UTILITY_TARIFFS.water.monthlyFee || 0));
+  const waterValidFrom = n.water?.validFrom || base.water?.validFrom || DEFAULT_UTILITY_TARIFFS.water.validFrom;
+  const waterValidTo = n.water?.validTo !== undefined ? n.water.validTo : (base.water?.validTo || '');
+  let waterHistory = n.water?.history && Array.isArray(n.water.history) && n.water.history.length > 0
+    ? [...n.water.history]
+    : (base.water?.history && Array.isArray(base.water.history) && base.water.history.length > 0 ? [...base.water.history] : []);
+
+  if (waterHistory.length === 0) {
+    waterHistory = [{ id: 'wh_1', price: waterPrice, monthlyFee: waterMonthlyFee, validFrom: waterValidFrom, validTo: waterValidTo, note: 'Базовий тариф на воду' }];
+  }
+
+  const wastePrice = n.waste?.price !== undefined ? Number(n.waste.price) : (base.waste?.price !== undefined ? Number(base.waste.price) : DEFAULT_UTILITY_TARIFFS.waste.price);
+  const wasteValidFrom = n.waste?.validFrom || base.waste?.validFrom || DEFAULT_UTILITY_TARIFFS.waste.validFrom;
+  const wasteValidTo = n.waste?.validTo !== undefined ? n.waste.validTo : (base.waste?.validTo || '');
+  let wasteHistory = n.waste?.history && Array.isArray(n.waste.history) && n.waste.history.length > 0
+    ? [...n.waste.history]
+    : (base.waste?.history && Array.isArray(base.waste.history) && base.waste.history.length > 0 ? [...base.waste.history] : []);
+
+  if (wasteHistory.length === 0) {
+    wasteHistory = [{ id: 'wsh_1', price: wastePrice, validFrom: wasteValidFrom, validTo: wasteValidTo, note: 'Базовий тариф на вивіз сміття' }];
+  }
+
+  const elecSingleRate = n.electricitySingle?.rate !== undefined ? Number(n.electricitySingle.rate) : (base.electricitySingle?.rate !== undefined ? Number(base.electricitySingle.rate) : DEFAULT_UTILITY_TARIFFS.electricitySingle.rate);
+  const elecSingleValidFrom = n.electricitySingle?.validFrom || base.electricitySingle?.validFrom || DEFAULT_UTILITY_TARIFFS.electricitySingle.validFrom;
+  const elecSingleValidTo = n.electricitySingle?.validTo !== undefined ? n.electricitySingle.validTo : (base.electricitySingle?.validTo || '');
+  let elecSingleHistory = n.electricitySingle?.history && Array.isArray(n.electricitySingle.history) && n.electricitySingle.history.length > 0
+    ? [...n.electricitySingle.history]
+    : (base.electricitySingle?.history && Array.isArray(base.electricitySingle.history) && base.electricitySingle.history.length > 0 ? [...base.electricitySingle.history] : []);
+
+  if (elecSingleHistory.length === 0) {
+    elecSingleHistory = [{ id: 'esh_1', rate: elecSingleRate, validFrom: elecSingleValidFrom, validTo: elecSingleValidTo, note: 'Єдиний тариф на електроенергію' }];
+  }
+
+  const elecDualValidFrom = n.electricityDual?.validFrom || base.electricityDual?.validFrom || DEFAULT_UTILITY_TARIFFS.electricityDual.validFrom;
+  const elecDualValidTo = n.electricityDual?.validTo !== undefined ? n.electricityDual.validTo : (base.electricityDual?.validTo || '');
+  const elecDualSummerDay = n.electricityDual?.summerDay !== undefined ? Number(n.electricityDual.summerDay) : (base.electricityDual?.summerDay ?? DEFAULT_UTILITY_TARIFFS.electricityDual.summerDay);
+  const elecDualSummerNight = n.electricityDual?.summerNight !== undefined ? Number(n.electricityDual.summerNight) : (base.electricityDual?.summerNight ?? DEFAULT_UTILITY_TARIFFS.electricityDual.summerNight);
+  const elecDualWinterDay = n.electricityDual?.winterDay !== undefined ? Number(n.electricityDual.winterDay) : (base.electricityDual?.winterDay ?? DEFAULT_UTILITY_TARIFFS.electricityDual.winterDay);
+  const elecDualWinterNight = n.electricityDual?.winterNight !== undefined ? Number(n.electricityDual.winterNight) : (base.electricityDual?.winterNight ?? DEFAULT_UTILITY_TARIFFS.electricityDual.winterNight);
+  const elecDualWinterLimit = n.electricityDual?.winterLimitKwh !== undefined ? Number(n.electricityDual.winterLimitKwh) : (base.electricityDual?.winterLimitKwh ?? DEFAULT_UTILITY_TARIFFS.electricityDual.winterLimitKwh ?? 2000);
+  let elecDualHistory = n.electricityDual?.history && Array.isArray(n.electricityDual.history) && n.electricityDual.history.length > 0
+    ? [...n.electricityDual.history]
+    : (base.electricityDual?.history && Array.isArray(base.electricityDual.history) && base.electricityDual.history.length > 0 ? [...base.electricityDual.history] : []);
+
+  if (elecDualHistory.length === 0) {
+    elecDualHistory = [{
+      id: 'edh_1',
+      validFrom: elecDualValidFrom,
+      validTo: elecDualValidTo,
+      summerDay: elecDualSummerDay,
+      summerNight: elecDualSummerNight,
+      winterDay: elecDualWinterDay,
+      winterNight: elecDualWinterNight,
+      winterLimitKwh: elecDualWinterLimit,
+      note: 'Базовий двозонний тариф',
+    }];
+  }
+
+  return {
+    water: {
+      price: waterPrice,
+      monthlyFee: waterMonthlyFee,
+      validFrom: waterValidFrom,
+      validTo: waterValidTo,
+      history: waterHistory,
+    },
+    waste: {
+      price: wastePrice,
+      validFrom: wasteValidFrom,
+      validTo: wasteValidTo,
+      history: wasteHistory,
+    },
+    electricitySingle: {
+      rate: elecSingleRate,
+      validFrom: elecSingleValidFrom,
+      validTo: elecSingleValidTo,
+      history: elecSingleHistory,
+    },
+    electricityDual: {
+      validFrom: elecDualValidFrom,
+      validTo: elecDualValidTo,
+      summerDay: elecDualSummerDay,
+      summerNight: elecDualSummerNight,
+      winterDay: elecDualWinterDay,
+      winterNight: elecDualWinterNight,
+      winterLimitKwh: elecDualWinterLimit,
+      history: elecDualHistory,
+    },
+  };
 }
 
 // Interfaces for server state
@@ -155,6 +273,7 @@ export interface UtilityAccount {
   initialReadingWater?: number;
   waterEnabled?: boolean;
   wasteEnabled?: boolean;
+  balanceUah?: number;
   notes?: string;
   createdAt: string;
   updatedAt?: string;
@@ -178,6 +297,10 @@ export interface UtilityReading {
   paidDate?: string;
   paidAmount?: number;
   note?: string;
+  isControlOnly?: boolean;
+  readingPurpose?: 'billing' | 'control';
+  daysSinceLastReading?: number;
+  dailyAvgConsumption?: number;
   createdAt: string;
 }
 
@@ -199,6 +322,9 @@ interface DatabaseSchema {
   payments: PaymentTransaction[];
   providerAccounts: ProviderAccount[];
   providerDeposits: ProviderDeposit[];
+  customLedgerEntries: BudgetLedgerItem[];
+  providerBalanceAdjustments: ProviderBalanceAdjustment[];
+  accountDeductionOverrides: AccountDeductionOverride[];
   utilityAccounts: UtilityAccount[];
   utilityReadings: UtilityReading[];
   settings: AppSettings;
@@ -320,6 +446,7 @@ function getInitialDb(): DatabaseSchema {
       'Доброго дня, {name}! Нагадуємо, що термін дії вашої підписки IPTV (логін: {login}) закінчується {active_until}. Сума до сплати: {amount} грн. Реквізити картки: {card}. Сьогодні {current_date}. Дякуємо, що ви з нами!',
     viberRenewalMessageTemplate:
       'Доброго дня, {name}! Вашу IPTV підписку (логін: {login}) успішно продовжено до {active_until}. Сума оплати: {amount} грн. Дата: {current_date}. Приємного перегляду!',
+    utilityTariffsSettings: DEFAULT_UTILITY_TARIFFS as unknown as Record<string, unknown>,
   };
 
   const initialUsers: AppUser[] = [
@@ -339,6 +466,9 @@ function getInitialDb(): DatabaseSchema {
     payments: [],
     providerAccounts: [],
     providerDeposits: [],
+    customLedgerEntries: [],
+    providerBalanceAdjustments: [],
+    accountDeductionOverrides: [],
     utilityAccounts: [],
     utilityReadings: [],
     settings: initialSettings,
@@ -355,43 +485,73 @@ async function syncWithDatabaseOnStartup(): Promise<void> {
       console.log('[Cloud SQL] Connecting to Cloud SQL PostgreSQL database...');
       const cloudSqlData = await loadAllFromCloudSql();
       if (cloudSqlData) {
-        const current = loadDb();
-        if (Array.isArray(cloudSqlData.clients)) {
-          current.clients = cloudSqlData.clients as unknown as Client[];
-        }
-        if (Array.isArray(cloudSqlData.payments)) {
-          current.payments = cloudSqlData.payments as unknown as PaymentTransaction[];
-        }
-        if (Array.isArray(cloudSqlData.providerAccounts)) {
-          current.providerAccounts = cloudSqlData.providerAccounts as unknown as ProviderAccount[];
-        }
-        if (Array.isArray(cloudSqlData.providerDeposits)) {
-          current.providerDeposits = cloudSqlData.providerDeposits as unknown as ProviderDeposit[];
-        }
-        if (Array.isArray(cloudSqlData.utilityAccounts)) {
-          current.utilityAccounts = cloudSqlData.utilityAccounts as unknown as UtilityAccount[];
-        }
-        if (Array.isArray(cloudSqlData.utilityReadings)) {
-          current.utilityReadings = cloudSqlData.utilityReadings as unknown as UtilityReading[];
-        }
+        const init = getInitialDb();
+        const current: DatabaseSchema = {
+          clients: Array.isArray(cloudSqlData.clients) ? (cloudSqlData.clients as unknown as Client[]) : [],
+          payments: Array.isArray(cloudSqlData.payments) ? (cloudSqlData.payments as unknown as PaymentTransaction[]) : [],
+          providerAccounts: Array.isArray(cloudSqlData.providerAccounts) ? (cloudSqlData.providerAccounts as unknown as ProviderAccount[]) : [],
+          providerDeposits: Array.isArray(cloudSqlData.providerDeposits) ? (cloudSqlData.providerDeposits as unknown as ProviderDeposit[]) : [],
+          customLedgerEntries: Array.isArray(cloudSqlData.customLedgerEntries) ? (cloudSqlData.customLedgerEntries as unknown as BudgetLedgerItem[]) : [],
+          providerBalanceAdjustments: Array.isArray(cloudSqlData.providerBalanceAdjustments) ? (cloudSqlData.providerBalanceAdjustments as unknown as ProviderBalanceAdjustment[]) : [],
+          accountDeductionOverrides: Array.isArray(cloudSqlData.accountDeductionOverrides) ? (cloudSqlData.accountDeductionOverrides as unknown as AccountDeductionOverride[]) : [],
+          utilityAccounts: Array.isArray(cloudSqlData.utilityAccounts) ? (cloudSqlData.utilityAccounts as unknown as UtilityAccount[]) : [],
+          utilityReadings: Array.isArray(cloudSqlData.utilityReadings)
+            ? (cloudSqlData.utilityReadings as unknown as UtilityReading[]).map((r) => {
+                const isCtrl = r.isControlOnly === true || String(r.isControlOnly) === 'true' || r.readingPurpose === 'control';
+                return {
+                  ...r,
+                  isControlOnly: isCtrl,
+                  readingPurpose: isCtrl ? 'control' : 'billing',
+                };
+              })
+            : [],
+          settings: init.settings,
+          users: init.users,
+        };
+
         if (cloudSqlData.settings) {
-          current.settings = { ...current.settings, ...cloudSqlData.settings } as unknown as AppSettings;
+          const rawTariffs = cloudSqlData.settings['utilityTariffsSettings'];
+          let parsedTariffs = rawTariffs;
+          if (typeof rawTariffs === 'string') {
+            try {
+              parsedTariffs = JSON.parse(rawTariffs);
+            } catch {
+              // ignore parse error
+            }
+          }
+          current.settings = {
+            ...init.settings,
+            ...cloudSqlData.settings,
+            utilityTariffsSettings: deepMergeTariffs(
+              DEFAULT_UTILITY_TARIFFS,
+              parsedTariffs as Partial<UtilityTariffsSettings>
+            ),
+          } as unknown as AppSettings;
+        } else {
+          console.log('[Cloud SQL] Initializing default settings in Cloud SQL...');
+          await seedInitialDataToCloudSql(current as unknown as Record<string, unknown>);
         }
 
-        // If Cloud SQL was completely empty (no clients and no settings), seed the initial data
-        const totalRows = (cloudSqlData.clients?.length || 0) + (cloudSqlData.utilityAccounts?.length || 0);
-        if (totalRows === 0 && !cloudSqlData.settings) {
-          console.log('[Cloud SQL] Database is empty, seeding initial records...');
-          await seedInitialDataToCloudSql(current as unknown as Record<string, unknown>);
+        // Restore user list from local cache if present
+        if (existsSync(dbFile)) {
+          try {
+            const raw = JSON.parse(readFileSync(dbFile, 'utf-8'));
+            if (Array.isArray(raw.users) && raw.users.length > 0) {
+              current.users = raw.users;
+            }
+          } catch {
+            // ignore
+          }
         }
 
         cachedDb = current;
         try {
           writeFileSync(dbFile, JSON.stringify(current, null, 2), 'utf-8');
+          writeFileSync(settingsFile, JSON.stringify(current.settings, null, 2), 'utf-8');
         } catch (e) {
           console.warn('Cache write warning:', e);
         }
-        console.log('[Cloud SQL] Successfully loaded application state from Cloud SQL PostgreSQL!');
+        console.log('[Cloud SQL] Successfully loaded application state directly from Cloud SQL PostgreSQL database!');
         return;
       }
     }
@@ -419,20 +579,65 @@ function loadDb(): DatabaseSchema {
       if (!parsed.providerDeposits || !Array.isArray(parsed.providerDeposits)) {
         parsed.providerDeposits = init.providerDeposits;
       }
+      if (!parsed.customLedgerEntries || !Array.isArray(parsed.customLedgerEntries)) {
+        parsed.customLedgerEntries = [];
+      }
+      if (!parsed.providerBalanceAdjustments || !Array.isArray(parsed.providerBalanceAdjustments)) {
+        parsed.providerBalanceAdjustments = [];
+      }
+      if (!parsed.accountDeductionOverrides || !Array.isArray(parsed.accountDeductionOverrides)) {
+        parsed.accountDeductionOverrides = [];
+      }
       if (!parsed.utilityAccounts || !Array.isArray(parsed.utilityAccounts)) {
         parsed.utilityAccounts = [];
       }
       if (!parsed.utilityReadings || !Array.isArray(parsed.utilityReadings)) {
         parsed.utilityReadings = [];
+      } else {
+        parsed.utilityReadings = parsed.utilityReadings.map((r: UtilityReading) => {
+          const isCtrl = r.isControlOnly === true || String(r.isControlOnly) === 'true' || r.readingPurpose === 'control';
+          return {
+            ...r,
+            isControlOnly: isCtrl,
+            readingPurpose: isCtrl ? 'control' : 'billing',
+          };
+        });
       }
       if (!parsed.settings) {
         parsed.settings = init.settings;
       } else {
+        const mergedTariffs = deepMergeTariffs(
+          init.settings.utilityTariffsSettings,
+          parsed.settings.utilityTariffsSettings
+        );
         parsed.settings = {
           ...init.settings,
           ...parsed.settings,
+          utilityTariffsSettings: mergedTariffs,
         };
       }
+
+      // Check dedicated settings.json backup file for guaranteed persistence across app restarts
+      if (existsSync(settingsFile)) {
+        try {
+          const sRaw = readFileSync(settingsFile, 'utf-8');
+          const sParsed = JSON.parse(sRaw);
+          if (sParsed && typeof sParsed === 'object') {
+            const finalTariffs = deepMergeTariffs(
+              parsed.settings.utilityTariffsSettings,
+              sParsed.utilityTariffsSettings
+            );
+            parsed.settings = {
+              ...parsed.settings,
+              ...sParsed,
+              utilityTariffsSettings: finalTariffs,
+            };
+          }
+        } catch (e) {
+          console.warn('Error reading settings.json backup:', e);
+        }
+      }
+
       if (!parsed.users || !Array.isArray(parsed.users) || parsed.users.length === 0) {
         parsed.users = init.users;
       } else {
@@ -463,7 +668,11 @@ function loadDb(): DatabaseSchema {
   }
   const init = getInitialDb();
   cachedDb = init;
-  saveDb(init);
+  try {
+    writeFileSync(dbFile, JSON.stringify(init, null, 2), 'utf-8');
+  } catch {
+    // ignore
+  }
   return init;
 }
 
@@ -479,17 +688,6 @@ function saveDb(data: DatabaseSchema): void {
   } catch (err) {
     console.error('Error saving DB file:', err);
   }
-
-  // Asynchronously synchronize with Cloud SQL
-  setTimeout(async () => {
-    try {
-      if (isCloudSqlAvailable()) {
-        await seedInitialDataToCloudSql(data as unknown as Record<string, unknown>);
-      }
-    } catch (e) {
-      console.warn('[Cloud SQL] Background sync error:', e);
-    }
-  }, 10);
 }
 
 // Active user sessions: token -> session info
@@ -552,12 +750,14 @@ app.use('/api', async (req, res, next) => {
     }
   }
 
-  // Allow all auth endpoints, sync version, database status, photo recognition, and GET requests
+  // Allow all auth endpoints, sync version, database status, photo recognition, settings, budget endpoints, and GET requests
   if (
     req.path.startsWith('/auth') ||
     req.path === '/sync/version' ||
     req.path === '/database/status' ||
     req.path === '/utility/recognize-meter' ||
+    req.path === '/settings' ||
+    req.path.startsWith('/budget') ||
     req.method === 'GET' ||
     req.method === 'OPTIONS'
   ) {
@@ -861,6 +1061,9 @@ app.post('/api/clients', (req, res) => {
 
   db.clients.unshift(newClient);
   saveDb(db);
+  if (isCloudSqlAvailable()) {
+    saveClientToCloudSql(newClient as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Save client error:', e));
+  }
   res.status(201).json(newClient);
 });
 
@@ -890,6 +1093,9 @@ app.put('/api/clients/:id', (req, res) => {
       const oldAcc = db.providerAccounts.find((a) => a.id === oldAccountId);
       if (oldAcc && oldAcc.assignedClientIds) {
         oldAcc.assignedClientIds = oldAcc.assignedClientIds.filter((cid) => cid !== id);
+        if (isCloudSqlAvailable()) {
+          saveProviderAccountToCloudSql(oldAcc as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Update old account error:', e));
+        }
       }
     }
     // Add to new account
@@ -899,6 +1105,9 @@ app.put('/api/clients/:id', (req, res) => {
         if (!newAcc.assignedClientIds) newAcc.assignedClientIds = [];
         if (!newAcc.assignedClientIds.includes(id) && newAcc.assignedClientIds.length < (newAcc.maxSlots || 2)) {
           newAcc.assignedClientIds.push(id);
+        }
+        if (isCloudSqlAvailable()) {
+          saveProviderAccountToCloudSql(newAcc as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Update new account error:', e));
         }
       }
     }
@@ -918,6 +1127,9 @@ app.put('/api/clients/:id', (req, res) => {
 
   db.clients[index] = updated;
   saveDb(db);
+  if (isCloudSqlAvailable()) {
+    saveClientToCloudSql(updated as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Update client error:', e));
+  }
   return res.json(updated);
 });
 
@@ -936,6 +1148,9 @@ app.delete('/api/clients/:id', (req, res) => {
   for (const acc of db.providerAccounts) {
     if (acc.assignedClientIds && acc.assignedClientIds.includes(id)) {
       acc.assignedClientIds = acc.assignedClientIds.filter((cid) => cid !== id);
+      if (isCloudSqlAvailable()) {
+        saveProviderAccountToCloudSql(acc as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Update account on delete client error:', e));
+      }
     }
   }
 
@@ -1006,6 +1221,10 @@ app.post('/api/clients/:id/pay', (req, res) => {
 
   db.payments.unshift(transaction);
   saveDb(db);
+  if (isCloudSqlAvailable()) {
+    saveClientToCloudSql(client as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Pay client update error:', e));
+    savePaymentToCloudSql(transaction as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Save payment error:', e));
+  }
 
   return res.json({
     client,
@@ -1067,10 +1286,16 @@ app.put('/api/payments/:id', (req, res) => {
         client.balance = Number(body.newBalance);
       }
       client.updatedAt = new Date().toISOString();
+      if (isCloudSqlAvailable()) {
+        saveClientToCloudSql(client as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Client sync error:', e));
+      }
     }
   }
 
   saveDb(db);
+  if (isCloudSqlAvailable()) {
+    savePaymentToCloudSql(updated as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Update payment error:', e));
+  }
   return res.json(updated);
 });
 
@@ -1177,6 +1402,9 @@ app.post('/api/accounts', (req, res) => {
 
   db.providerAccounts.push(newAccount);
   saveDb(db);
+  if (isCloudSqlAvailable()) {
+    saveProviderAccountToCloudSql(newAccount as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Save account error:', e));
+  }
   return res.status(201).json(newAccount);
 });
 
@@ -1209,6 +1437,9 @@ app.post('/api/accounts/:id/renew', (req, res) => {
   account.updatedAt = new Date().toISOString();
 
   saveDb(db);
+  if (isCloudSqlAvailable()) {
+    saveProviderAccountToCloudSql(account as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Renew account error:', e));
+  }
 
   return res.json({
     success: true,
@@ -1249,6 +1480,9 @@ app.put('/api/accounts/:id', (req, res) => {
 
   db.providerAccounts[index] = updated;
   saveDb(db);
+  if (isCloudSqlAvailable()) {
+    saveProviderAccountToCloudSql(updated as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Update account error:', e));
+  }
   return res.json(updated);
 });
 
@@ -1265,6 +1499,9 @@ app.delete('/api/accounts/:id', (req, res) => {
   for (const client of db.clients) {
     if (client.providerAccountId === id) {
       client.providerAccountId = undefined;
+      if (isCloudSqlAvailable()) {
+        saveClientToCloudSql(client as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Unlink client error:', e));
+      }
     }
   }
 
@@ -1310,6 +1547,9 @@ app.post('/api/accounts/:id/assign', (req, res) => {
       const prevAcc = db.providerAccounts.find((a) => a.id === client.providerAccountId);
       if (prevAcc && prevAcc.assignedClientIds) {
         prevAcc.assignedClientIds = prevAcc.assignedClientIds.filter((cid) => cid !== clientId);
+        if (isCloudSqlAvailable()) {
+          saveProviderAccountToCloudSql(prevAcc as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Prev account error:', e));
+        }
       }
     }
 
@@ -1320,6 +1560,10 @@ app.post('/api/accounts/:id/assign', (req, res) => {
   }
 
   saveDb(db);
+  if (isCloudSqlAvailable()) {
+    saveProviderAccountToCloudSql(account as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Assign account error:', e));
+    saveClientToCloudSql(client as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Assign client error:', e));
+  }
   return res.json({ success: true, account, client });
 });
 
@@ -1327,88 +1571,198 @@ app.post('/api/accounts/:id/assign', (req, res) => {
 // Calculates entire budget in UAH (income vs expenses) and Provider Account balance in USD
 app.get('/api/budget', (_req, res) => {
   const db = loadDb();
+  if (!db.customLedgerEntries) db.customLedgerEntries = [];
+  if (!db.providerBalanceAdjustments) db.providerBalanceAdjustments = [];
 
-  // 1. Deposits sum (USD) and total spent in UAH (with commissions)
-  const totalDepositedUsd = db.providerDeposits.reduce((sum, d) => sum + (Number(d.amountUsd) || 0), 0);
-  const totalExpensesUah = db.providerDeposits.reduce((sum, d) => sum + (Number(d.spentUah) || 0), 0);
+  // 1. Total spent in UAH for provider deposits (with commissions)
+  let totalExpensesUah = db.providerDeposits.reduce((sum, d) => sum + (Number(d.spentUah) || 0), 0);
 
   // 2. Client payments sum (UAH) - all incomes from subscribers
-  const totalIncomeUah = db.payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+  let totalIncomeUah = db.payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+
+  // Add custom ledger entries to totalIncomeUah / totalExpensesUah
+  for (const entry of db.customLedgerEntries) {
+    if (entry.category && ['client_payment', 'provider_topup', 'account_payment'].includes(entry.category)) {
+      continue;
+    }
+    const uah = Number(entry.amountUah) || 0;
+    if (uah > 0) {
+      totalIncomeUah += uah;
+    } else if (uah < 0) {
+      totalExpensesUah += Math.abs(uah);
+    }
+  }
+
   const netProfitUah = totalIncomeUah - totalExpensesUah;
 
-  // 3. Dynamic total deducted USD based on elapsed connection monthly cycles
-  let totalDeductedUsd = 0;
+  // 3. Gather IPTV accounts deductions for ledger (1 or 2 USD on connection day per month)
+  // Takes into account user overrides and excluded/deleted deductions!
+  const accountDeductions: BudgetLedgerItem[] = [];
   for (const acc of db.providerAccounts) {
     const det = getAccountDeductionDetails(acc);
-    totalDeductedUsd += det.totalDeductedUsd;
+    for (let i = 0; i < det.actualDeductedMonths; i++) {
+      const dedId = `ded_${acc.id}_m${i + 1}`;
+      const override = (db.accountDeductionOverrides || []).find((o) => o.id === dedId);
+      if (override?.isExcluded) {
+        continue; // Excluded/deleted by user!
+      }
+
+      const cycleDate = override?.date || addMonthsExact(det.startDateStr, i);
+      const amountUsd = override?.amountUsd !== undefined ? override.amountUsd : -det.pricePerMonth;
+      const amountUah = override?.amountUah !== undefined ? override.amountUah : 0;
+      const title = override?.title || `Щомісячне списання: ${acc.name}`;
+      const subtitle = override?.subtitle || `-$${Math.abs(amountUsd)} USD в день підключення (місяць ${i + 1}/${det.totalMonthsLimit})`;
+      const note = override?.note || `Автоматичне списання $${Math.abs(amountUsd)}/міс на дату підключення`;
+
+      accountDeductions.push({
+        id: dedId,
+        type: 'deduction',
+        category: 'account_payment',
+        date: cycleDate,
+        amountUah,
+        amountUsd,
+        title,
+        subtitle,
+        note,
+        accountId: acc.id,
+        accountName: acc.name,
+      });
+    }
   }
-  const providerBalanceUsd = Math.round((totalDepositedUsd - totalDeductedUsd) * 100) / 100;
 
   // Monthly burn rate in USD: sum of pricePerMonthUsd of all active provider lines
   const activeAccounts = db.providerAccounts.filter((a) => !a.validUntil || getDaysRemaining(a.validUntil) >= 0);
   const monthlyBurnUsd = activeAccounts.reduce((sum, a) => sum + (Number(a.pricePerMonthUsd) || 1), 0);
 
-  // Remaining runway in months
-  const runwayMonths = monthlyBurnUsd > 0 ? (providerBalanceUsd / monthlyBurnUsd) : 999;
+  const clientPaymentEntries: BudgetLedgerItem[] = db.payments.map((p) => ({
+    id: p.id,
+    type: 'income',
+    category: 'client_payment',
+    date: p.date,
+    amountUah: p.amount,
+    amountUsd: 0,
+    title: `Оплата від абонента: ${p.clientName}`,
+    subtitle: `+${p.amount} ₴ (+${p.monthsAdded} міс. до особистого терміну, залишок: ${p.newBalance} ₴)`,
+    note: p.note,
+    clientId: p.clientId,
+    clientName: p.clientName,
+  }));
 
-  // Gather IPTV accounts deductions for ledger (1 or 2 USD on connection day per month)
-  interface LedgerEntry {
-    id: string;
-    type: 'income' | 'expense' | 'deduction';
-    date: string;
-    amountUah: number;
-    amountUsd: number;
-    title: string;
-    subtitle: string;
-    note?: string;
-    clientId?: string;
-    paymentMethod?: string;
-  }
+  const depositEntries: BudgetLedgerItem[] = db.providerDeposits.map((d) => ({
+    id: d.id,
+    type: 'expense',
+    category: 'provider_topup',
+    date: d.date,
+    amountUah: -d.spentUah,
+    amountUsd: d.amountUsd,
+    title: `Поповнення рахунку IPTV: +$${d.amountUsd}`,
+    subtitle: `Витрачено ${d.spentUah} ₴ (курс ~${(d.spentUah / (d.amountUsd || 1)).toFixed(2)} ₴/$ з комісією)`,
+    note: d.note,
+    paymentMethod: d.paymentMethod,
+  }));
 
-  const accountDeductions: LedgerEntry[] = [];
-  for (const acc of db.providerAccounts) {
-    const det = getAccountDeductionDetails(acc);
-    for (let i = 0; i < det.actualDeductedMonths; i++) {
-      const cycleDate = addMonthsExact(det.startDateStr, i);
-      accountDeductions.push({
-        id: `ded_${acc.id}_m${i + 1}`,
-        type: 'deduction',
-        date: cycleDate,
-        amountUah: 0,
-        amountUsd: -det.pricePerMonth,
-        title: `Щомісячне списання: ${acc.name}`,
-        subtitle: `-$${det.pricePerMonth} USD в день підключення (місяць ${i + 1}/${det.totalMonthsLimit})`,
-        note: `Автоматичне списання $${det.pricePerMonth}/міс на дату підключення`,
-      });
+  const adjustmentEntries: BudgetLedgerItem[] = db.providerBalanceAdjustments.map((a) => ({
+    id: a.id,
+    type: 'adjustment',
+    category: 'provider_adjustment',
+    date: a.date,
+    amountUah: 0,
+    amountUsd: a.amountUsd,
+    title: `Коригування балансу провайдера: ${a.amountUsd >= 0 ? '+' : ''}$${a.amountUsd}`,
+    subtitle: `Ручне калібрування балансу провайдера`,
+    note: a.note || 'Коригування балансу провайдера',
+  }));
+
+  const customEntries: BudgetLedgerItem[] = (db.customLedgerEntries || []).map((c) => ({
+    ...c,
+    isCustom: true,
+  }));
+
+  // Combine all entries and calculate chronological provider balance (before and after)
+  const allEntries: BudgetLedgerItem[] = [
+    ...clientPaymentEntries,
+    ...depositEntries,
+    ...accountDeductions,
+    ...adjustmentEntries,
+    ...customEntries,
+  ];
+
+  const getTime = (d?: string) => {
+    if (!d) return 0;
+    const t = new Date(d).getTime();
+    return isNaN(t) ? 0 : t;
+  };
+
+  const getPriority = (item: BudgetLedgerItem) => {
+    const usd = Number(item.amountUsd) || 0;
+    if (item.category === 'provider_topup' && usd > 0) return 1;
+    if (usd > 0) return 2;
+    if (item.category === 'provider_adjustment') return 3;
+    if (usd < 0) return 4;
+    return 5;
+  };
+
+  // Sort chronologically ascending (oldest to newest) to track running balance accurately
+  allEntries.sort((a, b) => {
+    const timeA = getTime(a.date);
+    const timeB = getTime(b.date);
+    if (timeA !== timeB) return timeA - timeB;
+    return getPriority(a) - getPriority(b);
+  });
+
+  // Calculate provider balance before and after each transaction affecting USD
+  let runningProviderBalance = 0;
+  for (const item of allEntries) {
+    const usdChange = Number(item.amountUsd) || 0;
+    if (usdChange !== 0) {
+      const before = Math.round(runningProviderBalance * 100) / 100;
+      const after = Math.round((runningProviderBalance + usdChange) * 100) / 100;
+      item.balanceBeforeUsd = before;
+      item.balanceAfterUsd = after;
+      runningProviderBalance = after;
     }
   }
 
-  // Combined ledger of all transactions sorted by date descending
-  const ledger: LedgerEntry[] = [
-    ...db.payments.map((p): LedgerEntry => ({
-      id: p.id,
-      type: 'income',
-      date: p.date,
-      amountUah: p.amount,
-      amountUsd: 0,
-      title: `Оплата від абонента: ${p.clientName}`,
-      subtitle: `+${p.amount} ₴ (+${p.monthsAdded} міс. до особистого терміну, залишок: ${p.newBalance} ₴)`,
-      note: p.note,
-      clientId: p.clientId,
-    })),
-    ...db.providerDeposits.map((d): LedgerEntry => ({
-      id: d.id,
-      type: 'expense',
-      date: d.date,
-      amountUah: -d.spentUah,
-      amountUsd: d.amountUsd,
-      title: `Поповнення рахунку IPTV: +$${d.amountUsd}`,
-      subtitle: `Витрачено ${d.spentUah} ₴ (курс ~${(d.spentUah / (d.amountUsd || 1)).toFixed(2)} ₴/$ з комісією)`,
-      note: d.note,
-      paymentMethod: d.paymentMethod,
-    })),
-    ...accountDeductions,
-  ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  // Exact provider balance strictly synchronized with the ledger running balance
+  const providerBalanceUsd = Math.round(runningProviderBalance * 100) / 100;
+  const calculatedProviderBalanceUsd = providerBalanceUsd;
+
+  // Exact deposited and deducted amounts from all ledger entries
+  const totalDepositedUsd = Math.round(
+    allEntries
+      .filter((e) => (Number(e.amountUsd) || 0) > 0)
+      .reduce((sum, e) => sum + (Number(e.amountUsd) || 0), 0) * 100
+  ) / 100;
+
+  const totalDeductedUsd = Math.round(
+    allEntries
+      .filter((e) => (Number(e.amountUsd) || 0) < 0)
+      .reduce((sum, e) => sum + Math.abs(Number(e.amountUsd) || 0), 0) * 100
+  ) / 100;
+
+  const providerBalanceAdjustmentsSum = Math.round(
+    (db.providerBalanceAdjustments || []).reduce((sum, a) => sum + (Number(a.amountUsd) || 0), 0) * 100
+  ) / 100;
+
+  const runwayMonths = monthlyBurnUsd > 0 ? (providerBalanceUsd / monthlyBurnUsd) : 999;
+
+  // Populate balanceBeforeUsd and balanceAfterUsd on provider deposits as well
+  const depositsWithBalances = db.providerDeposits.map((d) => {
+    const matchingLedger = allEntries.find((e) => e.id === d.id);
+    return {
+      ...d,
+      balanceBeforeUsd: matchingLedger?.balanceBeforeUsd,
+      balanceAfterUsd: matchingLedger?.balanceAfterUsd,
+    };
+  });
+
+  // Combined ledger of all transactions sorted by date descending (newest first for UI display)
+  const ledger: BudgetLedgerItem[] = [...allEntries].sort((a, b) => {
+    const timeA = getTime(a.date);
+    const timeB = getTime(b.date);
+    if (timeB !== timeA) return timeB - timeA;
+    return getPriority(b) - getPriority(a);
+  });
 
   const activeClients = db.clients.filter((c) => c.status === 'active' || c.status === 'expiring_soon');
 
@@ -1424,10 +1778,420 @@ app.get('/api/budget', (_req, res) => {
       runwayMonths: Math.max(0, Math.round(runwayMonths * 10) / 10),
       activeClientsCount: activeClients.length,
       averageExchangeRate: totalDepositedUsd > 0 ? Math.round((totalExpensesUah / totalDepositedUsd) * 100) / 100 : 44,
+      calculatedProviderBalanceUsd,
+      providerBalanceAdjustmentsSum,
     },
-    deposits: db.providerDeposits,
+    deposits: depositsWithBalances,
+    adjustments: db.providerBalanceAdjustments,
     ledger,
   });
+});
+
+// Custom Ledger Entries CRUD
+app.post('/api/budget/ledger', async (req, res) => {
+  const db = loadDb();
+  if (!db.customLedgerEntries) db.customLedgerEntries = [];
+
+  const {
+    type,
+    category,
+    date,
+    amountUah,
+    amountUsd,
+    title,
+    subtitle,
+    note,
+    paymentMethod,
+    clientId,
+    accountId,
+  } = req.body;
+
+  let clientName = req.body.clientName;
+  if (clientId && !clientName) {
+    const c = db.clients.find((client) => client.id === clientId);
+    if (c) clientName = c.fullName;
+  }
+
+  let accountName = req.body.accountName;
+  if (accountId && !accountName) {
+    const a = db.providerAccounts.find((acc) => acc.id === accountId);
+    if (a) accountName = a.name;
+  }
+
+  const numUah = Number(amountUah) || 0;
+  let finalUah = numUah;
+  if (type === 'expense') {
+    finalUah = -Math.abs(numUah);
+  } else if (type === 'income') {
+    finalUah = Math.abs(numUah);
+  }
+
+  let finalUsd: number | undefined = undefined;
+  if (amountUsd !== undefined && amountUsd !== '' && amountUsd !== null) {
+    const rawVal = Number(amountUsd);
+    if (!isNaN(rawVal) && rawVal !== 0) {
+      if (type === 'expense' && category !== 'provider_topup') {
+        finalUsd = -Math.abs(rawVal);
+      } else if (category === 'provider_topup' || type === 'income') {
+        finalUsd = Math.abs(rawVal);
+      } else {
+        finalUsd = rawVal;
+      }
+    }
+  }
+
+  let finalTitle = title;
+  let finalSubtitle = subtitle;
+
+  if (!finalTitle) {
+    if (category === 'client_payment') {
+      finalTitle = clientName ? `Оплата від абонента: ${clientName}` : 'Оплата від абонента';
+    } else if (category === 'account_payment') {
+      finalTitle = accountName ? `Оплата за акаунт: ${accountName}` : 'Оплата за акаунт провайдера';
+    } else if (category === 'provider_topup') {
+      finalTitle = `Поповнення балансу провайдера: +$${Math.abs(finalUsd || 0)}`;
+    } else if (category === 'provider_adjustment') {
+      finalTitle = `Коригування балансу провайдера: ${finalUsd && finalUsd >= 0 ? '+' : ''}$${finalUsd || 0}`;
+    } else if (type === 'expense') {
+      finalTitle = finalUsd ? `Витрата з балансу (-$${Math.abs(finalUsd)})` : 'Витрата (ручний запис)';
+    } else {
+      finalTitle = 'Дохід (ручний запис)';
+    }
+  }
+
+  if (!finalSubtitle) {
+    if (finalUah !== 0) {
+      finalSubtitle = `${finalUah > 0 ? '+' : ''}${finalUah} ₴`;
+    }
+    if (finalUsd !== undefined && finalUsd !== 0) {
+      finalSubtitle = `${finalSubtitle ? finalSubtitle + ', ' : ''}${finalUsd > 0 ? '+' : '-'}$${Math.abs(finalUsd)} USD`;
+    }
+    if (!finalSubtitle) finalSubtitle = 'Запис у білінгу';
+  }
+
+  const newEntry: BudgetLedgerItem = {
+    id: 'led_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+    type: type || (finalUah >= 0 ? 'income' : 'expense'),
+    category: category || 'custom',
+    date: date || new Date().toISOString().split('T')[0],
+    amountUah: finalUah,
+    amountUsd: finalUsd,
+    title: finalTitle,
+    subtitle: finalSubtitle,
+    note: note || '',
+    paymentMethod: paymentMethod || '',
+    clientId: clientId || undefined,
+    clientName: clientName || undefined,
+    accountId: accountId || undefined,
+    accountName: accountName || undefined,
+    isCustom: true,
+  };
+
+  db.customLedgerEntries.unshift(newEntry);
+  saveDb(db);
+  if (isCloudSqlAvailable()) {
+    try {
+      await saveCustomLedgerEntryToCloudSql(newEntry as unknown as Record<string, unknown>);
+    } catch (e) {
+      console.warn('[Cloud SQL] Save ledger error:', e);
+    }
+  }
+  return res.status(201).json(newEntry);
+});
+
+app.put('/api/budget/ledger/:id', (req, res) => {
+  const db = loadDb();
+  if (!db.accountDeductionOverrides) db.accountDeductionOverrides = [];
+  if (!db.customLedgerEntries) db.customLedgerEntries = [];
+  if (!db.providerBalanceAdjustments) db.providerBalanceAdjustments = [];
+  if (!db.providerDeposits) db.providerDeposits = [];
+  if (!db.payments) db.payments = [];
+
+  const id = req.params.id;
+  const body = req.body;
+
+  // 1. Account deduction override
+  if (id.startsWith('ded_')) {
+    let override = db.accountDeductionOverrides.find((o) => o.id === id);
+    if (!override) {
+      override = { id };
+      db.accountDeductionOverrides.push(override);
+    }
+    override.isExcluded = false;
+    if (body.amountUsd !== undefined) {
+      const num = Number(body.amountUsd);
+      override.amountUsd = num > 0 ? -num : num; // Deductions are negative USD
+    }
+    if (body.amountUah !== undefined) override.amountUah = Number(body.amountUah);
+    if (body.date) override.date = body.date;
+    if (body.title) override.title = body.title;
+    if (body.note !== undefined) override.note = body.note;
+
+    saveDb(db);
+    if (isCloudSqlAvailable()) {
+      saveAccountDeductionOverrideToCloudSql(override as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Save override error:', e));
+    }
+    return res.json({ success: true, id, message: 'Списання успішно оновлено' });
+  }
+
+  // 2. Custom entry
+  const customIdx = db.customLedgerEntries.findIndex((e) => e.id === id);
+  if (customIdx !== -1) {
+    const existing = db.customLedgerEntries[customIdx];
+    let clientName = body.clientName !== undefined ? body.clientName : existing.clientName;
+    if (body.clientId && !body.clientName) {
+      const c = db.clients.find((client) => client.id === body.clientId);
+      if (c) clientName = c.fullName;
+    }
+    let accountName = body.accountName !== undefined ? body.accountName : existing.accountName;
+    if (body.accountId && !body.accountName) {
+      const a = db.providerAccounts.find((acc) => acc.id === body.accountId);
+      if (a) accountName = a.name;
+    }
+
+    const itemType = body.type !== undefined ? body.type : existing.type;
+    const itemCategory = body.category !== undefined ? body.category : existing.category;
+
+    let finalUah = body.amountUah !== undefined ? Number(body.amountUah) : existing.amountUah;
+    if (itemType === 'expense' && finalUah > 0) finalUah = -finalUah;
+    if (itemType === 'income' && finalUah < 0) finalUah = Math.abs(finalUah);
+
+    let finalUsd = existing.amountUsd;
+    if (body.amountUsd !== undefined) {
+      if (body.amountUsd === null || body.amountUsd === '') {
+        finalUsd = undefined;
+      } else {
+        const rawVal = Number(body.amountUsd);
+        if (!isNaN(rawVal)) {
+          if (itemType === 'expense' && itemCategory !== 'provider_topup') {
+            finalUsd = -Math.abs(rawVal);
+          } else if (itemCategory === 'provider_topup' || itemType === 'income') {
+            finalUsd = Math.abs(rawVal);
+          } else {
+            finalUsd = rawVal;
+          }
+        }
+      }
+    }
+
+    const updated: BudgetLedgerItem = {
+      ...existing,
+      type: itemType,
+      category: itemCategory,
+      date: body.date || existing.date,
+      amountUah: finalUah,
+      amountUsd: finalUsd,
+      title: body.title !== undefined ? body.title : existing.title,
+      subtitle: body.subtitle !== undefined ? body.subtitle : existing.subtitle,
+      note: body.note !== undefined ? body.note : existing.note,
+      paymentMethod: body.paymentMethod !== undefined ? body.paymentMethod : existing.paymentMethod,
+      clientId: body.clientId !== undefined ? body.clientId : existing.clientId,
+      clientName,
+      accountId: body.accountId !== undefined ? body.accountId : existing.accountId,
+      accountName,
+      isCustom: true,
+    };
+    db.customLedgerEntries[customIdx] = updated;
+    saveDb(db);
+    if (isCloudSqlAvailable()) {
+      saveCustomLedgerEntryToCloudSql(updated as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Update custom ledger error:', e));
+    }
+    return res.json(updated);
+  }
+
+  // 3. Provider adjustment
+  const adjIdx = db.providerBalanceAdjustments.findIndex((a) => a.id === id);
+  if (adjIdx !== -1) {
+    const adj = db.providerBalanceAdjustments[adjIdx];
+    if (body.amountUsd !== undefined) adj.amountUsd = Number(body.amountUsd);
+    if (body.date) adj.date = body.date;
+    if (body.note !== undefined) adj.note = body.note;
+    saveDb(db);
+    if (isCloudSqlAvailable()) {
+      saveProviderBalanceAdjustmentToCloudSql(adj as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Update adj error:', e));
+    }
+    return res.json(adj);
+  }
+
+  // 4. Provider deposit
+  const depIdx = db.providerDeposits.findIndex((d) => d.id === id);
+  if (depIdx !== -1) {
+    const dep = db.providerDeposits[depIdx];
+    if (body.amountUsd !== undefined) dep.amountUsd = Number(body.amountUsd);
+    if (body.spentUah !== undefined) dep.spentUah = Number(body.spentUah);
+    if (body.amountUah !== undefined && body.spentUah === undefined) dep.spentUah = Math.abs(Number(body.amountUah));
+    if (body.date) dep.date = body.date;
+    if (body.paymentMethod !== undefined) dep.paymentMethod = body.paymentMethod;
+    if (body.note !== undefined) dep.note = body.note;
+    if (dep.amountUsd > 0 && dep.spentUah > 0) {
+      dep.exchangeRate = Math.round((dep.spentUah / dep.amountUsd) * 100) / 100;
+    }
+    saveDb(db);
+    if (isCloudSqlAvailable()) {
+      saveProviderDepositToCloudSql(dep as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Update dep error:', e));
+    }
+    return res.json(dep);
+  }
+
+  // 5. Client payment
+  const payIdx = db.payments.findIndex((p) => p.id === id);
+  if (payIdx !== -1) {
+    const pay = db.payments[payIdx];
+    if (body.amountUah !== undefined) pay.amount = Number(body.amountUah);
+    if (body.amount !== undefined) pay.amount = Number(body.amount);
+    if (body.date) pay.date = body.date;
+    if (body.note !== undefined) pay.note = body.note;
+    if (body.clientName) pay.clientName = body.clientName;
+    saveDb(db);
+    if (isCloudSqlAvailable()) {
+      savePaymentToCloudSql(pay as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Update payment error:', e));
+    }
+    return res.json(pay);
+  }
+
+  return res.status(404).json({ error: 'Запис не знайдено' });
+});
+
+app.delete('/api/budget/ledger/:id', (req, res) => {
+  const db = loadDb();
+  const id = req.params.id;
+
+  if (!db.accountDeductionOverrides) db.accountDeductionOverrides = [];
+  if (!db.customLedgerEntries) db.customLedgerEntries = [];
+  if (!db.providerBalanceAdjustments) db.providerBalanceAdjustments = [];
+  if (!db.providerDeposits) db.providerDeposits = [];
+  if (!db.payments) db.payments = [];
+
+  // 1. Account deduction
+  if (id.startsWith('ded_')) {
+    const existing = db.accountDeductionOverrides.find((o) => o.id === id);
+    if (existing) {
+      existing.isExcluded = true;
+    } else {
+      db.accountDeductionOverrides.push({ id, isExcluded: true });
+    }
+    saveDb(db);
+    if (isCloudSqlAvailable()) {
+      saveAccountDeductionOverrideToCloudSql({ id, isExcluded: true }).catch((e) => console.warn('[Cloud SQL] Save excluded override error:', e));
+    }
+    return res.json({ success: true, id, message: 'Списання успішно видалено з журналу та балансу' });
+  }
+
+  // 2. Custom entry
+  const customIdx = db.customLedgerEntries.findIndex((e) => e.id === id);
+  if (customIdx !== -1) {
+    db.customLedgerEntries.splice(customIdx, 1);
+    saveDb(db);
+    if (isCloudSqlAvailable()) {
+      deleteCustomLedgerEntryFromCloudSql(id).catch((e) => console.warn('[Cloud SQL] Delete custom ledger error:', e));
+    }
+    return res.json({ success: true, id, message: 'Запис успішно видалено' });
+  }
+
+  // 3. Provider adjustment
+  const adjIdx = db.providerBalanceAdjustments.findIndex((a) => a.id === id);
+  if (adjIdx !== -1) {
+    db.providerBalanceAdjustments.splice(adjIdx, 1);
+    saveDb(db);
+    if (isCloudSqlAvailable()) {
+      deleteProviderBalanceAdjustmentFromCloudSql(id).catch((e) => console.warn('[Cloud SQL] Delete adj error:', e));
+    }
+    return res.json({ success: true, id, message: 'Коригування успішно видалено' });
+  }
+
+  // 4. Provider deposit
+  const depIdx = db.providerDeposits.findIndex((d) => d.id === id);
+  if (depIdx !== -1) {
+    db.providerDeposits.splice(depIdx, 1);
+    saveDb(db);
+    if (isCloudSqlAvailable()) {
+      deleteProviderDepositFromCloudSql(id).catch((e) => console.warn('[Cloud SQL] Delete dep error:', e));
+    }
+    return res.json({ success: true, id, message: 'Поповнення успішно видалено' });
+  }
+
+  // 5. Client payment
+  const payIdx = db.payments.findIndex((p) => p.id === id);
+  if (payIdx !== -1) {
+    db.payments.splice(payIdx, 1);
+    saveDb(db);
+    if (isCloudSqlAvailable()) {
+      deletePaymentFromCloudSql(id).catch((e) => console.warn('[Cloud SQL] Delete pay error:', e));
+    }
+    return res.json({ success: true, id, message: 'Оплату абонента успішно видалено' });
+  }
+
+  return res.status(404).json({ error: 'Запис не знайдено' });
+});
+
+// Provider Balance Adjustments
+app.post('/api/budget/provider-balance/adjust', (req, res) => {
+  const db = loadDb();
+  if (!db.providerBalanceAdjustments) db.providerBalanceAdjustments = [];
+  if (!db.accountDeductionOverrides) db.accountDeductionOverrides = [];
+
+  const { amountUsd, targetBalanceUsd, note, date } = req.body;
+  let finalAmountUsd = 0;
+
+  if (targetBalanceUsd !== undefined) {
+    // Calculate current provider balance before this new adjustment
+    const totalDeposited = db.providerDeposits.reduce((sum, d) => sum + (Number(d.amountUsd) || 0), 0);
+    let totalDeducted = 0;
+    for (const acc of db.providerAccounts) {
+      const det = getAccountDeductionDetails(acc);
+      for (let i = 0; i < det.actualDeductedMonths; i++) {
+        const dedId = `ded_${acc.id}_m${i + 1}`;
+        const override = db.accountDeductionOverrides.find((o) => o.id === dedId);
+        if (override?.isExcluded) continue;
+        const price = override?.amountUsd !== undefined ? override.amountUsd : -det.pricePerMonth;
+        totalDeducted += Math.abs(price);
+      }
+    }
+    const customDelta = (db.customLedgerEntries || []).reduce((sum, e) => sum + (Number(e.amountUsd) || 0), 0);
+    const existingAdjustments = db.providerBalanceAdjustments.reduce((sum, a) => sum + (Number(a.amountUsd) || 0), 0);
+
+    const currentBalance = totalDeposited - totalDeducted + customDelta + existingAdjustments;
+    finalAmountUsd = Math.round((Number(targetBalanceUsd) - currentBalance) * 100) / 100;
+  } else {
+    finalAmountUsd = Number(amountUsd) || 0;
+  }
+
+  if (finalAmountUsd === 0 && targetBalanceUsd === undefined) {
+    return res.status(400).json({ error: 'Сума коригування не може бути 0' });
+  }
+
+  const newAdjustment: ProviderBalanceAdjustment = {
+    id: 'adj_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+    date: date || new Date().toISOString().split('T')[0],
+    amountUsd: finalAmountUsd,
+    note: note || (targetBalanceUsd !== undefined ? `Калібрування до балансу $${targetBalanceUsd}` : 'Ручне коригування балансу'),
+    createdAt: new Date().toISOString(),
+  };
+
+  db.providerBalanceAdjustments.unshift(newAdjustment);
+  saveDb(db);
+  if (isCloudSqlAvailable()) {
+    saveProviderBalanceAdjustmentToCloudSql(newAdjustment as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Save adj error:', e));
+  }
+  return res.status(201).json(newAdjustment);
+});
+
+app.delete('/api/budget/provider-balance/adjust/:id', (req, res) => {
+  const db = loadDb();
+  if (!db.providerBalanceAdjustments) db.providerBalanceAdjustments = [];
+  const id = req.params.id;
+  const initialLen = db.providerBalanceAdjustments.length;
+  db.providerBalanceAdjustments = db.providerBalanceAdjustments.filter((a) => a.id !== id);
+
+  if (db.providerBalanceAdjustments.length === initialLen) {
+    return res.status(404).json({ error: 'Запис коригування не знайдено' });
+  }
+
+  saveDb(db);
+  if (isCloudSqlAvailable()) {
+    deleteProviderBalanceAdjustmentFromCloudSql(id).catch((e) => console.warn('[Cloud SQL] Delete adj error:', e));
+  }
+  return res.json({ success: true, id });
 });
 
 app.post('/api/budget/deposits', (req, res) => {
@@ -1460,6 +2224,9 @@ app.post('/api/budget/deposits', (req, res) => {
 
   db.providerDeposits.unshift(newDeposit);
   saveDb(db);
+  if (isCloudSqlAvailable()) {
+    saveProviderDepositToCloudSql(newDeposit as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Save deposit error:', e));
+  }
   return res.status(201).json(newDeposit);
 });
 
@@ -1491,6 +2258,9 @@ app.put('/api/budget/deposits/:id', (req, res) => {
 
   db.providerDeposits[index] = updated;
   saveDb(db);
+  if (isCloudSqlAvailable()) {
+    saveProviderDepositToCloudSql(updated as unknown as Record<string, unknown>).catch((e) => console.warn('[Cloud SQL] Update deposit error:', e));
+  }
   return res.json(updated);
 });
 
@@ -1572,22 +2342,81 @@ app.delete('/api/accounts/:accountId/renewals/:renewalId', (req, res) => {
 });
 
 // 7. Settings
-app.get('/api/settings', (_req, res) => {
+app.get('/api/settings', async (_req, res) => {
+  if (startupSyncPromise) {
+    try {
+      await startupSyncPromise;
+    } catch {
+      // ignore
+    }
+  }
+  if (isCloudSqlAvailable()) {
+    try {
+      const sqlSettings = await getSettingsFromCloudSql();
+      if (sqlSettings) {
+        const rawTariffs = sqlSettings['utilityTariffsSettings'];
+        let parsedTariffs = rawTariffs;
+        if (typeof rawTariffs === 'string') {
+          try {
+            parsedTariffs = JSON.parse(rawTariffs);
+          } catch {
+            // ignore
+          }
+        }
+        const db = loadDb();
+        db.settings = {
+          ...db.settings,
+          ...sqlSettings,
+          utilityTariffsSettings: deepMergeTariffs(
+            DEFAULT_UTILITY_TARIFFS,
+            parsedTariffs as Partial<UtilityTariffsSettings>
+          ),
+        } as unknown as AppSettings;
+        saveDb(db);
+        try {
+          writeFileSync(settingsFile, JSON.stringify(db.settings, null, 2), 'utf-8');
+        } catch {
+          // ignore
+        }
+        res.json(db.settings);
+        return;
+      }
+    } catch (e) {
+      console.warn('[Cloud SQL] Direct get settings error:', e);
+    }
+  }
   const db = loadDb();
   res.json(db.settings);
 });
 
 app.post('/api/settings', async (req, res) => {
+  if (startupSyncPromise) {
+    try {
+      await startupSyncPromise;
+    } catch {
+      // ignore
+    }
+  }
   const db = loadDb();
   const body = req.body || {};
+  const currentTariffs = db.settings.utilityTariffsSettings || DEFAULT_UTILITY_TARIFFS;
+  const mergedTariffs = deepMergeTariffs(currentTariffs, body.utilityTariffsSettings);
+
   const updatedSettings: AppSettings = {
     ...db.settings,
     ...body,
     defaultMonthlyPrice: body.defaultMonthlyPrice !== undefined ? Number(body.defaultMonthlyPrice) : db.settings.defaultMonthlyPrice,
     reminderDaysBefore: body.reminderDaysBefore !== undefined ? Number(body.reminderDaysBefore) : db.settings.reminderDaysBefore,
+    utilityTariffsSettings: mergedTariffs,
   };
   db.settings = updatedSettings;
   saveDb(db);
+
+  try {
+    writeFileSync(settingsFile, JSON.stringify(updatedSettings, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error writing settings backup file:', err);
+  }
 
   if (isCloudSqlAvailable()) {
     try {
@@ -1878,8 +2707,40 @@ app.post('/api/database/sync', async (_req, res) => {
       if (cloudData['providerAccounts']) current.providerAccounts = cloudData['providerAccounts'] as unknown as ProviderAccount[];
       if (cloudData['providerDeposits']) current.providerDeposits = cloudData['providerDeposits'] as unknown as ProviderDeposit[];
       if (cloudData['utilityAccounts']) current.utilityAccounts = cloudData['utilityAccounts'] as unknown as UtilityAccount[];
-      if (cloudData['utilityReadings']) current.utilityReadings = cloudData['utilityReadings'] as unknown as UtilityReading[];
-      if (cloudData['settings']) current.settings = { ...current.settings, ...(cloudData['settings'] as Record<string, unknown>) } as unknown as AppSettings;
+      if (cloudData['utilityReadings']) {
+        current.utilityReadings = (cloudData['utilityReadings'] as unknown as UtilityReading[]).map((r) => {
+          const isCtrl = r.isControlOnly === true || String(r.isControlOnly) === 'true' || r.readingPurpose === 'control';
+          return {
+            ...r,
+            isControlOnly: isCtrl,
+            readingPurpose: isCtrl ? 'control' : 'billing',
+          };
+        });
+      }
+      if (cloudData['customLedgerEntries']) current.customLedgerEntries = cloudData['customLedgerEntries'] as unknown as BudgetLedgerItem[];
+      if (cloudData['providerBalanceAdjustments']) current.providerBalanceAdjustments = cloudData['providerBalanceAdjustments'] as unknown as ProviderBalanceAdjustment[];
+      if (cloudData['accountDeductionOverrides']) current.accountDeductionOverrides = cloudData['accountDeductionOverrides'] as unknown as AccountDeductionOverride[];
+      if (cloudData['settings']) {
+        const rawTariffs = (cloudData['settings'] as Record<string, unknown>)['utilityTariffsSettings'];
+        let parsedTariffs = rawTariffs;
+        if (typeof rawTariffs === 'string') {
+          try {
+            parsedTariffs = JSON.parse(rawTariffs);
+          } catch {
+            // ignore
+          }
+        }
+        current.settings = {
+          ...current.settings,
+          ...(cloudData['settings'] as Record<string, unknown>),
+          utilityTariffsSettings: deepMergeTariffs(DEFAULT_UTILITY_TARIFFS, parsedTariffs as Partial<UtilityTariffsSettings>),
+        } as unknown as AppSettings;
+        try {
+          writeFileSync(settingsFile, JSON.stringify(current.settings, null, 2), 'utf-8');
+        } catch {
+          // ignore
+        }
+      }
       
       saveDb(current);
       return res.json({
@@ -1998,6 +2859,7 @@ app.post('/api/utility/accounts', async (req, res) => {
       initialReadingWater: body.initialReadingWater !== undefined ? Number(body.initialReadingWater) || 0 : 0,
       waterEnabled: body.waterEnabled !== undefined ? Boolean(body.waterEnabled) : true,
       wasteEnabled: body.wasteEnabled !== undefined ? Boolean(body.wasteEnabled) : true,
+      balanceUah: body.balanceUah !== undefined ? Number(body.balanceUah) || 0 : (existing ? existing.balanceUah || 0 : 0),
       notes: body.notes ? String(body.notes) : '',
       createdAt: existing ? existing.createdAt : now,
       updatedAt: now,
@@ -2059,6 +2921,8 @@ app.post('/api/utility/readings', async (req, res) => {
 
     const id = body.id || `uread_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const now = new Date().toISOString();
+    const isControlOnly = body.isControlOnly === true || String(body.isControlOnly) === 'true' || body.readingPurpose === 'control';
+    const totalCost = isControlOnly ? 0 : (Number(body.totalCost) || 0);
 
     const reading: UtilityReading = {
       id,
@@ -2070,14 +2934,18 @@ app.post('/api/utility/readings', async (req, res) => {
       readingT2: body.readingT2 !== undefined && body.readingT2 !== null ? Number(body.readingT2) : undefined,
       consumptionT1: body.consumptionT1 !== undefined && body.consumptionT1 !== null ? Number(body.consumptionT1) : undefined,
       consumptionT2: body.consumptionT2 !== undefined && body.consumptionT2 !== null ? Number(body.consumptionT2) : undefined,
-      rateT1: body.rateT1 !== undefined && body.rateT1 !== null ? Number(body.rateT1) : undefined,
-      rateT2: body.rateT2 !== undefined && body.rateT2 !== null ? Number(body.rateT2) : undefined,
-      totalCost: Number(body.totalCost) || 0,
+      rateT1: isControlOnly ? undefined : (body.rateT1 !== undefined && body.rateT1 !== null ? Number(body.rateT1) : undefined),
+      rateT2: isControlOnly ? undefined : (body.rateT2 !== undefined && body.rateT2 !== null ? Number(body.rateT2) : undefined),
+      totalCost,
       season: body.season,
-      isPaid: Boolean(body.isPaid),
-      paidDate: body.paidDate ? String(body.paidDate) : undefined,
-      paidAmount: body.paidAmount !== undefined && body.paidAmount !== null ? Number(body.paidAmount) : undefined,
+      isPaid: isControlOnly ? true : Boolean(body.isPaid),
+      paidDate: isControlOnly ? undefined : (body.isPaid ? String(body.paidDate || body.date) : undefined),
+      paidAmount: isControlOnly ? 0 : (body.paidAmount !== undefined && body.paidAmount !== null ? Number(body.paidAmount) : undefined),
       note: body.note ? String(body.note) : '',
+      isControlOnly,
+      readingPurpose: isControlOnly ? 'control' : 'billing',
+      daysSinceLastReading: body.daysSinceLastReading !== undefined ? Number(body.daysSinceLastReading) : undefined,
+      dailyAvgConsumption: body.dailyAvgConsumption !== undefined ? Number(body.dailyAvgConsumption) : undefined,
       createdAt: body.createdAt || now,
     };
 
@@ -2099,6 +2967,62 @@ app.post('/api/utility/readings', async (req, res) => {
     }
 
     return res.json({ success: true, reading });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: msg });
+  }
+});
+
+app.put('/api/utility/readings/:id', async (req, res) => {
+  try {
+    const db = loadDb();
+    const id = req.params.id;
+    const body = req.body;
+    const existingIndex = (db.utilityReadings || []).findIndex((r) => r.id === id);
+    if (existingIndex < 0) {
+      return res.status(404).json({ error: 'Запис показів не знайдено' });
+    }
+
+    const existing = db.utilityReadings[existingIndex];
+    const isControlOnly = body.isControlOnly !== undefined
+      ? (body.isControlOnly === true || String(body.isControlOnly) === 'true' || body.readingPurpose === 'control')
+      : existing.isControlOnly;
+    const totalCost = isControlOnly ? 0 : (body.totalCost !== undefined ? Number(body.totalCost) : existing.totalCost);
+
+    const updated: UtilityReading = {
+      ...existing,
+      date: body.date ? String(body.date) : existing.date,
+      periodMonth: body.periodMonth || (body.date ? String(body.date).substring(0, 7) : existing.periodMonth),
+      readingT1: body.readingT1 !== undefined ? (body.readingT1 !== null ? Number(body.readingT1) : undefined) : existing.readingT1,
+      readingT2: body.readingT2 !== undefined ? (body.readingT2 !== null ? Number(body.readingT2) : undefined) : existing.readingT2,
+      consumptionT1: body.consumptionT1 !== undefined ? (body.consumptionT1 !== null ? Number(body.consumptionT1) : undefined) : existing.consumptionT1,
+      consumptionT2: body.consumptionT2 !== undefined ? (body.consumptionT2 !== null ? Number(body.consumptionT2) : undefined) : existing.consumptionT2,
+      rateT1: isControlOnly ? undefined : (body.rateT1 !== undefined ? (body.rateT1 !== null ? Number(body.rateT1) : undefined) : existing.rateT1),
+      rateT2: isControlOnly ? undefined : (body.rateT2 !== undefined ? (body.rateT2 !== null ? Number(body.rateT2) : undefined) : existing.rateT2),
+      totalCost,
+      season: body.season !== undefined ? body.season : existing.season,
+      isPaid: isControlOnly ? true : (body.isPaid !== undefined ? Boolean(body.isPaid) : existing.isPaid),
+      paidDate: isControlOnly ? undefined : (body.paidDate !== undefined ? (body.paidDate ? String(body.paidDate) : undefined) : existing.paidDate),
+      paidAmount: isControlOnly ? 0 : (body.paidAmount !== undefined ? (body.paidAmount !== null ? Number(body.paidAmount) : undefined) : existing.paidAmount),
+      note: body.note !== undefined ? String(body.note) : existing.note,
+      isControlOnly,
+      readingPurpose: isControlOnly ? 'control' : 'billing',
+      daysSinceLastReading: body.daysSinceLastReading !== undefined ? (body.daysSinceLastReading !== null ? Number(body.daysSinceLastReading) : undefined) : existing.daysSinceLastReading,
+      dailyAvgConsumption: body.dailyAvgConsumption !== undefined ? (body.dailyAvgConsumption !== null ? Number(body.dailyAvgConsumption) : undefined) : existing.dailyAvgConsumption,
+    };
+
+    db.utilityReadings[existingIndex] = updated;
+    saveDb(db);
+
+    if (isCloudSqlAvailable()) {
+      try {
+        await saveUtilityReadingToCloudSql(updated as unknown as Record<string, unknown>);
+      } catch (e) {
+        console.warn('[Cloud SQL] Direct update utility reading warning:', e);
+      }
+    }
+
+    return res.json({ success: true, reading: updated });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return res.status(500).json({ error: msg });

@@ -16,6 +16,7 @@ export interface UtilityAccount {
   initialReadingWater?: number; // Початковий показник лічильника води
   waterEnabled?: boolean;
   wasteEnabled?: boolean;
+  balanceUah?: number; // Залишок коштів на рахунку (грн)
   notes?: string;
   createdAt: string;
   updatedAt?: string;
@@ -39,14 +40,20 @@ export interface UtilityReading {
   paidDate?: string;
   paidAmount?: number;
   note?: string;
+  isControlOnly?: boolean; // Тільки для контролю та аналізу тенденцій (не рахується для оплати)
+  readingPurpose?: 'billing' | 'control'; // 'billing' (офіційний розрахунок) або 'control' (тільки моніторинг)
+  daysSinceLastReading?: number; // Днів з моменту попереднього показу
+  dailyAvgConsumption?: number; // Середньодобове споживання між замірами
   createdAt: string;
 }
 
 export interface TariffHistoryItem {
   id: string;
   validFrom: string; // YYYY-MM-DD
-  price?: number; // для води та сміття
-  rate?: number; // для однотарифного
+  validTo?: string; // YYYY-MM-DD (дата закінчення тарифу, якщо є)
+  price?: number; // для води та сміття (грн / м³ або грн / особа)
+  monthlyFee?: number; // щомісячна абоноплата для води (грн/міс)
+  rate?: number; // для однотарифного (грн / кВт·год)
   summerDay?: number; // для двотарифного
   summerNight?: number;
   winterDay?: number;
@@ -58,21 +65,26 @@ export interface TariffHistoryItem {
 export interface UtilityTariffsSettings {
   water: {
     price: number; // грн за 1 м³
+    monthlyFee?: number; // грн на місяць (абоноплата)
     validFrom: string; // YYYY-MM-DD
+    validTo?: string; // YYYY-MM-DD
     history: TariffHistoryItem[];
   };
   waste: {
     price: number; // грн на місяць
     validFrom: string; // YYYY-MM-DD
+    validTo?: string; // YYYY-MM-DD
     history: TariffHistoryItem[];
   };
   electricitySingle: {
     rate: number; // грн за 1 кВт·год
     validFrom: string; // YYYY-MM-DD
+    validTo?: string; // YYYY-MM-DD
     history: TariffHistoryItem[];
   };
   electricityDual: {
     validFrom: string; // YYYY-MM-DD
+    validTo?: string; // YYYY-MM-DD
     summerDay: number; // Літній день (грн/кВт·год)
     summerNight: number; // Літня ніч (грн/кВт·год)
     winterDay: number; // Зимовий день (грн/кВт·год)
@@ -84,28 +96,33 @@ export interface UtilityTariffsSettings {
 
 export const DEFAULT_UTILITY_TARIFFS: UtilityTariffsSettings = {
   water: {
-    price: 30.38,
+    price: 32,
+    monthlyFee: 0,
     validFrom: '2026-01-01',
+    validTo: '',
     history: [
-      { id: 'wh_1', price: 30.38, validFrom: '2026-01-01', note: 'Базовий тариф на воду' },
+      { id: 'wh_1', price: 32, monthlyFee: 0, validFrom: '2026-01-01', validTo: '', note: 'Базовий тариф на воду' },
     ],
   },
   waste: {
     price: 45.00,
     validFrom: '2026-01-01',
+    validTo: '',
     history: [
-      { id: 'wsh_1', price: 45.00, validFrom: '2026-01-01', note: 'Базовий тариф на вивіз сміття' },
+      { id: 'wsh_1', price: 45.00, validFrom: '2026-01-01', validTo: '', note: 'Базовий тариф на вивіз сміття' },
     ],
   },
   electricitySingle: {
     rate: 4.32,
     validFrom: '2026-06-01',
+    validTo: '',
     history: [
-      { id: 'esh_1', rate: 4.32, validFrom: '2026-06-01', note: 'Єдиний тариф на рік' },
+      { id: 'esh_1', rate: 4.32, validFrom: '2026-06-01', validTo: '', note: 'Єдиний тариф на рік' },
     ],
   },
   electricityDual: {
     validFrom: '2026-06-01',
+    validTo: '',
     summerDay: 4.32,
     summerNight: 2.16,
     winterDay: 4.32,
@@ -115,6 +132,7 @@ export const DEFAULT_UTILITY_TARIFFS: UtilityTariffsSettings = {
       {
         id: 'edh_1',
         validFrom: '2026-06-01',
+        validTo: '',
         summerDay: 4.32,
         summerNight: 2.16,
         winterDay: 4.32,
@@ -145,48 +163,138 @@ export function getSeasonForDate(dateStr: string): SeasonType {
 }
 
 /**
+ * Checks whether targetDate (YYYY-MM-DD) fits within a validity window [validFrom, validTo].
+ */
+export function isDateInValidityRange(targetDate: string, validFrom?: string, validTo?: string): boolean {
+  if (!targetDate) return true;
+  if (validFrom && targetDate < validFrom) return false;
+  if (validTo && validTo.trim() !== '' && targetDate > validTo) return false;
+  return true;
+}
+
+/**
  * Resolves water rate effective on a specific date.
  */
 export function resolveWaterRate(dateStr: string, tariffs: UtilityTariffsSettings): number {
-  const history = tariffs.water?.history || [];
-  const applicable = history
-    .filter((h) => h.validFrom <= dateStr && typeof h.price === 'number')
+  if (!tariffs || !tariffs.water) return DEFAULT_UTILITY_TARIFFS.water.price;
+  const configuredPrice =
+    typeof tariffs.water.price === 'number' && !isNaN(tariffs.water.price) && tariffs.water.price > 0
+      ? tariffs.water.price
+      : undefined;
+
+  const validFrom = tariffs.water.validFrom || '1970-01-01';
+  const validTo = tariffs.water.validTo || '';
+
+  // Check main config range first
+  if (configuredPrice !== undefined && isDateInValidityRange(dateStr, validFrom, validTo)) {
+    return configuredPrice;
+  }
+
+  // Check history entries that match dateStr
+  const history = (tariffs.water.history || [])
+    .filter(
+      (h) =>
+        typeof h.price === 'number' &&
+        h.price > 0 &&
+        isDateInValidityRange(dateStr, h.validFrom, h.validTo)
+    )
     .sort((a, b) => b.validFrom.localeCompare(a.validFrom));
 
-  if (applicable.length > 0 && applicable[0].price !== undefined) {
-    return applicable[0].price;
+  if (history.length > 0 && history[0].price !== undefined) {
+    return history[0].price;
   }
-  return tariffs.water?.price ?? DEFAULT_UTILITY_TARIFFS.water.price;
+
+  return configuredPrice !== undefined ? configuredPrice : DEFAULT_UTILITY_TARIFFS.water.price;
+}
+
+/**
+ * Resolves water monthly subscription fee effective on a specific date.
+ */
+export function resolveWaterMonthlyFee(dateStr: string, tariffs: UtilityTariffsSettings): number {
+  if (!tariffs || !tariffs.water) return DEFAULT_UTILITY_TARIFFS.water.monthlyFee || 0;
+  const configuredFee = typeof tariffs.water.monthlyFee === 'number' ? tariffs.water.monthlyFee : 0;
+  const validFrom = tariffs.water.validFrom || '1970-01-01';
+  const validTo = tariffs.water.validTo || '';
+
+  if (isDateInValidityRange(dateStr, validFrom, validTo)) {
+    return configuredFee;
+  }
+
+  const history = (tariffs.water.history || [])
+    .filter(
+      (h) =>
+        typeof h.monthlyFee === 'number' &&
+        isDateInValidityRange(dateStr, h.validFrom, h.validTo)
+    )
+    .sort((a, b) => b.validFrom.localeCompare(a.validFrom));
+
+  if (history.length > 0 && history[0].monthlyFee !== undefined) {
+    return history[0].monthlyFee;
+  }
+
+  return configuredFee;
+}
+
+export function applicableHistory(history: TariffHistoryItem[]): TariffHistoryItem[] {
+  return (history || []).filter((h) => typeof h.price === 'number' || typeof h.rate === 'number');
 }
 
 /**
  * Resolves waste removal rate effective on a specific date.
  */
 export function resolveWasteRate(dateStr: string, tariffs: UtilityTariffsSettings): number {
-  const history = tariffs.waste?.history || [];
-  const applicable = history
-    .filter((h) => h.validFrom <= dateStr && typeof h.price === 'number')
+  if (!tariffs || !tariffs.waste) return DEFAULT_UTILITY_TARIFFS.waste.price;
+  const configuredPrice =
+    typeof tariffs.waste.price === 'number' && !isNaN(tariffs.waste.price) && tariffs.waste.price > 0
+      ? tariffs.waste.price
+      : undefined;
+
+  const validFrom = tariffs.waste.validFrom || '1970-01-01';
+  const validTo = tariffs.waste.validTo || '';
+
+  if (configuredPrice !== undefined && isDateInValidityRange(dateStr, validFrom, validTo)) {
+    return configuredPrice;
+  }
+
+  const history = (tariffs.waste.history || [])
+    .filter((h) => typeof h.price === 'number' && h.price > 0 && isDateInValidityRange(dateStr, h.validFrom, h.validTo))
     .sort((a, b) => b.validFrom.localeCompare(a.validFrom));
 
-  if (applicable.length > 0 && applicable[0].price !== undefined) {
-    return applicable[0].price;
+  if (history.length > 0 && history[0].price !== undefined) {
+    return history[0].price;
   }
-  return tariffs.waste?.price ?? DEFAULT_UTILITY_TARIFFS.waste.price;
+
+  return configuredPrice !== undefined ? configuredPrice : DEFAULT_UTILITY_TARIFFS.waste.price;
 }
 
 /**
  * Resolves single-rate electricity tariff effective on a specific date.
  */
 export function resolveElectricitySingleRate(dateStr: string, tariffs: UtilityTariffsSettings): number {
-  const history = tariffs.electricitySingle?.history || [];
-  const applicable = history
-    .filter((h) => h.validFrom <= dateStr && typeof h.rate === 'number')
+  if (!tariffs || !tariffs.electricitySingle) return DEFAULT_UTILITY_TARIFFS.electricitySingle.rate;
+  const configuredRate =
+    typeof tariffs.electricitySingle.rate === 'number' &&
+    !isNaN(tariffs.electricitySingle.rate) &&
+    tariffs.electricitySingle.rate > 0
+      ? tariffs.electricitySingle.rate
+      : undefined;
+
+  const validFrom = tariffs.electricitySingle.validFrom || '1970-01-01';
+  const validTo = tariffs.electricitySingle.validTo || '';
+
+  if (configuredRate !== undefined && isDateInValidityRange(dateStr, validFrom, validTo)) {
+    return configuredRate;
+  }
+
+  const history = (tariffs.electricitySingle.history || [])
+    .filter((h) => typeof h.rate === 'number' && h.rate > 0 && isDateInValidityRange(dateStr, h.validFrom, h.validTo))
     .sort((a, b) => b.validFrom.localeCompare(a.validFrom));
 
-  if (applicable.length > 0 && applicable[0].rate !== undefined) {
-    return applicable[0].rate;
+  if (history.length > 0 && history[0].rate !== undefined) {
+    return history[0].rate;
   }
-  return tariffs.electricitySingle?.rate ?? DEFAULT_UTILITY_TARIFFS.electricitySingle.rate;
+
+  return configuredRate !== undefined ? configuredRate : DEFAULT_UTILITY_TARIFFS.electricitySingle.rate;
 }
 
 export interface ElectricityDualRatesInfo {
@@ -208,18 +316,30 @@ export function resolveElectricityDualRates(
   tariffs: UtilityTariffsSettings
 ): ElectricityDualRatesInfo {
   const season = getSeasonForDate(dateStr);
-  const history = tariffs.electricityDual?.history || [];
-  const applicable = history
-    .filter((h) => h.validFrom <= dateStr)
-    .sort((a, b) => b.validFrom.localeCompare(a.validFrom));
+  const dual = tariffs.electricityDual || DEFAULT_UTILITY_TARIFFS.electricityDual;
+  const validFrom = dual.validFrom || '1970-01-01';
+  const validTo = dual.validTo || '';
+  const isCurrentValid = isDateInValidityRange(dateStr, validFrom, validTo);
 
-  const target = applicable.length > 0 ? applicable[0] : tariffs.electricityDual;
+  let summerDay = dual.summerDay ?? DEFAULT_UTILITY_TARIFFS.electricityDual.summerDay;
+  let summerNight = dual.summerNight ?? DEFAULT_UTILITY_TARIFFS.electricityDual.summerNight;
+  let winterDay = dual.winterDay ?? DEFAULT_UTILITY_TARIFFS.electricityDual.winterDay;
+  let winterNight = dual.winterNight ?? DEFAULT_UTILITY_TARIFFS.electricityDual.winterNight;
+  let winterLimitKwh = dual.winterLimitKwh ?? DEFAULT_UTILITY_TARIFFS.electricityDual.winterLimitKwh ?? 2000;
 
-  const summerDay = target?.summerDay ?? DEFAULT_UTILITY_TARIFFS.electricityDual.summerDay;
-  const summerNight = target?.summerNight ?? DEFAULT_UTILITY_TARIFFS.electricityDual.summerNight;
-  const winterDay = target?.winterDay ?? DEFAULT_UTILITY_TARIFFS.electricityDual.winterDay;
-  const winterNight = target?.winterNight ?? DEFAULT_UTILITY_TARIFFS.electricityDual.winterNight;
-  const winterLimitKwh = target?.winterLimitKwh ?? tariffs.electricityDual?.winterLimitKwh ?? 2000;
+  if (!isCurrentValid && dual.history && dual.history.length > 0) {
+    const applicable = dual.history
+      .filter((h) => isDateInValidityRange(dateStr, h.validFrom, h.validTo))
+      .sort((a, b) => b.validFrom.localeCompare(a.validFrom));
+    if (applicable.length > 0) {
+      const target = applicable[0];
+      summerDay = target.summerDay ?? summerDay;
+      summerNight = target.summerNight ?? summerNight;
+      winterDay = target.winterDay ?? winterDay;
+      winterNight = target.winterNight ?? winterNight;
+      winterLimitKwh = target.winterLimitKwh ?? winterLimitKwh;
+    }
+  }
 
   return {
     dayRate: season === 'summer' ? summerDay : winterDay,
@@ -230,6 +350,68 @@ export function resolveElectricityDualRates(
     winterDay,
     winterNight,
     winterLimitKwh,
+  };
+}
+
+export interface WaterPredictionResult {
+  balanceUah: number;
+  monthlyFee: number;
+  ratePerM3: number;
+  usableBalanceForWater: number;
+  availableM3: number;
+  currentReadingM3: number;
+  predictedReadingM3: number;
+  estimatedDaysCovered?: number;
+  estimatedMonthsCovered?: number;
+  estimatedDate?: string;
+  dailyAvgM3?: number;
+}
+
+/**
+ * Calculates water consumption forecast and predicted meter reading based on account balance and monthly fee.
+ */
+export function calculateWaterPrediction(
+  balanceUah: number,
+  currentReadingM3: number,
+  ratePerM3: number,
+  monthlyFee = 0,
+  dailyAvgM3?: number
+): WaterPredictionResult {
+  const balance = Math.max(0, balanceUah || 0);
+  const fee = Math.max(0, monthlyFee || 0);
+  const rate = ratePerM3 > 0 ? ratePerM3 : 32;
+
+  // Deduct monthly subscription fee first if applicable
+  const usableBalance = Math.max(0, balance - fee);
+  const availableM3 = rate > 0 ? Math.round((usableBalance / rate) * 10) / 10 : 0;
+  const current = Math.max(0, currentReadingM3 || 0);
+  const predictedReadingM3 = Math.round((current + availableM3) * 10) / 10;
+
+  let estimatedDaysCovered: number | undefined;
+  let estimatedMonthsCovered: number | undefined;
+  let estimatedDate: string | undefined;
+
+  const actualDailyAvgM3 = dailyAvgM3 && dailyAvgM3 > 0 ? dailyAvgM3 : 0.2;
+  const dailyCost = (actualDailyAvgM3 * rate) + (fee / 30);
+  if (dailyCost > 0 && balance > 0) {
+    estimatedDaysCovered = Math.floor(balance / dailyCost);
+    estimatedMonthsCovered = Math.round((estimatedDaysCovered / 30) * 10) / 10;
+    const futureMs = Date.now() + estimatedDaysCovered * 24 * 60 * 60 * 1000;
+    estimatedDate = new Date(futureMs).toISOString().split('T')[0];
+  }
+
+  return {
+    balanceUah: balance,
+    monthlyFee: fee,
+    ratePerM3: rate,
+    usableBalanceForWater: usableBalance,
+    availableM3,
+    currentReadingM3: current,
+    predictedReadingM3,
+    estimatedDaysCovered,
+    estimatedMonthsCovered,
+    estimatedDate,
+    dailyAvgM3: actualDailyAvgM3,
   };
 }
 

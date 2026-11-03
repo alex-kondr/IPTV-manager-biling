@@ -485,15 +485,14 @@ import {
               </div>
 
               <div>
-                <label for="set-elec-single-period" class="block text-2xs font-semibold text-slate-700 mb-1">
-                  Строк дії тарифу
+                <label for="set-elec-single-date-to" class="block text-2xs font-semibold text-slate-700 mb-1">
+                  Дата закінчення дії тарифу
                 </label>
                 <input
-                  id="set-elec-single-period"
-                  type="text"
-                  formControlName="elecSingleValidPeriod"
-                  placeholder="Весь рік (12 місяців)"
-                  class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-amber-500"
+                  id="set-elec-single-date-to"
+                  type="date"
+                  formControlName="elecSingleValidTo"
+                  class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-amber-500"
                 />
               </div>
             </div>
@@ -524,15 +523,14 @@ import {
               </div>
 
               <div>
-                <label for="set-elec-dual-period" class="block text-2xs font-semibold text-slate-700 mb-1">
-                  Строк дії тарифів
+                <label for="set-elec-dual-date-to" class="block text-2xs font-semibold text-slate-700 mb-1">
+                  Дата закінчення дії двотарифного плану
                 </label>
                 <input
-                  id="set-elec-dual-period"
-                  type="text"
-                  formControlName="elecDualValidPeriod"
-                  placeholder="1 рік / до наступного перегляду"
-                  class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-amber-500"
+                  id="set-elec-dual-date-to"
+                  type="date"
+                  formControlName="elecDualValidTo"
+                  class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-amber-500"
                 />
               </div>
             </div>
@@ -673,44 +671,62 @@ import {
               </div>
 
               <div class="space-y-3">
-                <div>
-                  <label for="set-water-price" class="block text-2xs font-semibold text-slate-700 mb-1">
-                    Ціна за 1 м³ (грн) *
-                  </label>
-                  <input
-                    id="set-water-price"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    formControlName="waterPrice"
-                    placeholder="30.38"
-                    class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-cyan-600"
-                  />
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label for="set-water-price" class="block text-2xs font-semibold text-slate-700 mb-1">
+                      Ціна за 1 м³ (грн) *
+                    </label>
+                    <input
+                      id="set-water-price"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      formControlName="waterPrice"
+                      placeholder="32.00"
+                      class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-cyan-600"
+                    />
+                  </div>
+
+                  <div>
+                    <label for="set-water-fee" class="block text-2xs font-semibold text-slate-700 mb-1">
+                      Місячна абоноплата (грн/міс)
+                    </label>
+                    <input
+                      id="set-water-fee"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      formControlName="waterMonthlyFee"
+                      placeholder="0.00"
+                      class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-cyan-600"
+                    />
+                  </div>
                 </div>
 
-                <div>
-                  <label for="set-water-date" class="block text-2xs font-semibold text-slate-700 mb-1">
-                    Дата з якої починає діяти тариф *
-                  </label>
-                  <input
-                    id="set-water-date"
-                    type="date"
-                    formControlName="waterValidFrom"
-                    class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-cyan-600"
-                  />
-                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label for="set-water-date" class="block text-2xs font-semibold text-slate-700 mb-1">
+                      Дата початку дії *
+                    </label>
+                    <input
+                      id="set-water-date"
+                      type="date"
+                      formControlName="waterValidFrom"
+                      class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-cyan-600"
+                    />
+                  </div>
 
-                <div>
-                  <label for="set-water-period" class="block text-2xs font-semibold text-slate-700 mb-1">
-                    Строк дії тарифу
-                  </label>
-                  <input
-                    id="set-water-period"
-                    type="text"
-                    formControlName="waterValidPeriod"
-                    placeholder="Безстроково / До затвердження нового"
-                    class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-cyan-600"
-                  />
+                  <div>
+                    <label for="set-water-date-to" class="block text-2xs font-semibold text-slate-700 mb-1">
+                      Дата закінчення дії (термін)
+                    </label>
+                    <input
+                      id="set-water-date-to"
+                      type="date"
+                      formControlName="waterValidTo"
+                      class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-cyan-600"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -738,29 +754,30 @@ import {
                   />
                 </div>
 
-                <div>
-                  <label for="set-waste-date" class="block text-2xs font-semibold text-slate-700 mb-1">
-                    Дата з якої починає діяти тариф *
-                  </label>
-                  <input
-                    id="set-waste-date"
-                    type="date"
-                    formControlName="wasteValidFrom"
-                    class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
-                  />
-                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label for="set-waste-date" class="block text-2xs font-semibold text-slate-700 mb-1">
+                      Дата початку дії *
+                    </label>
+                    <input
+                      id="set-waste-date"
+                      type="date"
+                      formControlName="wasteValidFrom"
+                      class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+                    />
+                  </div>
 
-                <div>
-                  <label for="set-waste-period" class="block text-2xs font-semibold text-slate-700 mb-1">
-                    Строк дії тарифу
-                  </label>
-                  <input
-                    id="set-waste-period"
-                    type="text"
-                    formControlName="wasteValidPeriod"
-                    placeholder="Безстроково / До рішення міськради"
-                    class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-emerald-600"
-                  />
+                  <div>
+                    <label for="set-waste-date-to" class="block text-2xs font-semibold text-slate-700 mb-1">
+                      Дата закінчення дії
+                    </label>
+                    <input
+                      id="set-waste-date-to"
+                      type="date"
+                      formControlName="wasteValidTo"
+                      class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -935,16 +952,21 @@ export class SettingsView implements OnInit {
     telegramBotUsername: new FormControl('iptv_billing_bot'),
     telegramSenderName: new FormControl('IPTV Підтримка'),
     // Utility Tariffs Controls
-    waterPrice: new FormControl<number>(30.38, [Validators.required, Validators.min(0)]),
+    waterPrice: new FormControl<number>(32, [Validators.required, Validators.min(0)]),
+    waterMonthlyFee: new FormControl<number>(0, [Validators.min(0)]),
     waterValidFrom: new FormControl<string>('2026-01-01', [Validators.required]),
+    waterValidTo: new FormControl<string>(''),
     waterValidPeriod: new FormControl<string>('Безстроково'),
     wastePrice: new FormControl<number>(45.00, [Validators.required, Validators.min(0)]),
     wasteValidFrom: new FormControl<string>('2026-01-01', [Validators.required]),
+    wasteValidTo: new FormControl<string>(''),
     wasteValidPeriod: new FormControl<string>('Безстроково'),
     elecSingleRate: new FormControl<number>(4.32, [Validators.required, Validators.min(0)]),
     elecSingleValidFrom: new FormControl<string>('2026-06-01', [Validators.required]),
+    elecSingleValidTo: new FormControl<string>(''),
     elecSingleValidPeriod: new FormControl<string>('1 рік (на весь рік)'),
     elecDualValidFrom: new FormControl<string>('2026-06-01', [Validators.required]),
+    elecDualValidTo: new FormControl<string>(''),
     elecDualValidPeriod: new FormControl<string>('1 рік (диференційований)'),
     elecDualSummerDay: new FormControl<number>(4.32, [Validators.required, Validators.min(0)]),
     elecDualSummerNight: new FormControl<number>(2.16, [Validators.required, Validators.min(0)]),
@@ -988,16 +1010,21 @@ export class SettingsView implements OnInit {
         telegramBotToken: s.telegramBotToken || '',
         telegramBotUsername: s.telegramBotUsername || 'iptv_billing_bot',
         telegramSenderName: s.telegramSenderName || 'IPTV Підтримка',
-        waterPrice: tariffs.water?.price ?? 30.38,
+        waterPrice: tariffs.water?.price ?? 32,
+        waterMonthlyFee: tariffs.water?.monthlyFee ?? 0,
         waterValidFrom: tariffs.water?.validFrom ?? '2026-01-01',
+        waterValidTo: tariffs.water?.validTo ?? '',
         waterValidPeriod: 'Безстроково',
         wastePrice: tariffs.waste?.price ?? 45.00,
         wasteValidFrom: tariffs.waste?.validFrom ?? '2026-01-01',
+        wasteValidTo: tariffs.waste?.validTo ?? '',
         wasteValidPeriod: 'Безстроково',
         elecSingleRate: tariffs.electricitySingle?.rate ?? 4.32,
         elecSingleValidFrom: tariffs.electricitySingle?.validFrom ?? '2026-06-01',
+        elecSingleValidTo: tariffs.electricitySingle?.validTo ?? '',
         elecSingleValidPeriod: '1 рік (на весь рік)',
         elecDualValidFrom: tariffs.electricityDual?.validFrom ?? '2026-06-01',
+        elecDualValidTo: tariffs.electricityDual?.validTo ?? '',
         elecDualValidPeriod: '1 рік (диференційований)',
         elecDualSummerDay: tariffs.electricityDual?.summerDay ?? 4.32,
         elecDualSummerNight: tariffs.electricityDual?.summerNight ?? 2.16,
@@ -1117,36 +1144,162 @@ export class SettingsView implements OnInit {
   }
 
   async onSubmit(): Promise<void> {
-    if (this.form.invalid) return;
+    if (this.form.invalid) {
+      this.form.markAllAsTouched();
+      const invalidKeys: string[] = [];
+      Object.keys(this.form.controls).forEach((k) => {
+        if (this.form.get(k)?.invalid) invalidKeys.push(k);
+      });
+      alert(`Будь ласка, перевірте правильність заповнення полів: ${invalidKeys.join(', ')}`);
+      return;
+    }
     this.isSaving.set(true);
     try {
       const val = this.form.getRawValue();
       const current = this.dataService.settings();
 
+      const currentTariffs = current.utilityTariffsSettings;
+      const waterPrice =
+        Number(val.waterPrice) > 0 ? Number(val.waterPrice) : (currentTariffs?.water?.price ?? 32);
+      const waterMonthlyFee = Number(val.waterMonthlyFee) >= 0 ? Number(val.waterMonthlyFee) : 0;
+      const waterValidFrom = val.waterValidFrom || currentTariffs?.water?.validFrom || '2026-01-01';
+      const waterValidTo = val.waterValidTo || '';
+
+      const waterHist = [...(currentTariffs?.water?.history || [])];
+      const matchWater = waterHist.find((h) => h.validFrom === waterValidFrom);
+      if (matchWater) {
+        matchWater.price = waterPrice;
+        matchWater.monthlyFee = waterMonthlyFee;
+        matchWater.validTo = waterValidTo;
+      } else {
+        waterHist.push({
+          id: `wh_${Date.now()}`,
+          price: waterPrice,
+          monthlyFee: waterMonthlyFee,
+          validFrom: waterValidFrom,
+          validTo: waterValidTo,
+          note: 'Тариф на воду',
+        });
+      }
+      waterHist.sort((a, b) => b.validFrom.localeCompare(a.validFrom));
+
+      const wastePrice = Number(val.wastePrice) > 0 ? Number(val.wastePrice) : 45.00;
+      const wasteValidFrom = val.wasteValidFrom || '2026-01-01';
+      const wasteValidTo = val.wasteValidTo || '';
+      let wasteHist = [...(current.utilityTariffsSettings?.waste?.history || [])];
+      if (wasteHist.length === 0 || (wasteHist.length === 1 && wasteHist[0].id === 'wsh_1')) {
+        wasteHist = [{ id: 'wsh_1', price: wastePrice, validFrom: wasteValidFrom, validTo: wasteValidTo, note: 'Тариф на вивіз сміття' }];
+      } else {
+        const match = wasteHist.find((h) => h.validFrom === wasteValidFrom);
+        if (match) {
+          match.price = wastePrice;
+          match.validTo = wasteValidTo;
+        } else {
+          wasteHist.push({
+            id: `wsh_${Date.now()}`,
+            price: wastePrice,
+            validFrom: wasteValidFrom,
+            validTo: wasteValidTo,
+            note: 'Тариф на вивіз сміття',
+          });
+        }
+      }
+
+      const elecSingleRate = Number(val.elecSingleRate) > 0 ? Number(val.elecSingleRate) : 4.32;
+      const elecSingleValidFrom = val.elecSingleValidFrom || '2026-06-01';
+      const elecSingleValidTo = val.elecSingleValidTo || '';
+      let elecSingleHist = [...(current.utilityTariffsSettings?.electricitySingle?.history || [])];
+      if (elecSingleHist.length === 0 || (elecSingleHist.length === 1 && elecSingleHist[0].id === 'esh_1')) {
+        elecSingleHist = [{ id: 'esh_1', rate: elecSingleRate, validFrom: elecSingleValidFrom, validTo: elecSingleValidTo, note: 'Єдиний тариф на електроенергію' }];
+      } else {
+        const match = elecSingleHist.find((h) => h.validFrom === elecSingleValidFrom);
+        if (match) {
+          match.rate = elecSingleRate;
+          match.validTo = elecSingleValidTo;
+        } else {
+          elecSingleHist.push({
+            id: `esh_${Date.now()}`,
+            rate: elecSingleRate,
+            validFrom: elecSingleValidFrom,
+            validTo: elecSingleValidTo,
+            note: 'Тариф на електроенергію',
+          });
+        }
+      }
+
+      const elecDualSummerDay = Number(val.elecDualSummerDay) > 0 ? Number(val.elecDualSummerDay) : 4.32;
+      const elecDualSummerNight = Number(val.elecDualSummerNight) > 0 ? Number(val.elecDualSummerNight) : 2.16;
+      const elecDualWinterDay = Number(val.elecDualWinterDay) > 0 ? Number(val.elecDualWinterDay) : 4.32;
+      const elecDualWinterNight = Number(val.elecDualWinterNight) > 0 ? Number(val.elecDualWinterNight) : 2.16;
+      const elecDualWinterLimit = Number(val.elecDualWinterLimit) > 0 ? Number(val.elecDualWinterLimit) : 2000;
+      const elecDualValidFrom = val.elecDualValidFrom || '2026-06-01';
+      const elecDualValidTo = val.elecDualValidTo || '';
+      let elecDualHist = [...(current.utilityTariffsSettings?.electricityDual?.history || [])];
+      if (elecDualHist.length === 0 || (elecDualHist.length === 1 && elecDualHist[0].id === 'edh_1')) {
+        elecDualHist = [{
+          id: 'edh_1',
+          validFrom: elecDualValidFrom,
+          validTo: elecDualValidTo,
+          summerDay: elecDualSummerDay,
+          summerNight: elecDualSummerNight,
+          winterDay: elecDualWinterDay,
+          winterNight: elecDualWinterNight,
+          winterLimitKwh: elecDualWinterLimit,
+          note: 'Двозонний тариф на електроенергію',
+        }];
+      } else {
+        const match = elecDualHist.find((h) => h.validFrom === elecDualValidFrom);
+        if (match) {
+          match.summerDay = elecDualSummerDay;
+          match.summerNight = elecDualSummerNight;
+          match.winterDay = elecDualWinterDay;
+          match.winterNight = elecDualWinterNight;
+          match.winterLimitKwh = elecDualWinterLimit;
+          match.validTo = elecDualValidTo;
+        } else {
+          elecDualHist.push({
+            id: `edh_${Date.now()}`,
+            validFrom: elecDualValidFrom,
+            validTo: elecDualValidTo,
+            summerDay: elecDualSummerDay,
+            summerNight: elecDualSummerNight,
+            winterDay: elecDualWinterDay,
+            winterNight: elecDualWinterNight,
+            winterLimitKwh: elecDualWinterLimit,
+            note: 'Оновлений двозонний тариф на електроенергію',
+          });
+        }
+      }
+
       const tariffs: UtilityTariffsSettings = {
         water: {
-          price: Number(val.waterPrice) || 30.38,
-          validFrom: val.waterValidFrom || '2026-01-01',
-          history: current.utilityTariffsSettings?.water?.history || [],
+          price: waterPrice,
+          monthlyFee: waterMonthlyFee,
+          validFrom: waterValidFrom,
+          validTo: waterValidTo,
+          history: waterHist,
         },
         waste: {
-          price: Number(val.wastePrice) || 45.00,
-          validFrom: val.wasteValidFrom || '2026-01-01',
-          history: current.utilityTariffsSettings?.waste?.history || [],
+          price: wastePrice,
+          validFrom: wasteValidFrom,
+          validTo: wasteValidTo,
+          history: wasteHist,
         },
         electricitySingle: {
-          rate: Number(val.elecSingleRate) || 4.32,
-          validFrom: val.elecSingleValidFrom || '2026-06-01',
-          history: current.utilityTariffsSettings?.electricitySingle?.history || [],
+          rate: elecSingleRate,
+          validFrom: elecSingleValidFrom,
+          validTo: elecSingleValidTo,
+          history: elecSingleHist,
         },
         electricityDual: {
-          validFrom: val.elecDualValidFrom || '2026-06-01',
-          summerDay: Number(val.elecDualSummerDay) || 4.32,
-          summerNight: Number(val.elecDualSummerNight) || 2.16,
-          winterDay: Number(val.elecDualWinterDay) || 4.32,
-          winterNight: Number(val.elecDualWinterNight) || 2.16,
-          winterLimitKwh: Number(val.elecDualWinterLimit) || 2000,
-          history: current.utilityTariffsSettings?.electricityDual?.history || [],
+          validFrom: elecDualValidFrom,
+          validTo: elecDualValidTo,
+          summerDay: elecDualSummerDay,
+          summerNight: elecDualSummerNight,
+          winterDay: elecDualWinterDay,
+          winterNight: elecDualWinterNight,
+          winterLimitKwh: elecDualWinterLimit,
+          history: elecDualHist,
         },
       };
 

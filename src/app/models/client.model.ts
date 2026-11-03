@@ -108,28 +108,63 @@ export interface ProviderDeposit {
   exchangeRate?: number; // Calculated effective rate (spentUah / amountUsd)
   paymentMethod?: string; // e.g. "Монобанк", "Крипта", "USDT"
   note?: string; // Note or comment
+  balanceBeforeUsd?: number; // Provider balance before this deposit ($)
+  balanceAfterUsd?: number; // Provider balance after this deposit ($)
   createdAt: string;
+}
+
+export type LedgerEntryType = 'income' | 'expense' | 'deduction' | 'adjustment';
+export type LedgerCategory = 'client_payment' | 'account_payment' | 'provider_topup' | 'provider_adjustment' | 'custom';
+
+export interface ProviderBalanceAdjustment {
+  id: string;
+  date: string;
+  amountUsd: number;
+  note?: string;
+  createdAt: string;
+}
+
+export interface AccountDeductionOverride {
+  id: string; // e.g. "ded_acc_m1"
+  accountId?: string;
+  isExcluded?: boolean;
+  amountUsd?: number;
+  amountUah?: number;
+  date?: string;
+  title?: string;
+  subtitle?: string;
+  note?: string;
 }
 
 export interface BudgetLedgerItem {
   id: string;
-  type: 'income' | 'expense';
+  type: LedgerEntryType;
+  category?: LedgerCategory;
   date: string;
   amountUah: number; // positive for income (+), negative for expense (-)
   amountUsd?: number;
+  balanceBeforeUsd?: number; // Provider balance before this operation ($)
+  balanceAfterUsd?: number; // Provider balance after this operation ($)
   title: string;
   subtitle: string;
   note?: string;
   paymentMethod?: string;
   clientId?: string;
+  clientName?: string;
+  accountId?: string;
+  accountName?: string;
+  isCustom?: boolean;
 }
 
 export interface BudgetApiResponse {
   summary: BudgetSummary & {
     runwayMonths?: number;
     activeClientsCount?: number;
+    calculatedProviderBalanceUsd?: number;
+    providerBalanceAdjustmentsSum?: number;
   };
   deposits: ProviderDeposit[];
+  adjustments?: ProviderBalanceAdjustment[];
   ledger: BudgetLedgerItem[];
 }
 
@@ -183,6 +218,10 @@ export interface BudgetSummary {
   providerBalanceUsd: number; // Current remaining $ on provider account
   monthlyBurnUsd: number; // Sum of costUsd of all currently active clients
   averageExchangeRate: number; // Average spent UAH per $ deposited
+  calculatedProviderBalanceUsd?: number;
+  providerBalanceAdjustmentsSum?: number;
+  runwayMonths?: number;
+  activeClientsCount?: number;
 }
 
 export interface AppSettings {

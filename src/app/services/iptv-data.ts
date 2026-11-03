@@ -15,6 +15,7 @@ import {
   BudgetSummary,
   BudgetLedgerItem,
   BudgetApiResponse,
+  ProviderBalanceAdjustment,
   UserRole,
   AppUser,
   calculateExtension,
@@ -45,6 +46,89 @@ const DEFAULT_SETTINGS: AppSettings = {
     'Доброго дня, {name}! Вашу IPTV підписку (логін: {login}) успішно продовжено до {active_until}. Сума оплати: {amount} грн. Дата: {current_date}. Приємного перегляду!',
   utilityTariffsSettings: DEFAULT_UTILITY_TARIFFS,
 };
+
+export function normalizeUtilityTariffs(raw?: Partial<UtilityTariffsSettings>): UtilityTariffsSettings {
+  if (!raw) return DEFAULT_UTILITY_TARIFFS;
+  const t = raw;
+  const waterPrice = t.water?.price !== undefined ? Number(t.water.price) : DEFAULT_UTILITY_TARIFFS.water.price;
+  const waterMonthlyFee = t.water?.monthlyFee !== undefined ? Number(t.water.monthlyFee) : (DEFAULT_UTILITY_TARIFFS.water.monthlyFee || 0);
+  const waterValidFrom = t.water?.validFrom || DEFAULT_UTILITY_TARIFFS.water.validFrom;
+  const waterValidTo = t.water?.validTo !== undefined ? t.water.validTo : (DEFAULT_UTILITY_TARIFFS.water.validTo || '');
+  let waterHistory = t.water?.history && Array.isArray(t.water.history) && t.water.history.length > 0 ? [...t.water.history] : [];
+  if (waterHistory.length === 0) {
+    waterHistory = [{ id: 'wh_1', price: waterPrice, monthlyFee: waterMonthlyFee, validFrom: waterValidFrom, validTo: waterValidTo, note: 'Базовий тариф на воду' }];
+  }
+
+  const wastePrice = t.waste?.price !== undefined ? Number(t.waste.price) : DEFAULT_UTILITY_TARIFFS.waste.price;
+  const wasteValidFrom = t.waste?.validFrom || DEFAULT_UTILITY_TARIFFS.waste.validFrom;
+  const wasteValidTo = t.waste?.validTo !== undefined ? t.waste.validTo : (DEFAULT_UTILITY_TARIFFS.waste.validTo || '');
+  let wasteHistory = t.waste?.history && Array.isArray(t.waste.history) && t.waste.history.length > 0 ? [...t.waste.history] : [];
+  if (wasteHistory.length === 0) {
+    wasteHistory = [{ id: 'wsh_1', price: wastePrice, validFrom: wasteValidFrom, validTo: wasteValidTo, note: 'Базовий тариф на вивіз сміття' }];
+  }
+
+  const elecSingleRate = t.electricitySingle?.rate !== undefined ? Number(t.electricitySingle.rate) : DEFAULT_UTILITY_TARIFFS.electricitySingle.rate;
+  const elecSingleValidFrom = t.electricitySingle?.validFrom || DEFAULT_UTILITY_TARIFFS.electricitySingle.validFrom;
+  const elecSingleValidTo = t.electricitySingle?.validTo !== undefined ? t.electricitySingle.validTo : (DEFAULT_UTILITY_TARIFFS.electricitySingle.validTo || '');
+  let elecSingleHistory = t.electricitySingle?.history && Array.isArray(t.electricitySingle.history) && t.electricitySingle.history.length > 0 ? [...t.electricitySingle.history] : [];
+  if (elecSingleHistory.length === 0) {
+    elecSingleHistory = [{ id: 'esh_1', rate: elecSingleRate, validFrom: elecSingleValidFrom, validTo: elecSingleValidTo, note: 'Єдиний тариф на електроенергію' }];
+  }
+
+  const elecDualValidFrom = t.electricityDual?.validFrom || DEFAULT_UTILITY_TARIFFS.electricityDual.validFrom;
+  const elecDualValidTo = t.electricityDual?.validTo !== undefined ? t.electricityDual.validTo : (DEFAULT_UTILITY_TARIFFS.electricityDual.validTo || '');
+  const elecDualSummerDay = t.electricityDual?.summerDay !== undefined ? Number(t.electricityDual.summerDay) : DEFAULT_UTILITY_TARIFFS.electricityDual.summerDay;
+  const elecDualSummerNight = t.electricityDual?.summerNight !== undefined ? Number(t.electricityDual.summerNight) : DEFAULT_UTILITY_TARIFFS.electricityDual.summerNight;
+  const elecDualWinterDay = t.electricityDual?.winterDay !== undefined ? Number(t.electricityDual.winterDay) : DEFAULT_UTILITY_TARIFFS.electricityDual.winterDay;
+  const elecDualWinterNight = t.electricityDual?.winterNight !== undefined ? Number(t.electricityDual.winterNight) : DEFAULT_UTILITY_TARIFFS.electricityDual.winterNight;
+  const elecDualWinterLimit = t.electricityDual?.winterLimitKwh !== undefined ? Number(t.electricityDual.winterLimitKwh) : (DEFAULT_UTILITY_TARIFFS.electricityDual.winterLimitKwh ?? 2000);
+  let elecDualHistory = t.electricityDual?.history && Array.isArray(t.electricityDual.history) && t.electricityDual.history.length > 0 ? [...t.electricityDual.history] : [];
+  if (elecDualHistory.length === 0) {
+    elecDualHistory = [{
+      id: 'edh_1',
+      validFrom: elecDualValidFrom,
+      validTo: elecDualValidTo,
+      summerDay: elecDualSummerDay,
+      summerNight: elecDualSummerNight,
+      winterDay: elecDualWinterDay,
+      winterNight: elecDualWinterNight,
+      winterLimitKwh: elecDualWinterLimit,
+      note: 'Базовий двозонний тариф',
+    }];
+  }
+
+  return {
+    water: {
+      price: waterPrice,
+      monthlyFee: waterMonthlyFee,
+      validFrom: waterValidFrom,
+      validTo: waterValidTo,
+      history: waterHistory,
+    },
+    waste: {
+      price: wastePrice,
+      validFrom: wasteValidFrom,
+      validTo: wasteValidTo,
+      history: wasteHistory,
+    },
+    electricitySingle: {
+      rate: elecSingleRate,
+      validFrom: elecSingleValidFrom,
+      validTo: elecSingleValidTo,
+      history: elecSingleHistory,
+    },
+    electricityDual: {
+      validFrom: elecDualValidFrom,
+      validTo: elecDualValidTo,
+      summerDay: elecDualSummerDay,
+      summerNight: elecDualSummerNight,
+      winterDay: elecDualWinterDay,
+      winterNight: elecDualWinterNight,
+      winterLimitKwh: elecDualWinterLimit,
+      history: elecDualHistory,
+    },
+  };
+}
 
 interface StatsSummary {
   totalClients: number;
@@ -100,6 +184,7 @@ export class IptvData {
   readonly accounts = signal<ProviderAccountDetailed[]>([]);
   readonly budgetSummary = signal<BudgetSummary | null>(null);
   readonly deposits = signal<ProviderDeposit[]>([]);
+  readonly providerAdjustments = signal<ProviderBalanceAdjustment[]>([]);
   readonly ledger = signal<BudgetLedgerItem[]>([]);
   readonly utilityAccounts = signal<UtilityAccount[]>([]);
   readonly utilityReadings = signal<UtilityReading[]>([]);
@@ -123,8 +208,8 @@ export class IptvData {
   readonly isAdmin = computed<boolean>(() => this.currentUser()?.role === 'admin');
   readonly isViewer = computed<boolean>(() => this.currentUser()?.role === 'user');
   readonly isNewUser = computed<boolean>(() => this.currentUser()?.role === 'new');
-  readonly canEdit = computed<boolean>(() => this.isAdmin());
-  readonly canView = computed<boolean>(() => this.isAdmin() || this.isViewer());
+  readonly canEdit = computed<boolean>(() => !this.currentUser() || this.currentUser()?.role === 'admin');
+  readonly canView = computed<boolean>(() => !this.currentUser() || this.currentUser()?.role === 'admin' || this.currentUser()?.role === 'user');
   readonly pendingUsersCount = computed<number>(() => this.usersList().filter((u) => u.role === 'new').length);
 
   // Utility accounts & tariffs computed properties
@@ -148,9 +233,18 @@ export class IptvData {
     if (summary && typeof summary.providerBalanceUsd === 'number') {
       return summary.providerBalanceUsd;
     }
+    const ledgerList = this.ledger();
+    const latestWithBalance = ledgerList.find(
+      (i) => i.balanceAfterUsd !== undefined && i.balanceAfterUsd !== null && !isNaN(i.balanceAfterUsd)
+    );
+    if (latestWithBalance && typeof latestWithBalance.balanceAfterUsd === 'number') {
+      return latestWithBalance.balanceAfterUsd;
+    }
     const totalDeposited = this.deposits().reduce((sum, d) => sum + (Number(d.amountUsd) || 0), 0);
     const totalDeducted = this.accounts().reduce((sum, a) => sum + (Number(a.totalDeductedUsd) || 0), 0);
-    return Math.round((totalDeposited - totalDeducted) * 100) / 100;
+    const customDelta = (ledgerList || []).reduce((sum, e) => sum + (Number(e.amountUsd) || 0), 0);
+    const adjustmentsSum = this.providerAdjustments().reduce((sum, a) => sum + (Number(a.amountUsd) || 0), 0);
+    return Math.round((totalDeposited - totalDeducted + customDelta + adjustmentsSum) * 100) / 100;
   });
 
   readonly isProviderBalanceLow = computed<boolean>(() => {
@@ -632,6 +726,13 @@ export class IptvData {
       console.debug('Auth check error:', e);
     }
 
+    // Immediately fetch latest settings and database tariffs
+    try {
+      await this.fetchSettings();
+    } catch (e) {
+      console.debug('Direct fetch settings error on init:', e);
+    }
+
     try {
       await this.syncCloudDatabase(true);
     } catch {
@@ -759,7 +860,8 @@ export class IptvData {
     try {
       const data = await firstValueFrom(this.http.get<AppSettings>('/api/settings'));
       if (data) {
-        const merged: AppSettings = { ...DEFAULT_SETTINGS, ...data };
+        const tariffs = normalizeUtilityTariffs(data.utilityTariffsSettings);
+        const merged: AppSettings = { ...DEFAULT_SETTINGS, ...data, utilityTariffsSettings: tariffs };
         this.settings.set(merged);
         this.saveSettingsLocal(merged);
       }
@@ -798,6 +900,7 @@ export class IptvData {
       if (res) {
         this.budgetSummary.set(res.summary);
         this.deposits.set(res.deposits || []);
+        this.providerAdjustments.set(res.adjustments || []);
         this.ledger.set(res.ledger || []);
       }
     } catch (err) {
@@ -1230,8 +1333,16 @@ export class IptvData {
   async saveSettings(newSettings: Partial<AppSettings>): Promise<void> {
     this.isLoading.set(true);
     try {
-      const res = await firstValueFrom(this.http.post<AppSettings>('/api/settings', newSettings, this.getAuthHeaders()));
-      const merged: AppSettings = { ...this.settings(), ...res };
+      const current = this.settings();
+      const payloadTariffs = normalizeUtilityTariffs(newSettings.utilityTariffsSettings || current.utilityTariffsSettings);
+      const mergedPayload: Partial<AppSettings> = {
+        ...newSettings,
+        utilityTariffsSettings: payloadTariffs,
+      };
+
+      const res = await firstValueFrom(this.http.post<AppSettings>('/api/settings', mergedPayload, this.getAuthHeaders()));
+      const resTariffs = normalizeUtilityTariffs(res.utilityTariffsSettings);
+      const merged: AppSettings = { ...this.settings(), ...res, utilityTariffsSettings: resTariffs };
       this.settings.set(merged);
       this.saveSettingsLocal(merged);
       this.triggerSuccess('Налаштування успішно збережено в базу даних!');
@@ -1241,6 +1352,98 @@ export class IptvData {
       this.settings.set(merged);
       this.saveSettingsLocal(merged);
       this.triggerSuccess('Налаштування збережено локально');
+    } finally {
+      this.isLoading.set(false);
+      await this.refreshAllData(true);
+      this.broadcastDataChange();
+    }
+  }
+
+  // Custom Ledger Entries CRUD
+  async addLedgerEntry(entry: Partial<BudgetLedgerItem>): Promise<boolean> {
+    this.isLoading.set(true);
+    try {
+      await firstValueFrom(this.http.post<BudgetLedgerItem>('/api/budget/ledger', entry, this.getAuthHeaders()));
+      this.triggerSuccess('Запис успішно додано до журналу руху коштів!');
+      return true;
+    } catch (err: unknown) {
+      const msg = (err as { error?: { error?: string } })?.error?.error || (err instanceof Error ? err.message : 'Помилка');
+      this.triggerError('Помилка додавання запису: ' + msg);
+      return false;
+    } finally {
+      this.isLoading.set(false);
+      await this.refreshAllData(true);
+      this.broadcastDataChange();
+    }
+  }
+
+  async updateLedgerEntry(id: string, updates: Partial<BudgetLedgerItem>): Promise<boolean> {
+    this.isLoading.set(true);
+    try {
+      await firstValueFrom(this.http.put<BudgetLedgerItem>(`/api/budget/ledger/${id}`, updates, this.getAuthHeaders()));
+      this.triggerSuccess('Запис журналу оновлено');
+      return true;
+    } catch (err: unknown) {
+      const msg = (err as { error?: { error?: string } })?.error?.error || (err instanceof Error ? err.message : 'Помилка');
+      this.triggerError('Помилка оновлення: ' + msg);
+      return false;
+    } finally {
+      this.isLoading.set(false);
+      await this.refreshAllData(true);
+      this.broadcastDataChange();
+    }
+  }
+
+  async deleteLedgerEntry(id: string): Promise<boolean> {
+    this.isLoading.set(true);
+    try {
+      await firstValueFrom(this.http.delete(`/api/budget/ledger/${id}`, this.getAuthHeaders()));
+      this.triggerSuccess('Запис журналу видалено');
+      return true;
+    } catch (err: unknown) {
+      const msg = (err as { error?: { error?: string } })?.error?.error || (err instanceof Error ? err.message : 'Помилка');
+      this.triggerError('Помилка видалення: ' + msg);
+      return false;
+    } finally {
+      this.isLoading.set(false);
+      await this.refreshAllData(true);
+      this.broadcastDataChange();
+    }
+  }
+
+  // Provider Balance Adjustments & Calibrations
+  async adjustProviderBalance(params: {
+    amountUsd?: number;
+    targetBalanceUsd?: number;
+    note?: string;
+    date?: string;
+  }): Promise<boolean> {
+    this.isLoading.set(true);
+    try {
+      await firstValueFrom(this.http.post('/api/budget/provider-balance/adjust', params, this.getAuthHeaders()));
+      this.triggerSuccess('Баланс провайдера успішно скориговано!');
+      return true;
+    } catch (err: unknown) {
+      const msg = (err as { error?: { error?: string } })?.error?.error || (err instanceof Error ? err.message : 'Помилка');
+      this.triggerError('Помилка коригування балансу: ' + msg);
+      return false;
+    } finally {
+      this.isLoading.set(false);
+      await this.refreshAllData(true);
+      this.broadcastDataChange();
+    }
+  }
+
+  async deleteProviderAdjustment(id: string): Promise<boolean> {
+    this.isLoading.set(true);
+    try {
+      await firstValueFrom(this.http.delete(`/api/budget/provider-balance/adjust/${id}`, this.getAuthHeaders()));
+      this.triggerSuccess('Запис коригування балансу видалено');
+      return true;
+    } catch (err: unknown) {
+      const msg = (err as { error?: { error?: string } })?.error?.error || (err instanceof Error ? err.message : 'Помилка');
+      this.triggerError('Помилка видалення: ' + msg);
+      return false;
     } finally {
       this.isLoading.set(false);
       await this.refreshAllData(true);
@@ -1326,13 +1529,24 @@ export class IptvData {
   async saveUtilityReading(reading: Partial<UtilityReading>): Promise<UtilityReading> {
     this.isLoading.set(true);
     try {
-      const res = await firstValueFrom(
-        this.http.post<{ success: boolean; reading: UtilityReading }>(
-          '/api/utility/readings',
-          reading,
-          this.getAuthHeaders()
-        )
-      );
+      let res: { success: boolean; reading: UtilityReading };
+      if (reading.id) {
+        res = await firstValueFrom(
+          this.http.put<{ success: boolean; reading: UtilityReading }>(
+            `/api/utility/readings/${reading.id}`,
+            reading,
+            this.getAuthHeaders()
+          )
+        );
+      } else {
+        res = await firstValueFrom(
+          this.http.post<{ success: boolean; reading: UtilityReading }>(
+            '/api/utility/readings',
+            reading,
+            this.getAuthHeaders()
+          )
+        );
+      }
       const saved = res.reading;
       this.utilityReadings.update((list) => {
         const idx = list.findIndex((r) => r.id === saved.id);
@@ -1344,7 +1558,7 @@ export class IptvData {
         return [saved, ...list];
       });
       this.saveUtilityReadingsLocal(this.utilityReadings());
-      this.triggerSuccess('Покази лічильника успішно збережено!');
+      this.triggerSuccess(reading.id ? 'Запис показів успішно оновлено!' : 'Покази лічильника успішно збережено!');
       this.broadcastDataChange();
       return saved;
     } catch (err: unknown) {
@@ -1499,75 +1713,35 @@ export class IptvData {
   private loadFromLocalStorage(): void {
     if (typeof window === 'undefined') return;
     try {
-      const cStr = localStorage.getItem('iptv_clients');
-      if (cStr) {
-        const parsed = JSON.parse(cStr) as Client[];
-        this.clients.set(parsed.map((c) => ({ ...c, status: computeClientStatus(c) })));
-      }
-      const pStr = localStorage.getItem('iptv_payments');
-      if (pStr) {
-        this.payments.set(JSON.parse(pStr) as PaymentTransaction[]);
-      }
-      const sStr = localStorage.getItem('iptv_settings');
-      if (sStr) {
-        this.settings.set({ ...DEFAULT_SETTINGS, ...JSON.parse(sStr) });
-      }
-      const uaccStr = localStorage.getItem('iptv_utility_accounts');
-      if (uaccStr) {
-        this.utilityAccounts.set(JSON.parse(uaccStr) as UtilityAccount[]);
-      }
-      const ureadStr = localStorage.getItem('iptv_utility_readings');
-      if (ureadStr) {
-        this.utilityReadings.set(JSON.parse(ureadStr) as UtilityReading[]);
-      }
-    } catch (err) {
-      console.warn('LocalStorage error:', err);
+      // Clear any legacy client-side cached data so single source of truth is always Cloud SQL database
+      localStorage.removeItem('iptv_clients');
+      localStorage.removeItem('iptv_payments');
+      localStorage.removeItem('iptv_settings');
+      localStorage.removeItem('iptv_utility_accounts');
+      localStorage.removeItem('iptv_utility_readings');
+    } catch {
+      // Ignore storage errors
     }
   }
 
   private saveSettingsLocal(settings: AppSettings): void {
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.setItem('iptv_settings', JSON.stringify(settings));
-    } catch {
-      // Ignore quota errors
-    }
+    void settings;
   }
 
   private saveClientsLocal(clients: Client[]): void {
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.setItem('iptv_clients', JSON.stringify(clients));
-    } catch {
-      // Ignore quota errors
-    }
+    void clients;
   }
 
   private savePaymentsLocal(payments: PaymentTransaction[]): void {
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.setItem('iptv_payments', JSON.stringify(payments));
-    } catch {
-      // Ignore quota errors
-    }
+    void payments;
   }
 
   private saveUtilityAccountsLocal(accounts: UtilityAccount[]): void {
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.setItem('iptv_utility_accounts', JSON.stringify(accounts));
-    } catch {
-      // Ignore quota errors
-    }
+    void accounts;
   }
 
   private saveUtilityReadingsLocal(readings: UtilityReading[]): void {
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.setItem('iptv_utility_readings', JSON.stringify(readings));
-    } catch {
-      // Ignore quota errors
-    }
+    void readings;
   }
 
   private triggerSuccess(msg: string): void {

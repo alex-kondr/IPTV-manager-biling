@@ -7,6 +7,9 @@ import {
   settings,
   utilityAccounts,
   utilityReadings,
+  customLedgerEntries,
+  providerBalanceAdjustments,
+  accountDeductionOverrides,
 } from '../db/schema';
 import { eq } from 'drizzle-orm';
 
@@ -29,6 +32,15 @@ export function getCloudSqlDbStatus() {
   };
 }
 
+async function safeSelect<T>(queryPromise: Promise<T[]>): Promise<T[]> {
+  try {
+    return await queryPromise;
+  } catch (e) {
+    console.warn('[Cloud SQL] Query warning:', e instanceof Error ? e.message : String(e));
+    return [];
+  }
+}
+
 export async function loadAllFromCloudSql(): Promise<{
   clients: Record<string, unknown>[];
   payments: Record<string, unknown>[];
@@ -36,6 +48,9 @@ export async function loadAllFromCloudSql(): Promise<{
   providerDeposits: Record<string, unknown>[];
   utilityAccounts: Record<string, unknown>[];
   utilityReadings: Record<string, unknown>[];
+  customLedgerEntries: Record<string, unknown>[];
+  providerBalanceAdjustments: Record<string, unknown>[];
+  accountDeductionOverrides: Record<string, unknown>[];
   settings: Record<string, unknown> | null;
 } | null> {
   if (!isCloudSqlAvailable()) return null;
@@ -49,14 +64,20 @@ export async function loadAllFromCloudSql(): Promise<{
       allSettings,
       allUtilityAccounts,
       allUtilityReadings,
+      allLedgerEntries,
+      allAdjustments,
+      allOverrides,
     ] = await Promise.all([
-      db.select().from(clients),
-      db.select().from(payments),
-      db.select().from(providerAccounts),
-      db.select().from(providerDeposits),
-      db.select().from(settings),
-      db.select().from(utilityAccounts),
-      db.select().from(utilityReadings),
+      safeSelect(db.select().from(clients)),
+      safeSelect(db.select().from(payments)),
+      safeSelect(db.select().from(providerAccounts)),
+      safeSelect(db.select().from(providerDeposits)),
+      safeSelect(db.select().from(settings)),
+      safeSelect(db.select().from(utilityAccounts)),
+      safeSelect(db.select().from(utilityReadings)),
+      safeSelect(db.select().from(customLedgerEntries)),
+      safeSelect(db.select().from(providerBalanceAdjustments)),
+      safeSelect(db.select().from(accountDeductionOverrides)),
     ]);
 
     isConnectedToCloudSql = true;
@@ -78,6 +99,9 @@ export async function loadAllFromCloudSql(): Promise<{
       providerDeposits: allDeposits as Record<string, unknown>[],
       utilityAccounts: allUtilityAccounts as Record<string, unknown>[],
       utilityReadings: allUtilityReadings as Record<string, unknown>[],
+      customLedgerEntries: allLedgerEntries as Record<string, unknown>[],
+      providerBalanceAdjustments: allAdjustments as Record<string, unknown>[],
+      accountDeductionOverrides: allOverrides as Record<string, unknown>[],
       settings: settingsObj,
     };
   } catch (err: unknown) {
@@ -297,6 +321,7 @@ export async function saveUtilityAccountToCloudSql(account: Record<string, unkno
       initialReadingWater: Number(account['initialReadingWater']) || 0,
       waterEnabled: account['waterEnabled'] !== undefined ? Boolean(account['waterEnabled']) : true,
       wasteEnabled: account['wasteEnabled'] !== undefined ? Boolean(account['wasteEnabled']) : true,
+      balanceUah: Number(account['balanceUah']) || 0,
       notes: account['notes'] ? String(account['notes']) : null,
       createdAt: String(account['createdAt'] || new Date().toISOString()),
       updatedAt: account['updatedAt'] ? String(account['updatedAt']) : null,
@@ -333,6 +358,7 @@ export async function deleteUtilityAccountFromCloudSql(accountId: string): Promi
 export async function saveUtilityReadingToCloudSql(reading: Record<string, unknown>): Promise<boolean> {
   if (!isCloudSqlAvailable()) return false;
   try {
+    const isControlOnly = reading['isControlOnly'] === true || String(reading['isControlOnly']) === 'true' || reading['readingPurpose'] === 'control';
     const data = {
       id: String(reading['id']),
       accountId: String(reading['accountId']),
@@ -351,6 +377,10 @@ export async function saveUtilityReadingToCloudSql(reading: Record<string, unkno
       paidDate: reading['paidDate'] ? String(reading['paidDate']) : null,
       paidAmount: reading['paidAmount'] != null ? Number(reading['paidAmount']) : null,
       note: reading['note'] ? String(reading['note']) : null,
+      isControlOnly,
+      readingPurpose: String(reading['readingPurpose'] || (isControlOnly ? 'control' : 'billing')),
+      daysSinceLastReading: reading['daysSinceLastReading'] != null ? Number(reading['daysSinceLastReading']) : null,
+      dailyAvgConsumption: reading['dailyAvgConsumption'] != null ? Number(reading['dailyAvgConsumption']) : null,
       createdAt: String(reading['createdAt'] || new Date().toISOString()),
     };
 
@@ -377,6 +407,136 @@ export async function deleteUtilityReadingFromCloudSql(readingId: string): Promi
     return true;
   } catch (err: unknown) {
     console.error('[Cloud SQL] deleteUtilityReading error:', err);
+    return false;
+  }
+}
+
+export async function saveCustomLedgerEntryToCloudSql(entry: Record<string, unknown>): Promise<boolean> {
+  if (!isCloudSqlAvailable()) return false;
+  try {
+    const data = {
+      id: String(entry['id']),
+      type: String(entry['type'] || 'custom'),
+      category: String(entry['category'] || 'custom'),
+      date: String(entry['date']),
+      amountUah: Number(entry['amountUah']) || 0,
+      amountUsd: entry['amountUsd'] != null && entry['amountUsd'] !== '' ? Number(entry['amountUsd']) : null,
+      title: String(entry['title'] || ''),
+      subtitle: entry['subtitle'] ? String(entry['subtitle']) : null,
+      note: entry['note'] ? String(entry['note']) : null,
+      paymentMethod: entry['paymentMethod'] ? String(entry['paymentMethod']) : null,
+      clientId: entry['clientId'] ? String(entry['clientId']) : null,
+      clientName: entry['clientName'] ? String(entry['clientName']) : null,
+      accountId: entry['accountId'] ? String(entry['accountId']) : null,
+      accountName: entry['accountName'] ? String(entry['accountName']) : null,
+      balanceBeforeUsd: entry['balanceBeforeUsd'] != null ? Number(entry['balanceBeforeUsd']) : null,
+      balanceAfterUsd: entry['balanceAfterUsd'] != null ? Number(entry['balanceAfterUsd']) : null,
+      createdAt: String(entry['createdAt'] || new Date().toISOString()),
+    };
+
+    await db.insert(customLedgerEntries)
+      .values(data)
+      .onConflictDoUpdate({
+        target: customLedgerEntries.id,
+        set: data,
+      });
+
+    lastSyncTimestamp = new Date().toISOString();
+    return true;
+  } catch (err: unknown) {
+    console.error('[Cloud SQL] saveCustomLedgerEntry error:', err);
+    return false;
+  }
+}
+
+export async function deleteCustomLedgerEntryFromCloudSql(entryId: string): Promise<boolean> {
+  if (!isCloudSqlAvailable()) return false;
+  try {
+    await db.delete(customLedgerEntries).where(eq(customLedgerEntries.id, entryId));
+    lastSyncTimestamp = new Date().toISOString();
+    return true;
+  } catch (err: unknown) {
+    console.error('[Cloud SQL] deleteCustomLedgerEntry error:', err);
+    return false;
+  }
+}
+
+export async function saveProviderBalanceAdjustmentToCloudSql(adj: Record<string, unknown>): Promise<boolean> {
+  if (!isCloudSqlAvailable()) return false;
+  try {
+    const data = {
+      id: String(adj['id']),
+      date: String(adj['date']),
+      amountUsd: Number(adj['amountUsd']) || 0,
+      note: adj['note'] ? String(adj['note']) : null,
+      createdAt: String(adj['createdAt'] || new Date().toISOString()),
+    };
+
+    await db.insert(providerBalanceAdjustments)
+      .values(data)
+      .onConflictDoUpdate({
+        target: providerBalanceAdjustments.id,
+        set: data,
+      });
+
+    lastSyncTimestamp = new Date().toISOString();
+    return true;
+  } catch (err: unknown) {
+    console.error('[Cloud SQL] saveProviderBalanceAdjustment error:', err);
+    return false;
+  }
+}
+
+export async function deleteProviderBalanceAdjustmentFromCloudSql(adjId: string): Promise<boolean> {
+  if (!isCloudSqlAvailable()) return false;
+  try {
+    await db.delete(providerBalanceAdjustments).where(eq(providerBalanceAdjustments.id, adjId));
+    lastSyncTimestamp = new Date().toISOString();
+    return true;
+  } catch (err: unknown) {
+    console.error('[Cloud SQL] deleteProviderBalanceAdjustment error:', err);
+    return false;
+  }
+}
+
+export async function saveAccountDeductionOverrideToCloudSql(override: Record<string, unknown>): Promise<boolean> {
+  if (!isCloudSqlAvailable()) return false;
+  try {
+    const data = {
+      id: String(override['id']),
+      isExcluded: Boolean(override['isExcluded']),
+      amountUsd: override['amountUsd'] != null ? Number(override['amountUsd']) : null,
+      amountUah: override['amountUah'] != null ? Number(override['amountUah']) : null,
+      date: override['date'] ? String(override['date']) : null,
+      title: override['title'] ? String(override['title']) : null,
+      subtitle: override['subtitle'] ? String(override['subtitle']) : null,
+      note: override['note'] ? String(override['note']) : null,
+      createdAt: override['createdAt'] ? String(override['createdAt']) : new Date().toISOString(),
+    };
+
+    await db.insert(accountDeductionOverrides)
+      .values(data)
+      .onConflictDoUpdate({
+        target: accountDeductionOverrides.id,
+        set: data,
+      });
+
+    lastSyncTimestamp = new Date().toISOString();
+    return true;
+  } catch (err: unknown) {
+    console.error('[Cloud SQL] saveAccountDeductionOverride error:', err);
+    return false;
+  }
+}
+
+export async function deleteAccountDeductionOverrideFromCloudSql(overrideId: string): Promise<boolean> {
+  if (!isCloudSqlAvailable()) return false;
+  try {
+    await db.delete(accountDeductionOverrides).where(eq(accountDeductionOverrides.id, overrideId));
+    lastSyncTimestamp = new Date().toISOString();
+    return true;
+  } catch (err: unknown) {
+    console.error('[Cloud SQL] deleteAccountDeductionOverride error:', err);
     return false;
   }
 }
@@ -436,46 +596,37 @@ export async function getSettingsFromCloudSql(): Promise<Record<string, unknown>
 export async function seedInitialDataToCloudSql(fullDb: Record<string, unknown>): Promise<boolean> {
   if (!isCloudSqlAvailable()) return false;
   try {
-    const clientsList = fullDb['clients'];
-    if (Array.isArray(clientsList) && clientsList.length > 0) {
-      for (const client of clientsList) {
-        await saveClientToCloudSql(client as Record<string, unknown>);
-      }
-    }
-    const paymentsList = fullDb['payments'];
-    if (Array.isArray(paymentsList) && paymentsList.length > 0) {
-      for (const payment of paymentsList) {
-        await savePaymentToCloudSql(payment as Record<string, unknown>);
-      }
-    }
-    const providerAccountsList = fullDb['providerAccounts'];
-    if (Array.isArray(providerAccountsList) && providerAccountsList.length > 0) {
-      for (const acc of providerAccountsList) {
-        await saveProviderAccountToCloudSql(acc as Record<string, unknown>);
-      }
-    }
-    const providerDepositsList = fullDb['providerDeposits'];
-    if (Array.isArray(providerDepositsList) && providerDepositsList.length > 0) {
-      for (const dep of providerDepositsList) {
-        await saveProviderDepositToCloudSql(dep as Record<string, unknown>);
-      }
-    }
-    const utilityAccountsList = fullDb['utilityAccounts'];
-    if (Array.isArray(utilityAccountsList) && utilityAccountsList.length > 0) {
-      for (const acc of utilityAccountsList) {
-        await saveUtilityAccountToCloudSql(acc as Record<string, unknown>);
-      }
-    }
-    const utilityReadingsList = fullDb['utilityReadings'];
-    if (Array.isArray(utilityReadingsList) && utilityReadingsList.length > 0) {
-      for (const r of utilityReadingsList) {
-        await saveUtilityReadingToCloudSql(r as Record<string, unknown>);
-      }
-    }
     if (fullDb['settings']) {
       await saveSettingsToCloudSql(fullDb['settings'] as Record<string, unknown>);
     }
-    console.log('[Cloud SQL] Successfully seeded initial data to Cloud SQL');
+    if (Array.isArray(fullDb['clients'])) {
+      for (const c of fullDb['clients']) await saveClientToCloudSql(c as Record<string, unknown>);
+    }
+    if (Array.isArray(fullDb['payments'])) {
+      for (const p of fullDb['payments']) await savePaymentToCloudSql(p as Record<string, unknown>);
+    }
+    if (Array.isArray(fullDb['providerAccounts'])) {
+      for (const a of fullDb['providerAccounts']) await saveProviderAccountToCloudSql(a as Record<string, unknown>);
+    }
+    if (Array.isArray(fullDb['providerDeposits'])) {
+      for (const d of fullDb['providerDeposits']) await saveProviderDepositToCloudSql(d as Record<string, unknown>);
+    }
+    if (Array.isArray(fullDb['utilityAccounts'])) {
+      for (const u of fullDb['utilityAccounts']) await saveUtilityAccountToCloudSql(u as Record<string, unknown>);
+    }
+    if (Array.isArray(fullDb['utilityReadings'])) {
+      for (const r of fullDb['utilityReadings']) await saveUtilityReadingToCloudSql(r as Record<string, unknown>);
+    }
+    if (Array.isArray(fullDb['customLedgerEntries'])) {
+      for (const e of fullDb['customLedgerEntries']) await saveCustomLedgerEntryToCloudSql(e as Record<string, unknown>);
+    }
+    if (Array.isArray(fullDb['providerBalanceAdjustments'])) {
+      for (const a of fullDb['providerBalanceAdjustments']) await saveProviderBalanceAdjustmentToCloudSql(a as Record<string, unknown>);
+    }
+    if (Array.isArray(fullDb['accountDeductionOverrides'])) {
+      for (const o of fullDb['accountDeductionOverrides']) await saveAccountDeductionOverrideToCloudSql(o as Record<string, unknown>);
+    }
+    console.log('[Cloud SQL] Full database synchronized and pushed to Cloud SQL');
     return true;
   } catch (err: unknown) {
     console.error('[Cloud SQL] seedInitialData error:', err);
@@ -493,10 +644,13 @@ export async function purgeTestDataFromCloudSql(): Promise<boolean> {
       db.delete(providerDeposits),
       db.delete(utilityAccounts),
       db.delete(utilityReadings),
+      db.delete(customLedgerEntries),
+      db.delete(providerBalanceAdjustments),
+      db.delete(accountDeductionOverrides),
       db.delete(settings),
     ]);
     lastSyncTimestamp = new Date().toISOString();
-    console.log('[Cloud SQL] Purged all test data');
+    console.log('[Cloud SQL] Purged all data');
     return true;
   } catch (err: unknown) {
     console.error('[Cloud SQL] purgeTestData error:', err);

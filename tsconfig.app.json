@@ -8,6 +8,6 @@
       "node"
     ]
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "include": ["src/**/*.ts"],
   "exclude": ["src/**/*.spec.ts"]
 }

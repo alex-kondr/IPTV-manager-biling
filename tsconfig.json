@@ -13,7 +13,6 @@
     "experimentalDecorators": true,
     "importHelpers": true,
     "target": "ES2022",
-    "jsx": "react-jsx",
     "module": "preserve"
   },
   "angularCompilerOptions": {
