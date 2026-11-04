@@ -96,6 +96,241 @@ import {
         </div>
       </div>
 
+      <!-- DTEK Shutdown Schedule Card -->
+      <div class="p-5 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-4">
+        <!-- Top header row -->
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+          <div class="flex items-center gap-3">
+            <div
+              class="w-10 h-10 rounded-xl flex items-center justify-center font-bold text-white shadow-2xs transition-colors"
+              [class.bg-emerald-600]="dtekStatus()?.isPowerAvailableNow"
+              [class.bg-rose-600]="!dtekStatus()?.isPowerAvailableNow"
+            >
+              <mat-icon>{{ dtekStatus()?.isPowerAvailableNow ? 'lightbulb' : 'power_off' }}</mat-icon>
+            </div>
+            <div>
+              <div class="flex items-center gap-2 flex-wrap">
+                <h3 class="text-sm sm:text-base font-bold text-slate-900">Графік відключень світла ДТЕК</h3>
+                <span class="px-2 py-0.5 rounded-full text-3xs font-semibold bg-amber-50 text-amber-900 border border-amber-200 flex items-center gap-1">
+                  <mat-icon class="text-3xs text-amber-600">location_on</mat-icon>
+                  <span>с-ще Окни, вул. Шкільна, буд. 11</span>
+                </span>
+                @if (dtekStatus()?.queueGroup; as qGroup) {
+                  <span class="px-2.5 py-0.5 rounded-full text-3xs font-bold uppercase tracking-wider bg-indigo-100 text-indigo-800 border border-indigo-200 flex items-center gap-1">
+                    <mat-icon class="text-3xs">view_comfy</mat-icon>
+                    <span>Черга {{ qGroup }}</span>
+                  </span>
+                }
+              </div>
+              <p class="text-xs text-slate-500 mt-0.5">
+                Автоматична перевірка фактичних та планових відключень ДТЕК Одеські електромережі
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            (click)="refreshDtekSchedule()"
+            [disabled]="isDtekLoading()"
+            class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800 transition-colors flex items-center gap-1.5 shadow-2xs disabled:opacity-50 cursor-pointer shrink-0 self-start sm:self-auto"
+            title="Оновити графік з сайту ДТЕК"
+          >
+            <mat-icon class="text-base" [class.animate-spin]="isDtekLoading()">sync</mat-icon>
+            <span>{{ isDtekLoading() ? 'Оновлення...' : 'Оновити графік' }}</span>
+          </button>
+        </div>
+
+        @if (isDtekLoading() && !dtekInfo()) {
+          <div class="py-6 text-center text-xs text-slate-500 flex items-center justify-center gap-2">
+            <div class="w-4 h-4 border-2 border-amber-500 border-t-transparent rounded-full animate-spin"></div>
+            <span>Завантаження актуального графіка ДТЕК...</span>
+          </div>
+        } @else if (dtekError()) {
+          <div class="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <mat-icon class="text-rose-600 text-base">error_outline</mat-icon>
+              <span>{{ dtekError() }}</span>
+            </div>
+            <button type="button" (click)="refreshDtekSchedule()" class="text-rose-700 font-bold underline hover:text-rose-900 cursor-pointer">
+              Повторити
+            </button>
+          </div>
+        } @else if (dtekStatus(); as status) {
+          <!-- Overview Cards: Current Status + Fact + Schedule Info -->
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <!-- Current Power Status Right Now -->
+            <div
+              class="p-3.5 rounded-xl border flex flex-col justify-between transition-colors"
+              [class.bg-emerald-50/80]="status.isPowerAvailableNow"
+              [class.border-emerald-200]="status.isPowerAvailableNow"
+              [class.bg-rose-50/80]="!status.isPowerAvailableNow"
+              [class.border-rose-200]="!status.isPowerAvailableNow"
+            >
+              <span
+                class="text-3xs font-semibold uppercase tracking-wider block"
+                [class.text-emerald-800]="status.isPowerAvailableNow"
+                [class.text-rose-800]="!status.isPowerAvailableNow"
+              >
+                Поточний стан світла (Зараз)
+              </span>
+              <div class="mt-1 flex items-center gap-2">
+                <span
+                  class="w-2.5 h-2.5 rounded-full animate-pulse shrink-0"
+                  [class.bg-emerald-500]="status.isPowerAvailableNow"
+                  [class.bg-rose-500]="!status.isPowerAvailableNow"
+                ></span>
+                <span
+                  class="text-sm sm:text-base font-extrabold leading-tight"
+                  [class.text-emerald-950]="status.isPowerAvailableNow"
+                  [class.text-rose-950]="!status.isPowerAvailableNow"
+                >
+                  {{ status.isPowerAvailableNow ? 'СВІТЛО Є' : 'ВІДКЛЮЧЕННЯ СВІТЛА' }}
+                </span>
+              </div>
+              <div
+                class="text-3xs font-medium mt-1"
+                [class.text-emerald-700]="status.isPowerAvailableNow"
+                [class.text-rose-800]="!status.isPowerAvailableNow"
+              >
+                @if (status.currentHourItem) {
+                  За графіком: {{ status.currentHourItem.statusLabel }}
+                } @else {
+                  Стан станом на {{ status.updateFactKyiv || status.updateFact || 'сьогодні' }}
+                }
+              </div>
+            </div>
+
+            <!-- Fact / Emergency Outage Window if any -->
+            <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
+              <span class="text-3xs font-semibold uppercase tracking-wider text-slate-500 block">Фактичне відключення ДТЕК</span>
+              @if (status.startDate || status.endDate) {
+                <div class="mt-1 space-y-0.5">
+                  <div class="text-xs text-slate-700">
+                    Початок: <span class="font-bold text-slate-900 font-mono">{{ status.startDate || '—' }}</span>
+                  </div>
+                  <div class="text-xs text-slate-700">
+                    Кінець: <span class="font-bold text-slate-900 font-mono">{{ status.endDate || '—' }}</span>
+                  </div>
+                </div>
+                @if (status.subType || status.subStatus) {
+                  <div class="text-3xs text-amber-800 font-medium mt-1 truncate" [title]="(status.subType || '') + ' ' + (status.subStatus || '')">
+                    {{ status.subType }} {{ status.subStatus ? '(' + status.subStatus + ')' : '' }}
+                  </div>
+                }
+              } @else {
+                <div class="text-xs font-semibold text-emerald-700 mt-1">Фактичних аварійних відключень немає</div>
+                <div class="text-3xs text-slate-400 mt-0.5">Подача за нормативним графіком</div>
+              }
+            </div>
+
+            <!-- 24h Schedule Summary Stats -->
+            <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
+              <div class="flex items-center justify-between gap-1">
+                <span class="text-3xs font-semibold uppercase tracking-wider text-slate-500 block">Баланс доби (24 год)</span>
+                <span class="text-3xs font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200/60">
+                  {{ status.scheduleDate || 'Сьогодні' }} • {{ status.updateFactKyiv }}
+                </span>
+              </div>
+              <div class="grid grid-cols-2 gap-2 mt-1">
+                <div class="p-1.5 rounded-lg bg-emerald-100/70 border border-emerald-200 text-center">
+                  <span class="text-3xs text-emerald-800 font-medium block">Зі світлом</span>
+                  <span class="text-xs font-extrabold text-emerald-950 font-mono">{{ status.totalPowerHours }} год</span>
+                </div>
+                <div class="p-1.5 rounded-lg bg-rose-100/70 border border-rose-200 text-center">
+                  <span class="text-3xs text-rose-800 font-medium block">Відключення</span>
+                  <span class="text-xs font-extrabold text-rose-950 font-mono">{{ status.totalOutageHours }} год</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 24-Hour Schedule Timeline Grid -->
+          @if (status.hourlySchedule.length > 0) {
+            <div class="space-y-2 pt-2 border-t border-slate-100">
+              <div class="flex items-center justify-between flex-wrap gap-2">
+                <div class="flex items-center gap-2">
+                  <h4 class="text-xs font-bold text-slate-900">Погодинний графік відключень на добу (24 години)</h4>
+                  <span class="text-3xs text-slate-500 font-mono">Черга {{ status.queueGroup }}</span>
+                </div>
+
+                <!-- Legend -->
+                <div class="flex items-center gap-3 text-3xs font-medium text-slate-600 flex-wrap">
+                  <span class="inline-flex items-center gap-1">
+                    <span class="w-2.5 h-2.5 rounded bg-emerald-500 inline-block"></span> Світло є
+                  </span>
+                  <span class="inline-flex items-center gap-1">
+                    <span class="w-2.5 h-2.5 rounded bg-rose-500 inline-block"></span> Відключення
+                  </span>
+                  <span class="inline-flex items-center gap-1">
+                    <span class="w-2.5 h-2.5 rounded bg-amber-500 inline-block"></span> Напівгодинне відключення
+                  </span>
+                </div>
+              </div>
+
+              <!-- 24 Hour Slots Grid -->
+              <div class="grid grid-cols-6 sm:grid-cols-12 lg:grid-cols-24 gap-1 pt-1">
+                @for (hItem of status.hourlySchedule; track hItem.hour) {
+                  @let isCurrentHour = hItem.hour === status.currentHourNumber;
+                  <div
+                    class="p-1 rounded-lg border flex flex-col items-center justify-between text-center transition-all relative group"
+                    [class.bg-white]="!isCurrentHour"
+                    [class.border-slate-200]="!isCurrentHour"
+                    [class.ring-2]="isCurrentHour"
+                    [class.ring-indigo-500]="isCurrentHour"
+                    [class.border-indigo-500]="isCurrentHour"
+                    [class.bg-indigo-50/30]="isCurrentHour"
+                    [title]="'Година ' + hItem.timeLabel + ': ' + hItem.statusLabel"
+                  >
+                    <!-- Hour label -->
+                    <span
+                      class="text-3xs font-mono font-bold leading-none mb-1"
+                      [class.text-indigo-600]="isCurrentHour"
+                      [class.text-slate-600]="!isCurrentHour"
+                    >
+                      {{ hItem.fromTime.substring(0, 2) }}
+                    </span>
+
+                    <!-- Visual split bar for 30m / 30m -->
+                    <div class="w-full h-5 rounded flex overflow-hidden gap-0.5 p-0.5 bg-slate-100">
+                      <!-- First half hour (00-30 min) -->
+                      <div
+                        class="h-full flex-1 rounded-xs transition-colors"
+                        [class.bg-emerald-500]="hItem.firstHalfPower"
+                        [class.bg-rose-500]="!hItem.firstHalfPower"
+                        [title]="'00-30 хв: ' + (hItem.firstHalfPower ? 'Є світло' : 'Відключено')"
+                      ></div>
+                      <!-- Second half hour (30-60 min) -->
+                      <div
+                        class="h-full flex-1 rounded-xs transition-colors"
+                        [class.bg-emerald-500]="hItem.secondHalfPower"
+                        [class.bg-rose-500]="!hItem.secondHalfPower"
+                        [title]="'30-60 хв: ' + (hItem.secondHalfPower ? 'Є світло' : 'Відключено')"
+                      ></div>
+                    </div>
+
+                    <!-- Status indicator text -->
+                    <span
+                      class="text-4xs font-semibold leading-tight mt-1 truncate w-full"
+                      [class.text-emerald-700]="hItem.firstHalfPower && hItem.secondHalfPower"
+                      [class.text-rose-700]="!hItem.firstHalfPower && !hItem.secondHalfPower"
+                      [class.text-amber-700]="hItem.firstHalfPower !== hItem.secondHalfPower"
+                    >
+                      {{ hItem.statusKey === 'yes' ? 'Є' : (hItem.statusKey === 'no' ? 'Ні' : '0.5h') }}
+                    </span>
+
+                    @if (isCurrentHour) {
+                      <span class="absolute -top-2 px-1 rounded bg-indigo-600 text-white text-4xs font-extrabold uppercase shadow-2xs animate-pulse">
+                        Зараз
+                      </span>
+                    }
+                  </div>
+                }
+              </div>
+            </div>
+          }
+        }
+      </div>
+
       <!-- Accounts Switcher Tabs -->
       @if (electricityAccounts().length > 0) {
         <div class="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-thin">
@@ -1367,6 +1602,80 @@ export class ElectricityView {
   readonly canEdit = this.dataService.canEdit;
   readonly electricityAccounts = this.dataService.electricityAccounts;
   readonly utilityTariffs = this.dataService.utilityTariffs;
+
+  readonly dtekInfo = this.dataService.dtekShutdownInfo;
+  readonly isDtekLoading = this.dataService.isDtekLoading;
+  readonly dtekError = this.dataService.dtekError;
+
+  readonly dtekStatus = computed(() => {
+    const info = this.dtekInfo();
+    if (!info) return null;
+
+    const now = new Date();
+    const currentHourNumber = now.getHours() + 1; // 1..24
+    const currentMinute = now.getMinutes();
+
+    let isFactOutageNow = false;
+    if (info.startDate && info.endDate) {
+      const start = new Date(info.startDate);
+      const end = new Date(info.endDate);
+      isFactOutageNow = now >= start && now <= end;
+    }
+
+    const scheduleList = info.hourlySchedule || [];
+    const currentHourItem = scheduleList.find((item) => item.hour === currentHourNumber) || null;
+
+    let isScheduledPowerOn = true;
+    if (currentHourItem) {
+      if (currentMinute < 30) {
+        isScheduledPowerOn = currentHourItem.firstHalfPower;
+      } else {
+        isScheduledPowerOn = currentHourItem.secondHalfPower;
+      }
+    }
+
+    const isPowerAvailableNow = !isFactOutageNow && isScheduledPowerOn;
+
+    let totalPowerHours = 0;
+    let totalOutageHours = 0;
+
+    for (const h of scheduleList) {
+      if (h.firstHalfPower && h.secondHalfPower) {
+        totalPowerHours += 1;
+      } else if (!h.firstHalfPower && !h.secondHalfPower) {
+        totalOutageHours += 1;
+      } else {
+        totalPowerHours += 0.5;
+        totalOutageHours += 0.5;
+      }
+    }
+
+    return {
+      info,
+      now,
+      currentHourNumber,
+      currentMinute,
+      isFactOutageNow,
+      isScheduledPowerOn,
+      isPowerAvailableNow,
+      currentHourItem,
+      totalPowerHours,
+      totalOutageHours,
+      queueGroup: info.queueGroup || 'GPV4.1',
+      scheduleDate: info.scheduleDate || info.updateFact?.split(' ')[0] || '',
+      startDate: info.startDate || null,
+      endDate: info.endDate || null,
+      subType: info.subType || '',
+      subStatus: info.subStatus || '',
+      updateFact: info.updateFact || '',
+      updateFactKyiv: info.updateFact ? (info.updateFact.includes('Києв') ? info.updateFact : `${info.updateFact} (за Києвом)`) : '',
+      hourlySchedule: scheduleList,
+    };
+  });
+
+  refreshDtekSchedule(): void {
+    this.dataService.fetchDtekShutdowns();
+  }
 
   readonly selectedAccountId = signal<string>('');
   readonly activeTab = signal<'table' | 'analytics'>('table');

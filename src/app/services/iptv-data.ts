@@ -57,6 +57,14 @@ export function normalizeUtilityTariffs(raw?: Partial<UtilityTariffsSettings>): 
   let waterHistory = t.water?.history && Array.isArray(t.water.history) && t.water.history.length > 0 ? [...t.water.history] : [];
   if (waterHistory.length === 0) {
     waterHistory = [{ id: 'wh_1', price: waterPrice, monthlyFee: waterMonthlyFee, validFrom: waterValidFrom, validTo: waterValidTo, note: 'Базовий тариф на воду' }];
+  } else {
+    for (const item of waterHistory) {
+      if (item.validFrom === waterValidFrom || waterHistory.length === 1) {
+        item.price = waterPrice;
+        item.monthlyFee = waterMonthlyFee;
+        item.validTo = waterValidTo;
+      }
+    }
   }
 
   const wastePrice = t.waste?.price !== undefined ? Number(t.waste.price) : DEFAULT_UTILITY_TARIFFS.waste.price;
@@ -65,6 +73,13 @@ export function normalizeUtilityTariffs(raw?: Partial<UtilityTariffsSettings>): 
   let wasteHistory = t.waste?.history && Array.isArray(t.waste.history) && t.waste.history.length > 0 ? [...t.waste.history] : [];
   if (wasteHistory.length === 0) {
     wasteHistory = [{ id: 'wsh_1', price: wastePrice, validFrom: wasteValidFrom, validTo: wasteValidTo, note: 'Базовий тариф на вивіз сміття' }];
+  } else {
+    for (const item of wasteHistory) {
+      if (item.validFrom === wasteValidFrom || wasteHistory.length === 1) {
+        item.price = wastePrice;
+        item.validTo = wasteValidTo;
+      }
+    }
   }
 
   const elecSingleRate = t.electricitySingle?.rate !== undefined ? Number(t.electricitySingle.rate) : DEFAULT_UTILITY_TARIFFS.electricitySingle.rate;
@@ -73,6 +88,13 @@ export function normalizeUtilityTariffs(raw?: Partial<UtilityTariffsSettings>): 
   let elecSingleHistory = t.electricitySingle?.history && Array.isArray(t.electricitySingle.history) && t.electricitySingle.history.length > 0 ? [...t.electricitySingle.history] : [];
   if (elecSingleHistory.length === 0) {
     elecSingleHistory = [{ id: 'esh_1', rate: elecSingleRate, validFrom: elecSingleValidFrom, validTo: elecSingleValidTo, note: 'Єдиний тариф на електроенергію' }];
+  } else {
+    for (const item of elecSingleHistory) {
+      if (item.validFrom === elecSingleValidFrom || elecSingleHistory.length === 1) {
+        item.rate = elecSingleRate;
+        item.validTo = elecSingleValidTo;
+      }
+    }
   }
 
   const elecDualValidFrom = t.electricityDual?.validFrom || DEFAULT_UTILITY_TARIFFS.electricityDual.validFrom;
@@ -95,6 +117,17 @@ export function normalizeUtilityTariffs(raw?: Partial<UtilityTariffsSettings>): 
       winterLimitKwh: elecDualWinterLimit,
       note: 'Базовий двозонний тариф',
     }];
+  } else {
+    for (const item of elecDualHistory) {
+      if (item.validFrom === elecDualValidFrom || elecDualHistory.length === 1) {
+        item.summerDay = elecDualSummerDay;
+        item.summerNight = elecDualSummerNight;
+        item.winterDay = elecDualWinterDay;
+        item.winterNight = elecDualWinterNight;
+        item.winterLimitKwh = elecDualWinterLimit;
+        item.validTo = elecDualValidTo;
+      }
+    }
   }
 
   return {
@@ -170,6 +203,36 @@ export interface CloudDbStatus {
   };
 }
 
+export interface DtekHourSchedule {
+  hour: number;
+  fromTime: string;
+  toTime: string;
+  timeLabel: string;
+  statusKey: string;
+  statusLabel: string;
+  firstHalfPower: boolean;
+  secondHalfPower: boolean;
+}
+
+export interface DtekShutdownInfo {
+  success: boolean;
+  city?: string;
+  street?: string;
+  houseNum?: string;
+  updateFact?: string;
+  fetchedAt?: string;
+  startDate?: string | null;
+  endDate?: string | null;
+  subType?: string | null;
+  subStatus?: string | null;
+  queueGroup?: string | null;
+  scheduleDate?: string | null;
+  hourlySchedule?: DtekHourSchedule[];
+  houseData?: Record<string, unknown> | null;
+  raw?: Record<string, unknown>;
+  error?: string;
+}
+
 @Injectable({
   providedIn: 'root',
 })
@@ -189,6 +252,9 @@ export class IptvData {
   readonly utilityAccounts = signal<UtilityAccount[]>([]);
   readonly utilityReadings = signal<UtilityReading[]>([]);
   readonly dbStatus = signal<CloudDbStatus | null>(null);
+  readonly dtekShutdownInfo = signal<DtekShutdownInfo | null>(null);
+  readonly isDtekLoading = signal<boolean>(false);
+  readonly dtekError = signal<string | null>(null);
   readonly isSyncingCloud = signal<boolean>(false);
   readonly isLoading = signal<boolean>(false);
   readonly errorMessage = signal<string | null>(null);
@@ -706,6 +772,7 @@ export class IptvData {
         this.fetchBudget(),
         this.fetchDbStatus(),
         this.fetchUtilityData(),
+        this.fetchDtekShutdowns(),
       ]);
       this.lastAutoSyncTime.set(new Date().toISOString());
     } catch (err) {
@@ -726,11 +793,13 @@ export class IptvData {
       console.debug('Auth check error:', e);
     }
 
-    // Immediately fetch latest settings and database tariffs
     try {
-      await this.fetchSettings();
+      await Promise.all([
+        this.fetchSettings(),
+        this.fetchDtekShutdowns(),
+      ]);
     } catch (e) {
-      console.debug('Direct fetch settings error on init:', e);
+      console.debug('Direct fetch settings or DTEK error on init:', e);
     }
 
     try {
@@ -754,6 +823,26 @@ export class IptvData {
       }
     } catch (err) {
       console.warn('Error fetching cloud db status:', err);
+    }
+  }
+
+  async fetchDtekShutdowns(): Promise<DtekShutdownInfo | null> {
+    this.isDtekLoading.set(true);
+    this.dtekError.set(null);
+    try {
+      const info = await firstValueFrom(
+        this.http.get<DtekShutdownInfo>('/api/utility/dtek-shutdowns')
+      );
+      if (info) {
+        this.dtekShutdownInfo.set(info);
+      }
+      return info;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Не вдалося отримати дані про відключення з сайту ДТЕК';
+      this.dtekError.set(msg);
+      return null;
+    } finally {
+      this.isDtekLoading.set(false);
     }
   }
 

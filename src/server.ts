@@ -71,6 +71,15 @@ function deepMergeTariffs(
 
   if (waterHistory.length === 0) {
     waterHistory = [{ id: 'wh_1', price: waterPrice, monthlyFee: waterMonthlyFee, validFrom: waterValidFrom, validTo: waterValidTo, note: 'Базовий тариф на воду' }];
+  } else {
+    // Keep history synced with top-level tariff
+    for (const item of waterHistory) {
+      if (item.validFrom === waterValidFrom || waterHistory.length === 1) {
+        item.price = waterPrice;
+        item.monthlyFee = waterMonthlyFee;
+        item.validTo = waterValidTo;
+      }
+    }
   }
 
   const wastePrice = n.waste?.price !== undefined ? Number(n.waste.price) : (base.waste?.price !== undefined ? Number(base.waste.price) : DEFAULT_UTILITY_TARIFFS.waste.price);
@@ -82,6 +91,13 @@ function deepMergeTariffs(
 
   if (wasteHistory.length === 0) {
     wasteHistory = [{ id: 'wsh_1', price: wastePrice, validFrom: wasteValidFrom, validTo: wasteValidTo, note: 'Базовий тариф на вивіз сміття' }];
+  } else {
+    for (const item of wasteHistory) {
+      if (item.validFrom === wasteValidFrom || wasteHistory.length === 1) {
+        item.price = wastePrice;
+        item.validTo = wasteValidTo;
+      }
+    }
   }
 
   const elecSingleRate = n.electricitySingle?.rate !== undefined ? Number(n.electricitySingle.rate) : (base.electricitySingle?.rate !== undefined ? Number(base.electricitySingle.rate) : DEFAULT_UTILITY_TARIFFS.electricitySingle.rate);
@@ -93,6 +109,13 @@ function deepMergeTariffs(
 
   if (elecSingleHistory.length === 0) {
     elecSingleHistory = [{ id: 'esh_1', rate: elecSingleRate, validFrom: elecSingleValidFrom, validTo: elecSingleValidTo, note: 'Єдиний тариф на електроенергію' }];
+  } else {
+    for (const item of elecSingleHistory) {
+      if (item.validFrom === elecSingleValidFrom || elecSingleHistory.length === 1) {
+        item.rate = elecSingleRate;
+        item.validTo = elecSingleValidTo;
+      }
+    }
   }
 
   const elecDualValidFrom = n.electricityDual?.validFrom || base.electricityDual?.validFrom || DEFAULT_UTILITY_TARIFFS.electricityDual.validFrom;
@@ -118,6 +141,17 @@ function deepMergeTariffs(
       winterLimitKwh: elecDualWinterLimit,
       note: 'Базовий двозонний тариф',
     }];
+  } else {
+    for (const item of elecDualHistory) {
+      if (item.validFrom === elecDualValidFrom || elecDualHistory.length === 1) {
+        item.summerDay = elecDualSummerDay;
+        item.summerNight = elecDualSummerNight;
+        item.winterDay = elecDualWinterDay;
+        item.winterNight = elecDualWinterNight;
+        item.winterLimitKwh = elecDualWinterLimit;
+        item.validTo = elecDualValidTo;
+      }
+    }
   }
 
   return {
@@ -617,27 +651,6 @@ function loadDb(): DatabaseSchema {
         };
       }
 
-      // Check dedicated settings.json backup file for guaranteed persistence across app restarts
-      if (existsSync(settingsFile)) {
-        try {
-          const sRaw = readFileSync(settingsFile, 'utf-8');
-          const sParsed = JSON.parse(sRaw);
-          if (sParsed && typeof sParsed === 'object') {
-            const finalTariffs = deepMergeTariffs(
-              parsed.settings.utilityTariffsSettings,
-              sParsed.utilityTariffsSettings
-            );
-            parsed.settings = {
-              ...parsed.settings,
-              ...sParsed,
-              utilityTariffsSettings: finalTariffs,
-            };
-          }
-        } catch (e) {
-          console.warn('Error reading settings.json backup:', e);
-        }
-      }
-
       if (!parsed.users || !Array.isArray(parsed.users) || parsed.users.length === 0) {
         parsed.users = init.users;
       } else {
@@ -750,12 +763,13 @@ app.use('/api', async (req, res, next) => {
     }
   }
 
-  // Allow all auth endpoints, sync version, database status, photo recognition, settings, budget endpoints, and GET requests
+  // Allow all auth endpoints, sync version, database status, photo recognition, dtek shutdowns, settings, budget endpoints, and GET requests
   if (
     req.path.startsWith('/auth') ||
     req.path === '/sync/version' ||
     req.path === '/database/status' ||
     req.path === '/utility/recognize-meter' ||
+    req.path.startsWith('/utility/dtek-shutdowns') ||
     req.path === '/settings' ||
     req.path.startsWith('/budget') ||
     req.method === 'GET' ||
@@ -2364,15 +2378,16 @@ app.get('/api/settings', async (_req, res) => {
           }
         }
         const db = loadDb();
+        const mergedTariffs = deepMergeTariffs(
+          db.settings?.utilityTariffsSettings,
+          parsedTariffs as Partial<UtilityTariffsSettings>
+        );
         db.settings = {
           ...db.settings,
           ...sqlSettings,
-          utilityTariffsSettings: deepMergeTariffs(
-            DEFAULT_UTILITY_TARIFFS,
-            parsedTariffs as Partial<UtilityTariffsSettings>
-          ),
+          utilityTariffsSettings: mergedTariffs,
         } as unknown as AppSettings;
-        saveDb(db);
+        cachedDb = db;
         try {
           writeFileSync(settingsFile, JSON.stringify(db.settings, null, 2), 'utf-8');
         } catch {
@@ -2410,6 +2425,7 @@ app.post('/api/settings', async (req, res) => {
     utilityTariffsSettings: mergedTariffs,
   };
   db.settings = updatedSettings;
+  cachedDb = db;
   saveDb(db);
 
   try {
@@ -3223,6 +3239,280 @@ ${
     return res.status(500).json({
       success: false,
       error: `Помилка розпізнавання фото: ${msg}`,
+    });
+  }
+});
+
+function getKyivFormattedDate(date = new Date()): string {
+  try {
+    const formatter = new Intl.DateTimeFormat('uk-UA', {
+      timeZone: 'Europe/Kyiv',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    const parts = formatter.formatToParts(date);
+    const pMap: Record<string, string> = {};
+    for (const p of parts) {
+      pMap[p.type] = p.value;
+    }
+    return `${pMap['day'] || '01'}.${pMap['month'] || '01'}.${pMap['year'] || '2026'} ${pMap['hour'] || '00'}:${pMap['minute'] || '00'}`;
+  } catch {
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+}
+
+/**
+ * Proxy endpoint for DTEK Shutdown Schedule (с-ще Окни, вул. Шкільна, буд. 11)
+ */
+app.all('/api/utility/dtek-shutdowns', async (_req, res) => {
+  try {
+    const now = new Date();
+    const dateFactFormatted = getKyivFormattedDate(now);
+
+    const bodyParams = new URLSearchParams();
+    bodyParams.append('method', 'getHomeNum');
+    bodyParams.append('data[0][name]', 'city');
+    bodyParams.append('data[0][value]', 'с-ще Окни');
+    bodyParams.append('data[1][name]', 'street');
+    bodyParams.append('data[1][value]', 'вул. Шкільна');
+    bodyParams.append('data[2][name]', 'updateFact');
+    bodyParams.append('data[2][value]', dateFactFormatted);
+
+    const dtekUrl = 'https://www.dtek-oem.com.ua/ua/ajax';
+
+    const headers: Record<string, string> = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:159.0) Gecko/20100101 Firefox/159.0',
+      'Accept': 'application/json, text/javascript, */*; q=0.01',
+      'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+      'Referer': 'https://www.dtek-oem.com.ua/ua/shutdowns',
+      'X-CSRF-Token': '-XfNoiOyKzTw3gHXBfTFitooB-_7fyqcRbqww6XhAlPLToTrce0TeLWUQOVymZzmu31spq8ZafI_5d6X3LZkYg==',
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'X-Requested-With': 'XMLHttpRequest',
+      'Origin': 'https://www.dtek-oem.com.ua',
+      'Cookie': 'dtek-oem=c251pon7lgog6426dbf9u852eb; _language=4feef5ffdc846bbf9c35c97292b7b3e6c48117a536a6462b530e0984a39d6bd4a%3A2%3A%7Bi%3A0%3Bs%3A9%3A%22_language%22%3Bi%3A1%3Bs%3A2%3A%22uk%22%3B%7D; _csrf-dtek-oem=14943da4f286058abdee133e16bf46d50548dd78fe24e0ef40b2b513173742f5a%3A2%3A%7Bi%3A0%3Bs%3A14%3A%22_csrf-dtek-oem%22%3Bi%3A1%3Bs%3A32%3A%2229IIR_8LEJA2wmYlaUkITfCnz_nTyWf1%22%3B%7D; visid_incap_2398477=jcFO++QVRFyc30m/uifUBlYX62oAAAAAQUIPAAAAAACJlnvVMplgOe4l+5MR0hIW; incap_ses_323_2398477=7jClKkCJcz/fA51wood7BFYX62oAAAAAJtD9ljb+qbjCKHQVDTxZLA==; incap_wrt_377=VxfragAAAACHcE5RGgAI+QIQn8XT76ICGIOxrNcGIAIo1q6s1wYwAQzffJkr6M8xOmsJ95BBu/E=',
+      'Pragma': 'no-cache',
+      'Cache-Control': 'no-cache',
+    };
+
+    const dtekResponse = await fetch(dtekUrl, {
+      method: 'POST',
+      headers,
+      body: bodyParams.toString(),
+    });
+
+    const responseText = await dtekResponse.text();
+    let jsonResponse: Record<string, unknown> = {};
+    try {
+      jsonResponse = JSON.parse(responseText);
+    } catch {
+      console.warn('Failed to parse DTEK response as JSON:', responseText.substring(0, 200));
+    }
+
+    const dataDict = (jsonResponse['data'] || jsonResponse) as Record<string, unknown>;
+    const house11Data = dataDict ? (dataDict['11'] || dataDict[11] || null) : null;
+
+    let startDate: string | null = null;
+    let endDate: string | null = null;
+    let subType: string | null = null;
+    let subStatus: string | null = null;
+    let queueGroup: string | null = null;
+
+    if (house11Data && typeof house11Data === 'object') {
+      const hObj = house11Data as Record<string, unknown>;
+      startDate = hObj['start_date'] ? String(hObj['start_date']) : (hObj['startDate'] ? String(hObj['startDate']) : null);
+      endDate = hObj['end_date'] ? String(hObj['end_date']) : (hObj['endDate'] ? String(hObj['endDate']) : null);
+      subType = hObj['type'] ? String(hObj['type']) : null;
+      subStatus = hObj['status'] ? String(hObj['status']) : null;
+
+      if (hObj['sub_type_reason']) {
+        if (Array.isArray(hObj['sub_type_reason']) && hObj['sub_type_reason'].length > 0) {
+          queueGroup = String(hObj['sub_type_reason'][0]);
+        } else if (typeof hObj['sub_type_reason'] === 'string') {
+          queueGroup = String(hObj['sub_type_reason']);
+        }
+      }
+    }
+
+    if (!queueGroup) {
+      queueGroup = 'GPV4.1'; // Default fallback queue group as specified in requirements
+    }
+
+    let scheduleDate: string | null = null;
+    const hourlySchedule: {
+      hour: number;
+      fromTime: string;
+      toTime: string;
+      timeLabel: string;
+      statusKey: string;
+      statusLabel: string;
+      firstHalfPower: boolean;
+      secondHalfPower: boolean;
+    }[] = [];
+
+    // Fetch DisconSchedule.fact from https://www.dtek-oem.com.ua/ua/shutdowns
+    try {
+      const pageResponse = await fetch('https://www.dtek-oem.com.ua/ua/shutdowns', {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:159.0) Gecko/20100101 Firefox/159.0',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+          'Cookie': headers['Cookie'],
+        },
+        signal: AbortSignal.timeout(6000),
+      });
+
+      if (pageResponse.ok) {
+        const htmlText = await pageResponse.text();
+        const factIdx = htmlText.indexOf('DisconSchedule.fact =');
+        if (factIdx !== -1) {
+          const sub = htmlText.substring(factIdx + 'DisconSchedule.fact ='.length).trim();
+          let jsonStr = '';
+          let braceCount = 0;
+          let started = false;
+          for (const char of sub) {
+            if (char === '{') {
+              braceCount++;
+              started = true;
+            }
+            if (started) {
+              jsonStr += char;
+              if (char === '}') {
+                braceCount--;
+                if (braceCount === 0) {
+                  break;
+                }
+              }
+            }
+          }
+
+          if (jsonStr) {
+            const factObj = JSON.parse(jsonStr);
+            const dataSection = factObj['data'] || factObj;
+            if (dataSection && typeof dataSection === 'object') {
+              const dates = Object.keys(dataSection);
+              const todayFormattedDate = dateFactFormatted.split(' ')[0]; // DD.MM.YYYY
+
+              const targetDateKey = dates.find((d) => d === todayFormattedDate || d.includes(todayFormattedDate.substring(0, 5))) || dates[0];
+
+              if (targetDateKey && dataSection[targetDateKey]) {
+                scheduleDate = targetDateKey;
+                const queueSection = dataSection[targetDateKey] as Record<string, unknown>;
+
+                let hoursObj: Record<string, unknown> | null = null;
+                if (queueGroup && queueSection[queueGroup]) {
+                  hoursObj = queueSection[queueGroup] as Record<string, unknown>;
+                } else {
+                  const qKey = Object.keys(queueSection).find((k) => k === queueGroup || (queueGroup && k.includes(queueGroup))) || Object.keys(queueSection)[0];
+                  if (qKey && queueSection[qKey]) {
+                    hoursObj = queueSection[qKey] as Record<string, unknown>;
+                    if (!queueGroup) queueGroup = qKey;
+                  }
+                }
+
+                if (hoursObj) {
+                  for (let h = 1; h <= 24; h++) {
+                    const key = String(h);
+                    const val = String(hoursObj[key] || 'yes').toLowerCase();
+                    const fromHour = String(h - 1).padStart(2, '0');
+                    const toHour = String(h).padStart(2, '0');
+                    const fromTime = `${fromHour}:00`;
+                    const toTime = `${toHour}:00`;
+                    const timeLabel = `${fromTime} - ${toTime}`;
+
+                    let firstHalfPower = true;
+                    let secondHalfPower = true;
+                    let statusLabel = 'Світло є';
+
+                    if (val === 'no') {
+                      firstHalfPower = false;
+                      secondHalfPower = false;
+                      statusLabel = 'Відключення світла';
+                    } else if (val === 'first') {
+                      firstHalfPower = false;
+                      secondHalfPower = true;
+                      statusLabel = `Відключення ${fromHour}:00 - ${fromHour}:30`;
+                    } else if (val === 'second') {
+                      firstHalfPower = true;
+                      secondHalfPower = false;
+                      statusLabel = `Відключення ${fromHour}:30 - ${toHour}:00`;
+                    } else if (val === 'maybe') {
+                      firstHalfPower = false;
+                      secondHalfPower = false;
+                      statusLabel = 'Можливе відключення';
+                    }
+
+                    hourlySchedule.push({
+                      hour: h,
+                      fromTime,
+                      toTime,
+                      timeLabel,
+                      statusKey: val,
+                      statusLabel,
+                      firstHalfPower,
+                      secondHalfPower,
+                    });
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Error fetching or parsing DisconSchedule.fact HTML:', e);
+    }
+
+    // Fallback if hourlySchedule is empty (e.g. network issue reaching html page)
+    if (hourlySchedule.length === 0) {
+      scheduleDate = dateFactFormatted.split(' ')[0];
+      for (let h = 1; h <= 24; h++) {
+        const fromHour = String(h - 1).padStart(2, '0');
+        const toHour = String(h).padStart(2, '0');
+        hourlySchedule.push({
+          hour: h,
+          fromTime: `${fromHour}:00`,
+          toTime: `${toHour}:00`,
+          timeLabel: `${fromHour}:00 - ${toHour}:00`,
+          statusKey: 'yes',
+          statusLabel: 'Світло є',
+          firstHalfPower: true,
+          secondHalfPower: true,
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      city: 'с-ще Окни',
+      street: 'вул. Шкільна',
+      houseNum: '11',
+      updateFact: dateFactFormatted,
+      fetchedAt: new Date().toISOString(),
+      houseData: house11Data,
+      startDate,
+      endDate,
+      subType,
+      subStatus,
+      queueGroup,
+      scheduleDate,
+      hourlySchedule,
+      raw: jsonResponse,
+    });
+  } catch (err: unknown) {
+    console.error('Error fetching DTEK shutdown data:', err);
+    const msg = err instanceof Error ? err.message : String(err);
+    return res.json({
+      success: false,
+      error: msg,
+      city: 'с-ще Окни',
+      street: 'вул. Шкільна',
+      houseNum: '11',
+      fetchedAt: new Date().toISOString(),
     });
   }
 });
