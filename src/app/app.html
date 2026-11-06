@@ -1,46 +1,470 @@
+@if (isImpersonating()) {
+  <div
+    id="admin-test-sandbox-banner"
+    class="sticky top-0 z-50 bg-indigo-950 text-white border-b-2 border-indigo-400 px-3 sm:px-6 py-2 shadow-lg lg:pl-60"
+  >
+    <div class="max-w-7xl mx-auto space-y-1.5">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="px-2 py-0.5 rounded-md bg-amber-400 text-slate-950 text-2xs font-black uppercase tracking-wider inline-flex items-center gap-1">
+            <mat-icon class="text-xs leading-none">science</mat-icon>
+            <span>Режим перевірки (Тестовий акаунт)</span>
+          </span>
+          <span class="text-xs font-bold text-indigo-100">
+            Ви бачите застосунок очима: <strong class="text-white underline">{{ currentUser()?.name }}</strong> ({{ currentUser()?.email }})
+          </span>
+        </div>
+
+        <div class="flex items-center gap-2 flex-wrap">
+          <div class="flex items-center bg-indigo-900/90 p-0.5 rounded-lg border border-indigo-700 text-2xs">
+            <button
+              type="button"
+              (click)="setTestUserRole('user')"
+              [class.bg-emerald-500]="currentUser()?.role === 'user'"
+              [class.text-slate-950]="currentUser()?.role === 'user'"
+              [class.font-extrabold]="currentUser()?.role === 'user'"
+              [class.text-indigo-200]="currentUser()?.role !== 'user'"
+              class="px-2 py-0.5 rounded-md transition-colors cursor-pointer"
+              title="Перевірити вигляд підтвердженого користувача"
+            >
+              👤 Роль: Користувач
+            </button>
+            <button
+              type="button"
+              (click)="setTestUserRole('new')"
+              [class.bg-amber-400]="currentUser()?.role === 'new'"
+              [class.text-slate-950]="currentUser()?.role === 'new'"
+              [class.font-extrabold]="currentUser()?.role === 'new'"
+              [class.text-indigo-200]="currentUser()?.role !== 'new'"
+              class="px-2 py-0.5 rounded-md transition-colors cursor-pointer"
+              title="Перевірити екран очікування підтвердження для нового чужого акаунта"
+            >
+              ⏳ Роль: Новий (без доступу)
+            </button>
+          </div>
+
+          <button
+            type="button"
+            (click)="exitTestAccountMode()"
+            class="px-2.5 py-1 rounded-lg bg-white hover:bg-indigo-50 text-indigo-950 text-xs font-extrabold inline-flex items-center gap-1.5 shadow-sm cursor-pointer transition-colors"
+          >
+            <mat-icon class="text-sm leading-none text-indigo-700">admin_panel_settings</mat-icon>
+            <span>Повернутись в Адмін-акаунт</span>
+          </button>
+        </div>
+      </div>
+
+      @if (currentUser()?.role === 'user') {
+        <div class="pt-1.5 border-t border-indigo-800/80 flex flex-col lg:flex-row lg:items-center justify-between gap-2 text-2xs">
+          <!-- Live Tab Permissions Toggles -->
+          <div class="flex items-center gap-1.5 flex-wrap">
+            <span class="text-indigo-300 font-bold">Дозволені вкладки (клік для тесту):</span>
+            @for (t of sandboxTabs; track t.id) {
+              <button
+                type="button"
+                (click)="toggleTestUserTab(t.id)"
+                [class.bg-indigo-500]="isTabAllowed(t.id)"
+                [class.text-white]="isTabAllowed(t.id)"
+                [class.border-indigo-300]="isTabAllowed(t.id)"
+                [class.bg-indigo-950]="!isTabAllowed(t.id)"
+                [class.text-indigo-400]="!isTabAllowed(t.id)"
+                [class.border-indigo-800]="!isTabAllowed(t.id)"
+                class="px-2 py-0.5 rounded-md border font-bold transition-colors cursor-pointer"
+              >
+                {{ t.label }} {{ isTabAllowed(t.id) ? '✓' : '✕' }}
+              </button>
+            }
+          </div>
+
+          <!-- Live Bound Houses Toggles -->
+          @if (adminUtilityAccounts().length > 0) {
+            <div class="flex items-center gap-1.5 flex-wrap">
+              <span class="text-indigo-300 font-bold">Привʼязані будинки:</span>
+              @for (h of adminUtilityAccounts(); track h.id) {
+                <button
+                  type="button"
+                  (click)="toggleTestUserHouse(h.id)"
+                  [class.bg-emerald-600]="isTestUserHouseAssigned(h.id)"
+                  [class.text-white]="isTestUserHouseAssigned(h.id)"
+                  [class.border-emerald-400]="isTestUserHouseAssigned(h.id)"
+                  [class.bg-indigo-950]="!isTestUserHouseAssigned(h.id)"
+                  [class.text-indigo-400]="!isTestUserHouseAssigned(h.id)"
+                  [class.border-indigo-800]="!isTestUserHouseAssigned(h.id)"
+                  class="px-2 py-0.5 rounded-md border font-bold transition-colors cursor-pointer"
+                  [title]="'Увімкнути або вимкнути видимість рахунку ' + h.name + ' для тестового користувача'"
+                >
+                  🏠 {{ h.name }} {{ isTestUserHouseAssigned(h.id) ? '✓' : '✕' }}
+                </button>
+              }
+            </div>
+          }
+        </div>
+      }
+    </div>
+  </div>
+}
+
 @if (!isAuthenticated() || isNewUser()) {
   <app-auth-view />
 } @else {
-<div id="app-root-wrapper" class="min-h-screen bg-slate-100/70 text-slate-800 font-sans pb-24 md:pb-12 antialiased selection:bg-emerald-500 selection:text-white">
-  <!-- Read-Only Banner if Viewer role -->
+<div
+  id="app-root-wrapper"
+  class="min-h-screen bg-slate-100 text-slate-800 font-sans pb-20 lg:pb-8 lg:pl-56 antialiased selection:bg-indigo-600 selection:text-white"
+>
+  <!-- Desktop Left Sidebar (Варіант 2 • Професійна панель / Command Center Sidebar) -->
+  <aside
+    id="desktop-command-sidebar"
+    class="hidden lg:flex lg:flex-col lg:fixed lg:inset-y-0 lg:left-0 lg:w-56 lg:z-50 bg-slate-950 text-slate-300 border-r border-slate-800/90 shadow-xl justify-between"
+  >
+    <div class="p-3 space-y-3.5 overflow-y-auto no-scrollbar">
+      <!-- Brand Header -->
+      <div class="flex items-center gap-2.5 pb-3 border-b border-slate-800/80">
+        <div class="w-8 h-8 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center border border-indigo-500/30 shrink-0 shadow-inner">
+          <mat-icon class="text-lg">home_work</mat-icon>
+        </div>
+        <div class="min-w-0">
+          <div class="flex items-center gap-1.5">
+            <span class="text-sm font-extrabold text-white tracking-tight truncate">HomeHub</span>
+            <span class="px-1.5 py-0.5 rounded-md bg-indigo-500/25 text-indigo-300 text-3xs font-mono font-bold border border-indigo-500/30">
+              {{ appVersion }}
+            </span>
+          </div>
+          <p class="text-2xs text-slate-400 font-medium truncate">Сервіси та Облік</p>
+        </div>
+      </div>
+
+      <!-- Primary Navigation Tree -->
+      <nav class="space-y-1" aria-label="Основна навігація">
+        <div class="px-2 pb-0.5 text-3xs font-extrabold uppercase tracking-wider text-slate-500">
+          Комунальні сервіси
+        </div>
+
+        @if (isTabAllowed('electricity')) {
+          <button
+            id="tab-btn-electricity"
+            type="button"
+            (click)="setTab('electricity')"
+            [class.bg-indigo-600]="activeTab() === 'electricity'"
+            [class.text-white]="activeTab() === 'electricity'"
+            [class.shadow-sm]="activeTab() === 'electricity'"
+            [class.text-slate-400]="activeTab() !== 'electricity'"
+            class="w-full px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 transition-all hover:bg-slate-900 hover:text-white cursor-pointer"
+          >
+            <mat-icon class="text-base" [class.text-amber-300]="activeTab() === 'electricity'" [class.text-amber-400]="activeTab() !== 'electricity'">bolt</mat-icon>
+            <span>Електроенергія</span>
+          </button>
+        }
+
+        @if (isTabAllowed('water_waste')) {
+          <button
+            id="tab-btn-water-waste"
+            type="button"
+            (click)="setTab('water_waste')"
+            [class.bg-indigo-600]="activeTab() === 'water_waste'"
+            [class.text-white]="activeTab() === 'water_waste'"
+            [class.shadow-sm]="activeTab() === 'water_waste'"
+            [class.text-slate-400]="activeTab() !== 'water_waste'"
+            class="w-full px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 transition-all hover:bg-slate-900 hover:text-white cursor-pointer"
+          >
+            <mat-icon class="text-base" [class.text-cyan-200]="activeTab() === 'water_waste'" [class.text-cyan-400]="activeTab() !== 'water_waste'">water_drop</mat-icon>
+            <span>Вода та сміття</span>
+          </button>
+        }
+
+        <!-- Expandable IPTV Group in Sidebar -->
+        @if (hasAnyIptvTabAllowed()) {
+          <div class="pt-2">
+            <div class="px-2 pb-0.5 text-3xs font-extrabold uppercase tracking-wider text-slate-500">
+              Телебачення та абоненти
+            </div>
+            <button
+              id="tab-btn-iptv-group"
+              type="button"
+              (click)="toggleSidebarIptv()"
+              [class.bg-slate-900]="isIptvTabActive() || isSidebarIptvOpen()"
+              [class.text-white]="isIptvTabActive() || isSidebarIptvOpen()"
+              [class.border-indigo-500/40]="isIptvTabActive()"
+              [class.border-slate-800/80]="!isIptvTabActive()"
+              class="w-full px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center justify-between transition-all hover:bg-slate-900 hover:text-white cursor-pointer border"
+            >
+              <span class="flex items-center gap-2">
+                <mat-icon class="text-base text-emerald-400">live_tv</mat-icon>
+                <span>IPTV Білінг</span>
+              </span>
+              <span class="flex items-center gap-1">
+                @if (isIptvTabActive()) {
+                  <span class="px-1.5 py-0.2 rounded bg-indigo-500/25 text-indigo-300 text-3xs font-mono">
+                    {{ activeIptvTabLabel() }}
+                  </span>
+                } @else {
+                  <span class="px-1.5 py-0.2 rounded-full bg-slate-800 text-slate-400 text-3xs font-mono">
+                    {{ clients().length }}
+                  </span>
+                }
+                <mat-icon class="text-base transition-transform duration-200" [class.rotate-180]="isSidebarIptvOpen()">
+                  expand_more
+                </mat-icon>
+              </span>
+            </button>
+
+            @if (isSidebarIptvOpen()) {
+              <div class="mt-1 ml-2.5 pl-2.5 border-l-2 border-slate-800 space-y-0.5">
+                @if (isTabAllowed('clients')) {
+                  <button
+                    id="tab-btn-clients"
+                    type="button"
+                    (click)="selectIptvSubTab('clients')"
+                    [class.bg-indigo-600]="activeTab() === 'clients'"
+                    [class.text-white]="activeTab() === 'clients'"
+                    [class.text-slate-400]="activeTab() !== 'clients'"
+                    class="w-full px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center justify-between hover:bg-slate-900 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <span class="flex items-center gap-1.5">
+                      <mat-icon class="text-sm">group</mat-icon>
+                      <span>Клієнти</span>
+                    </span>
+                    <span
+                      class="px-1.5 py-0.2 rounded-full text-3xs font-mono"
+                      [class.bg-indigo-800]="activeTab() === 'clients'"
+                      [class.text-white]="activeTab() === 'clients'"
+                      [class.bg-slate-800]="activeTab() !== 'clients'"
+                      [class.text-slate-300]="activeTab() !== 'clients'"
+                    >
+                      {{ clients().length }}
+                    </span>
+                  </button>
+                }
+
+                @if (isTabAllowed('accounts')) {
+                  <button
+                    id="tab-btn-accounts"
+                    type="button"
+                    (click)="selectIptvSubTab('accounts')"
+                    [class.bg-indigo-600]="activeTab() === 'accounts'"
+                    [class.text-white]="activeTab() === 'accounts'"
+                    [class.text-slate-400]="activeTab() !== 'accounts'"
+                    class="w-full px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center justify-between hover:bg-slate-900 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <span class="flex items-center gap-1.5">
+                      <mat-icon class="text-sm">dns</mat-icon>
+                      <span>Акаунти IPTV</span>
+                    </span>
+                    <span
+                      class="px-1.5 py-0.2 rounded-full text-3xs font-mono"
+                      [class.bg-indigo-800]="activeTab() === 'accounts'"
+                      [class.text-white]="activeTab() === 'accounts'"
+                      [class.bg-emerald-500/20]="activeTab() !== 'accounts'"
+                      [class.text-emerald-300]="activeTab() !== 'accounts'"
+                    >
+                      {{ accounts().length }}
+                    </span>
+                  </button>
+                }
+
+                @if (isTabAllowed('budget')) {
+                  <button
+                    id="tab-btn-budget"
+                    type="button"
+                    (click)="selectIptvSubTab('budget')"
+                    [class.bg-indigo-600]="activeTab() === 'budget'"
+                    [class.text-white]="activeTab() === 'budget'"
+                    [class.text-slate-400]="activeTab() !== 'budget'"
+                    class="w-full px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center justify-between hover:bg-slate-900 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <span class="flex items-center gap-1.5">
+                      <mat-icon class="text-sm">account_balance_wallet</mat-icon>
+                      <span>Бюджет ($/₴)</span>
+                    </span>
+                    <span
+                      class="px-1.5 py-0.2 rounded-full text-3xs font-mono"
+                      [class.bg-indigo-800]="activeTab() === 'budget'"
+                      [class.text-white]="activeTab() === 'budget'"
+                      [class.bg-teal-500/20]="activeTab() !== 'budget'"
+                      [class.text-teal-300]="activeTab() !== 'budget'"
+                    >
+                      ${{ (budgetSummary()?.providerBalanceUsd || 0).toFixed(0) }}
+                    </span>
+                  </button>
+                }
+
+                @if (isTabAllowed('analytics')) {
+                  <button
+                    id="tab-btn-analytics"
+                    type="button"
+                    (click)="selectIptvSubTab('analytics')"
+                    [class.bg-indigo-600]="activeTab() === 'analytics'"
+                    [class.text-white]="activeTab() === 'analytics'"
+                    [class.text-slate-400]="activeTab() !== 'analytics'"
+                    class="w-full px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 hover:bg-slate-900 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <mat-icon class="text-sm">analytics</mat-icon>
+                    <span>Аналітика</span>
+                  </button>
+                }
+
+                @if (isTabAllowed('payments')) {
+                  <button
+                    id="tab-btn-payments"
+                    type="button"
+                    (click)="selectIptvSubTab('payments')"
+                    [class.bg-indigo-600]="activeTab() === 'payments'"
+                    [class.text-white]="activeTab() === 'payments'"
+                    [class.text-slate-400]="activeTab() !== 'payments'"
+                    class="w-full px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 hover:bg-slate-900 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <mat-icon class="text-sm">receipt_long</mat-icon>
+                    <span>Оплати та Viber</span>
+                  </button>
+                }
+              </div>
+            }
+          </div>
+        }
+
+        <div class="pt-2">
+          <div class="px-2 pb-0.5 text-3xs font-extrabold uppercase tracking-wider text-slate-500">
+            Адміністрування та опції
+          </div>
+
+          @if (isAdmin()) {
+            <button
+              id="tab-btn-users"
+              type="button"
+              (click)="setTab('users')"
+              [class.bg-indigo-600]="activeTab() === 'users'"
+              [class.text-white]="activeTab() === 'users'"
+              [class.text-slate-400]="activeTab() !== 'users'"
+              class="w-full px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center justify-between transition-all hover:bg-slate-900 hover:text-white cursor-pointer"
+            >
+              <span class="flex items-center gap-2">
+                <mat-icon class="text-base" [class.text-white]="activeTab() === 'users'" [class.text-emerald-400]="activeTab() !== 'users'">admin_panel_settings</mat-icon>
+                <span>Користувачі</span>
+              </span>
+              @if (pendingUsersCount() > 0) {
+                <span class="px-1.5 py-0.2 rounded-full bg-amber-500 text-slate-950 text-3xs font-black animate-pulse">
+                  {{ pendingUsersCount() }}
+                </span>
+              }
+            </button>
+
+            <button
+              id="btn-sidebar-test-user"
+              type="button"
+              (click)="enterTestAccountMode()"
+              class="w-full px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center justify-between transition-all bg-indigo-950/70 hover:bg-indigo-900 text-indigo-300 hover:text-white border border-indigo-800/70 cursor-pointer mt-1"
+              title="Перемкнутись на тестовий чужий акаунт для перевірки вкладок і дозволів"
+            >
+              <span class="flex items-center gap-2">
+                <mat-icon class="text-base text-amber-400">science</mat-icon>
+                <span>Тестовий акаунт</span>
+              </span>
+              <span class="px-1.5 py-0.2 rounded bg-indigo-500/30 text-indigo-200 text-3xs font-mono">
+                Тест
+              </span>
+            </button>
+          }
+
+          @if (isTabAllowed('settings')) {
+            <button
+              id="tab-btn-settings"
+              type="button"
+              (click)="setTab('settings')"
+              [class.bg-indigo-600]="activeTab() === 'settings'"
+              [class.text-white]="activeTab() === 'settings'"
+              [class.text-slate-400]="activeTab() !== 'settings'"
+              class="w-full px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 transition-all hover:bg-slate-900 hover:text-white cursor-pointer"
+            >
+              <mat-icon class="text-base">settings</mat-icon>
+              <span>Налаштування</span>
+            </button>
+          }
+        </div>
+      </nav>
+    </div>
+
+    <!-- Sidebar Footer: User Profile & Logout -->
+    <div class="p-3 border-t border-slate-800/90 bg-slate-900/50">
+      @if (currentUser(); as user) {
+        <div class="flex items-center justify-between gap-2">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <img
+              [src]="user.picture || 'https://ui-avatars.com/api/?name=' + user.name"
+              [alt]="user.name"
+              class="w-8 h-8 rounded-xl object-cover border border-slate-700 shrink-0"
+              referrerpolicy="no-referrer"
+            />
+            <div class="min-w-0">
+              <div class="text-xs font-bold text-white truncate">{{ user.name }}</div>
+              <div class="text-3xs font-semibold truncate" [class.text-emerald-400]="user.role === 'admin'" [class.text-sky-400]="user.role === 'user'">
+                {{ user.role === 'admin' ? '👑 Адміністратор' : '👤 Користувач' }}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            (click)="logout()"
+            class="p-2 rounded-xl bg-slate-800/90 hover:bg-rose-900/60 text-slate-400 hover:text-rose-300 border border-slate-700/70 transition-colors cursor-pointer shrink-0"
+            title="Вийти з акаунту"
+          >
+            <mat-icon class="text-sm">logout</mat-icon>
+          </button>
+        </div>
+      }
+    </div>
+  </aside>
+
+  <!-- User Mode Banner if Viewer role -->
   @if (isViewer()) {
-    <div class="bg-sky-950 text-sky-200 border-b border-sky-800 px-4 py-2.5 text-xs">
+    <div class="bg-sky-950 text-sky-200 border-b border-sky-800 px-4 py-2 text-xs">
       <div class="max-w-7xl mx-auto flex items-center justify-between gap-3">
         <div class="flex items-center gap-2">
-          <mat-icon class="text-base text-sky-400 shrink-0">visibility</mat-icon>
+          <mat-icon class="text-base text-sky-400 shrink-0">verified_user</mat-icon>
           <span class="font-medium">
-            <strong>Режим «Тільки перегляд»:</strong> Ви маєте доступ до перегляду бази клієнтів, аналітики та історії оплат. Внесення змін та додавання доступні лише адміністратору.
+            <strong>Особистий кабінет користувача ({{ currentUser()?.email }}):</strong> Ви бачите власні рахунки, покази та будинки, привʼязані адміністратором.
           </span>
         </div>
       </div>
     </div>
   }
 
-  <!-- Mobile App Bar (Dedicated Header for Mobile Admin Panel) -->
-  <header id="mobile-header" class="lg:hidden sticky top-0 z-40 bg-slate-900 text-white border-b border-slate-800 px-4 py-2.5 shadow-sm flex items-center justify-between">
+  <!-- Mobile App Bar (Dedicated Header for Mobile Panel) -->
+  <header
+    id="mobile-header"
+    class="lg:hidden sticky top-0 z-40 bg-slate-950 text-white border-b border-slate-800 px-4 py-2.5 shadow-sm flex items-center justify-between"
+  >
     <div class="flex items-center gap-2.5">
-      <div class="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center border border-emerald-500/30">
-        <mat-icon class="text-lg">live_tv</mat-icon>
+      <div class="w-8 h-8 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center border border-indigo-500/30">
+        <mat-icon class="text-lg">home_work</mat-icon>
       </div>
       <div>
         <h1 class="text-xs font-bold leading-tight flex items-center gap-1.5">
-          <span>IPTV Адмін</span>
-          <span class="px-1.5 py-0.2 rounded-md bg-emerald-500/20 text-emerald-400 text-3xs font-mono font-bold">{{ appVersion }}</span>
+          <span>HomeHub</span>
+          <span class="px-1.5 py-0.2 rounded-md bg-indigo-500/25 text-indigo-300 text-3xs font-mono font-bold">{{ appVersion }}</span>
         </h1>
         <div class="flex items-center gap-1.5 mt-0.5">
           <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-          <span class="text-3xs text-slate-400 font-medium truncate max-w-[130px]">{{ currentUser()?.name || currentUser()?.email }}</span>
+          <span class="text-3xs text-slate-400 font-medium truncate max-w-[140px]">Сервіси та Облік</span>
         </div>
       </div>
     </div>
 
-    <div class="flex items-center gap-2">
-      <!-- Create Client Quick Button on Mobile Header (Admin only) -->
-      @if (canEdit()) {
+    <div class="flex items-center gap-1.5">
+      <!-- Copy Link on Mobile -->
+      <button
+        type="button"
+        (click)="copyAppLink()"
+        class="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+        title="Скопіювати посилання на застосунок v3.0"
+      >
+        <mat-icon class="text-base">{{ copiedAppUrl() ? 'check' : 'link' }}</mat-icon>
+      </button>
+
+      <!-- Create Client Quick Button on Mobile Header -->
+      @if (canEdit() && isTabAllowed('clients') && isIptvTabActive()) {
         <button
           type="button"
           (click)="openCreateClient()"
-          class="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-semibold text-xs flex items-center gap-1 shadow-xs cursor-pointer active:scale-95 transition-transform"
+          class="px-2.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-semibold text-xs flex items-center gap-1 shadow-xs cursor-pointer active:scale-95 transition-transform"
           title="Створити нового абонента"
         >
           <mat-icon class="text-sm">person_add</mat-icon>
@@ -71,313 +495,228 @@
     </div>
   </header>
 
-  <!-- Desktop Navigation Bar (Structured 2-Tier Layout with Add Client Button) -->
-  <header id="main-header" class="hidden lg:block sticky top-0 z-40 bg-slate-900 text-white border-b border-slate-800 shadow-sm">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <!-- Top Tier: Branding, Data Sync Status, User Profile & Control Actions -->
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between py-3 border-b border-slate-800/80 gap-3">
-        <!-- Brand & DB Status -->
-        <div class="flex items-center gap-3">
-          <div class="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center border border-emerald-500/30 shrink-0">
-            <mat-icon class="text-xl">live_tv</mat-icon>
-          </div>
-          <div>
-            <div class="flex items-center gap-2">
-              <span class="text-sm font-extrabold tracking-tight">IPTV Менеджер &amp; Білінг</span>
-              <span class="px-1.5 py-0.2 rounded bg-emerald-500/25 text-emerald-400 text-3xs font-mono font-bold">{{ appVersion }}</span>
-            </div>
-            <div class="flex items-center gap-2 mt-0.5 text-3xs text-slate-400">
-              <span class="flex items-center gap-1">
-                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span>Опубл: {{ publishDateTime }}</span>
-              </span>
-            </div>
-          </div>
+  <!-- Desktop Top Command Bar (Breadcrumbs, Status & Quick Actions for Variant 2 Sidebar Layout) -->
+  <header
+    id="main-header"
+    class="hidden lg:block sticky top-0 z-30 bg-white/95 backdrop-blur-md text-slate-900 border-b border-slate-200/90 shadow-2xs"
+  >
+    <div class="max-w-7xl mx-auto px-4 sm:px-5 py-2 flex items-center justify-between gap-3">
+      <!-- Current Section Breadcrumb & Title -->
+      <div class="flex items-center gap-2.5 min-w-0">
+        <div class="w-7 h-7 rounded-lg bg-slate-100 border border-slate-200/90 flex items-center justify-center shrink-0">
+          <mat-icon class="text-base" [class]="activeSectionInfo().iconColor">{{ activeSectionInfo().icon }}</mat-icon>
         </div>
-
-        <!-- Sync, User Profile Badge & Logout -->
-        <div class="flex items-center gap-2.5">
-          <!-- Database status indicator -->
-          <div class="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-slate-800 border border-slate-700 text-2xs font-semibold text-slate-300">
-            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-            <span>Cloud SQL (PostgreSQL)</span>
+        <div class="min-w-0">
+          <div class="flex items-center gap-1.5 text-3xs font-bold uppercase tracking-wider text-slate-400">
+            <span>HomeHub {{ appVersion }}</span>
+            <span>/</span>
+            <span class="text-indigo-600">{{ activeSectionInfo().category }}</span>
           </div>
-
-          <!-- Sync Action Button -->
-          <button
-            type="button"
-            (click)="syncCloud()"
-            [disabled]="isSyncingCloud()"
-            class="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer text-2xs font-bold inline-flex items-center gap-1 shrink-0"
-            title="Синхронізувати з хмарою"
-          >
-            <mat-icon [class.animate-spin]="isSyncingCloud()" class="text-xs leading-none">sync</mat-icon>
-            <span>Синхронізація</span>
-          </button>
-
-          <!-- Logged-in User Profile Pill -->
-          @if (currentUser(); as user) {
-            <div class="flex items-center gap-2 px-2.5 py-1 rounded-xl bg-slate-800/90 border border-slate-700 text-xs">
-              <img
-                [src]="user.picture || 'https://ui-avatars.com/api/?name=' + user.name"
-                [alt]="user.name"
-                class="w-6 h-6 rounded-lg object-cover border border-slate-600 shrink-0"
-                referrerpolicy="no-referrer"
-              />
-              <div class="hidden sm:flex flex-col text-left">
-                <span class="text-2xs font-bold text-white leading-tight truncate max-w-[120px]">{{ user.name }}</span>
-                <span class="text-3xs font-semibold" [class.text-emerald-400]="user.role === 'admin'" [class.text-sky-400]="user.role === 'user'">
-                  {{ user.role === 'admin' ? '👑 Адміністратор' : '👁️ Тільки перегляд' }}
-                </span>
-              </div>
-            </div>
-          }
-
-          <!-- Logout Button -->
-          <button
-            type="button"
-            (click)="logout()"
-            class="p-1.5 rounded-xl bg-slate-800 hover:bg-rose-900/50 hover:text-rose-300 border border-slate-700 text-slate-400 transition-colors cursor-pointer text-2xs font-bold inline-flex items-center justify-center shrink-0"
-            title="Вийти з акаунту"
-          >
-            <mat-icon class="text-sm">logout</mat-icon>
-          </button>
+          <h1 class="text-xs font-extrabold text-slate-900 tracking-tight truncate">
+            {{ activeSectionInfo().title }}
+          </h1>
         </div>
       </div>
 
-      <!-- Bottom Tier: Desktop Navigation Tabs & Primary Actions -->
-      <div class="flex items-center justify-between gap-3 py-2 overflow-x-auto no-scrollbar">
-        <!-- Tabs container -->
-        <nav class="flex items-center gap-1 bg-slate-800/80 p-1 rounded-xl border border-slate-700/60 shrink-0">
+      <!-- Right Controls: Test Account Switcher, DB Badge, Sync -->
+      <div class="flex items-center gap-2 shrink-0">
+        @if (isAdmin()) {
           <button
-            id="tab-btn-clients"
             type="button"
-            (click)="setTab('clients')"
-            [class.bg-slate-700]="activeTab() === 'clients'"
-            [class.text-white]="activeTab() === 'clients'"
-            [class.text-slate-400]="activeTab() !== 'clients'"
-            class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0"
+            (click)="enterTestAccountMode()"
+            class="px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-800 text-3xs font-extrabold inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+            title="Перемкнутись на тестовий чужий акаунт і перевірити відображення вкладок та дозволів"
           >
-            <mat-icon class="text-base">group</mat-icon>
-            <span>Клієнти</span>
-            <span class="px-1.5 py-0.2 rounded-full bg-slate-600 text-2xs font-mono">
-              {{ clients().length }}
-            </span>
-          </button>
-
-          <button
-            id="tab-btn-accounts"
-            type="button"
-            (click)="setTab('accounts')"
-            [class.bg-slate-700]="activeTab() === 'accounts'"
-            [class.text-white]="activeTab() === 'accounts'"
-            [class.text-slate-400]="activeTab() !== 'accounts'"
-            class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0"
-          >
-            <mat-icon class="text-base">dns</mat-icon>
-            <span>Акаунти IPTV</span>
-            <span class="px-1.5 py-0.2 rounded-full bg-emerald-600/80 text-white text-2xs font-mono">
-              {{ accounts().length }}
-            </span>
-          </button>
-
-          <button
-            id="tab-btn-budget"
-            type="button"
-            (click)="setTab('budget')"
-            [class.bg-slate-700]="activeTab() === 'budget'"
-            [class.text-white]="activeTab() === 'budget'"
-            [class.text-slate-400]="activeTab() !== 'budget'"
-            class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0"
-          >
-            <mat-icon class="text-base">account_balance_wallet</mat-icon>
-            <span>Бюджет ($/₴)</span>
-            <span class="px-1.5 py-0.2 rounded-full bg-teal-600 text-white text-2xs font-mono">
-              ${{ (budgetSummary()?.providerBalanceUsd || 0).toFixed(0) }}
-            </span>
-          </button>
-
-          <button
-            id="tab-btn-analytics"
-            type="button"
-            (click)="setTab('analytics')"
-            [class.bg-slate-700]="activeTab() === 'analytics'"
-            [class.text-white]="activeTab() === 'analytics'"
-            [class.text-slate-400]="activeTab() !== 'analytics'"
-            class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0"
-          >
-            <mat-icon class="text-base">analytics</mat-icon>
-            <span>Аналітика</span>
-          </button>
-
-          <button
-            id="tab-btn-payments"
-            type="button"
-            (click)="setTab('payments')"
-            [class.bg-slate-700]="activeTab() === 'payments'"
-            [class.text-white]="activeTab() === 'payments'"
-            [class.text-slate-400]="activeTab() !== 'payments'"
-            class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0"
-          >
-            <mat-icon class="text-base">receipt_long</mat-icon>
-            <span>Оплати</span>
-          </button>
-
-          <!-- Tab: Electricity (Облік електроенергії) -->
-          <button
-            id="tab-btn-electricity"
-            type="button"
-            (click)="setTab('electricity')"
-            [class.bg-slate-700]="activeTab() === 'electricity'"
-            [class.text-white]="activeTab() === 'electricity'"
-            [class.text-slate-400]="activeTab() !== 'electricity'"
-            class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0"
-          >
-            <mat-icon class="text-base text-amber-400">bolt</mat-icon>
-            <span>Електроенергія</span>
-          </button>
-
-          <!-- Tab: Water & Waste (Водопостачання та вивіз сміття) -->
-          <button
-            id="tab-btn-water-waste"
-            type="button"
-            (click)="setTab('water_waste')"
-            [class.bg-slate-700]="activeTab() === 'water_waste'"
-            [class.text-white]="activeTab() === 'water_waste'"
-            [class.text-slate-400]="activeTab() !== 'water_waste'"
-            class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0"
-          >
-            <mat-icon class="text-base text-cyan-400">water_drop</mat-icon>
-            <span>Вода та сміття</span>
-          </button>
-
-          <!-- Tab: Users & Roles (Admin Only) -->
-          @if (isAdmin()) {
-            <button
-              id="tab-btn-users"
-              type="button"
-              (click)="setTab('users')"
-              [class.bg-slate-700]="activeTab() === 'users'"
-              [class.text-white]="activeTab() === 'users'"
-              [class.text-slate-400]="activeTab() !== 'users'"
-              class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0 relative"
-            >
-              <mat-icon class="text-base">admin_panel_settings</mat-icon>
-              <span>Користувачі</span>
-              @if (pendingUsersCount() > 0) {
-                <span class="px-1.5 py-0.2 rounded-full bg-amber-500 text-slate-900 text-3xs font-black animate-pulse">
-                  {{ pendingUsersCount() }}
-                </span>
-              }
-            </button>
-          }
-
-          <button
-            id="tab-btn-settings"
-            type="button"
-            (click)="setTab('settings')"
-            [class.bg-slate-700]="activeTab() === 'settings'"
-            [class.text-white]="activeTab() === 'settings'"
-            [class.text-slate-400]="activeTab() !== 'settings'"
-            class="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all hover:text-white cursor-pointer shrink-0 border-0"
-          >
-            <mat-icon class="text-base">settings</mat-icon>
-            <span>Налаштування</span>
-          </button>
-        </nav>
-
-        <!-- Primary Action Pinned to Right (Admin Only) -->
-        @if (canEdit()) {
-          <button
-            id="btn-desktop-add-client-new"
-            type="button"
-            (click)="openCreateClient()"
-            class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1.5 shadow-sm hover:shadow-md transition-all shrink-0 border-0 cursor-pointer"
-            title="Створити нового абонента"
-          >
-            <mat-icon class="text-sm">person_add</mat-icon>
-            <span>+ Додати клієнта</span>
+            <mat-icon class="text-xs text-indigo-600">science</mat-icon>
+            <span>Тестовий акаунт</span>
           </button>
         }
+
+        <!-- Database status indicator -->
+        <div class="hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200 text-3xs font-semibold text-slate-700">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+          <span>PostgreSQL</span>
+        </div>
+
+        <!-- Sync Action Button -->
+        <button
+          type="button"
+          (click)="syncCloud()"
+          [disabled]="isSyncingCloud()"
+          class="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200/80 border border-slate-200 text-slate-700 hover:text-slate-900 transition-colors cursor-pointer text-3xs font-bold inline-flex items-center gap-1.5 shrink-0"
+          title="Синхронізувати з базою даних"
+        >
+          <mat-icon [class.animate-spin]="isSyncingCloud()" class="text-xs leading-none text-indigo-600">sync</mat-icon>
+          <span>Синхронізація</span>
+        </button>
       </div>
     </div>
   </header>
 
-  <!-- Real-Time Overview Strip (Compact & Mobile-Optimized) -->
-  <div class="bg-white border-b border-slate-200/80 shadow-2xs">
-    <div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-2">
-      <div class="flex items-center justify-between gap-3 overflow-x-auto text-xs no-scrollbar">
-        <div class="flex items-center gap-3 sm:gap-5 shrink-0 text-2xs sm:text-xs">
-          <div class="flex items-center gap-1 text-slate-600">
-            <span class="text-slate-400">Всього:</span>
-            <strong class="text-slate-900 font-bold">{{ stats().totalClients }}</strong>
-          </div>
-          <div class="flex items-center gap-1 text-slate-600">
-            <span class="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-emerald-500"></span>
-            <span class="text-slate-400">Активні:</span>
-            <strong class="text-emerald-700 font-bold">{{ stats().activeClients }}</strong>
-          </div>
-          <div class="flex items-center gap-1 text-slate-600">
-            <span class="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-amber-500"></span>
-            <span class="text-slate-400">≤7 дн:</span>
-            <strong class="text-amber-700 font-bold">{{ stats().expiringSoonClients }}</strong>
-          </div>
-          <div class="flex items-center gap-1 text-slate-600">
-            <span class="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-rose-500"></span>
-            <span class="text-slate-400">Прострочені:</span>
-            <strong class="text-rose-700 font-bold">{{ stats().expiredClients }}</strong>
-          </div>
+  <!-- Secondary IPTV Sub-Navigation Bar (Shown automatically when any IPTV tab is active) -->
+  @if (isIptvTabActive()) {
+    <div class="bg-slate-900 text-white border-b border-slate-800">
+      <div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-2 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+        <div class="flex items-center gap-1.5 shrink-0">
+          <span class="px-2.5 py-1 rounded-lg bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 text-2xs font-extrabold uppercase tracking-wider flex items-center gap-1">
+            <mat-icon class="text-xs">live_tv</mat-icon>
+            <span>IPTV Білінг:</span>
+          </span>
+
+          @if (isTabAllowed('clients')) {
+            <button
+              type="button"
+              (click)="selectIptvSubTab('clients')"
+              [class.bg-indigo-600]="activeTab() === 'clients'"
+              [class.text-white]="activeTab() === 'clients'"
+              [class.text-slate-300]="activeTab() !== 'clients'"
+              class="px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 hover:bg-white/10 transition-colors cursor-pointer"
+            >
+              <mat-icon class="text-sm">group</mat-icon>
+              <span>Клієнти</span>
+              <span class="px-1.5 py-0.2 rounded-full bg-black/30 text-2xs font-mono">{{ clients().length }}</span>
+            </button>
+          }
+
+          @if (isTabAllowed('accounts')) {
+            <button
+              type="button"
+              (click)="selectIptvSubTab('accounts')"
+              [class.bg-indigo-600]="activeTab() === 'accounts'"
+              [class.text-white]="activeTab() === 'accounts'"
+              [class.text-slate-300]="activeTab() !== 'accounts'"
+              class="px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 hover:bg-white/10 transition-colors cursor-pointer"
+            >
+              <mat-icon class="text-sm">dns</mat-icon>
+              <span>Акаунти IPTV</span>
+              <span class="px-1.5 py-0.2 rounded-full bg-black/30 text-2xs font-mono">{{ accounts().length }}</span>
+            </button>
+          }
+
+          @if (isTabAllowed('budget')) {
+            <button
+              type="button"
+              (click)="selectIptvSubTab('budget')"
+              [class.bg-indigo-600]="activeTab() === 'budget'"
+              [class.text-white]="activeTab() === 'budget'"
+              [class.text-slate-300]="activeTab() !== 'budget'"
+              class="px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 hover:bg-white/10 transition-colors cursor-pointer"
+            >
+              <mat-icon class="text-sm">account_balance_wallet</mat-icon>
+              <span>Бюджет ($/₴)</span>
+              <span class="px-1.5 py-0.2 rounded-full bg-black/30 text-2xs font-mono">${{ (budgetSummary()?.providerBalanceUsd || 0).toFixed(0) }}</span>
+            </button>
+          }
+
+          @if (isTabAllowed('analytics')) {
+            <button
+              type="button"
+              (click)="selectIptvSubTab('analytics')"
+              [class.bg-indigo-600]="activeTab() === 'analytics'"
+              [class.text-white]="activeTab() === 'analytics'"
+              [class.text-slate-300]="activeTab() !== 'analytics'"
+              class="px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 hover:bg-white/10 transition-colors cursor-pointer"
+            >
+              <mat-icon class="text-sm">analytics</mat-icon>
+              <span>Аналітика</span>
+            </button>
+          }
+
+          @if (isTabAllowed('payments')) {
+            <button
+              type="button"
+              (click)="selectIptvSubTab('payments')"
+              [class.bg-indigo-600]="activeTab() === 'payments'"
+              [class.text-white]="activeTab() === 'payments'"
+              [class.text-slate-300]="activeTab() !== 'payments'"
+              class="px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 hover:bg-white/10 transition-colors cursor-pointer"
+            >
+              <mat-icon class="text-sm">receipt_long</mat-icon>
+              <span>Оплати</span>
+            </button>
+          }
         </div>
+      </div>
+    </div>
+  }
 
-        <div class="flex items-center gap-2 sm:gap-3 shrink-0">
-          <!-- Provider Balance Indicator ($) with Low Balance Pulse Alert -->
-          <button
-            id="strip-provider-balance-badge"
-            type="button"
-            (click)="setTab('budget')"
-            class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-2xs sm:text-xs font-bold transition-all cursor-pointer"
-            [class.bg-rose-50]="isProviderBalanceLow()"
-            [class.border-rose-400]="isProviderBalanceLow()"
-            [class.text-rose-800]="isProviderBalanceLow()"
-            [class.bg-slate-50]="!isProviderBalanceLow()"
-            [class.border-slate-200]="!isProviderBalanceLow()"
-            [class.text-slate-700]="!isProviderBalanceLow()"
-            title="Баланс рахунку IPTV-провайдера в доларах"
-          >
-            @if (isProviderBalanceLow()) {
-              <span class="relative flex h-2 w-2">
-                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
-                <span class="relative inline-flex rounded-full h-2 w-2 bg-rose-600"></span>
-              </span>
-            } @else {
-              <span class="w-1.5 h-1.5 rounded-full bg-teal-500"></span>
-            }
-            <span>Провайдер:</span>
-            <strong [class.text-rose-600]="isProviderBalanceLow()">${{ providerBalanceUsd().toFixed(2) }}</strong>
-          </button>
-
-          <div class="h-5 w-px bg-slate-200 hidden sm:block"></div>
-
-          <div class="text-right">
-            <span class="text-slate-400 text-3xs sm:text-2xs block leading-none">Дохід за місяць</span>
-            <strong class="text-emerald-800 text-xs sm:text-sm font-bold leading-tight">
-              {{ stats().currentMonthRevenue.toLocaleString('uk-UA') }} ₴
-            </strong>
+  <!-- Real-Time IPTV Overview Strip (Shown when IPTV tabs are active) -->
+  @if (hasAnyIptvTabAllowed() && isIptvTabActive()) {
+    <div class="bg-white border-b border-slate-200/80 shadow-2xs">
+      <div class="max-w-7xl mx-auto px-3 sm:px-5 lg:px-6 py-1.5">
+        <div class="flex items-center justify-between gap-2 overflow-x-auto text-xs no-scrollbar">
+          <div class="flex items-center gap-2.5 sm:gap-4 shrink-0 text-2xs sm:text-xs">
+            <div class="flex items-center gap-1 text-slate-600">
+              <span class="text-slate-400">Всього:</span>
+              <strong class="text-slate-900 font-bold">{{ stats().totalClients }}</strong>
+            </div>
+            <div class="flex items-center gap-1 text-slate-600">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+              <span class="text-slate-400">Активні:</span>
+              <strong class="text-emerald-600 font-bold">{{ stats().activeClients }}</strong>
+            </div>
+            <div class="flex items-center gap-1 text-slate-600">
+              <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+              <span class="text-slate-400">≤7 дн:</span>
+              <strong class="text-amber-600 font-bold">{{ stats().expiringSoonClients }}</strong>
+            </div>
+            <div class="flex items-center gap-1 text-slate-600">
+              <span class="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+              <span class="text-slate-400">Прострочені:</span>
+              <strong class="text-rose-600 font-bold">{{ stats().expiredClients }}</strong>
+            </div>
           </div>
-          <div class="h-5 w-px bg-slate-200 hidden sm:block"></div>
-          <div class="text-right hidden sm:block">
-            <span class="text-slate-400 text-2xs block leading-none">Очікуваний план</span>
-            <strong class="text-slate-800 text-xs sm:text-sm font-semibold leading-tight">
-              {{ stats().projectedMonthlyRevenue.toLocaleString('uk-UA') }} ₴
-            </strong>
+
+          <div class="flex items-center gap-2 sm:gap-3 shrink-0">
+            <!-- Provider Balance Indicator ($) with Low Balance Pulse Alert -->
+            <button
+              id="strip-provider-balance-badge"
+              type="button"
+              (click)="setTab('budget')"
+              class="flex items-center gap-1.5 px-2 py-0.5 rounded-lg border text-2xs sm:text-xs font-bold transition-all cursor-pointer"
+              [class.bg-rose-50]="isProviderBalanceLow()"
+              [class.border-rose-400]="isProviderBalanceLow()"
+              [class.text-rose-800]="isProviderBalanceLow()"
+              [class.bg-slate-50]="!isProviderBalanceLow()"
+              [class.border-slate-200]="!isProviderBalanceLow()"
+              [class.text-slate-700]="!isProviderBalanceLow()"
+              title="Баланс рахунку IPTV-провайдера в доларах"
+            >
+              @if (isProviderBalanceLow()) {
+                <span class="relative flex h-2 w-2">
+                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                  <span class="relative inline-flex rounded-full h-2 w-2 bg-rose-600"></span>
+                </span>
+              } @else {
+                <span class="w-1.5 h-1.5 rounded-full bg-teal-500"></span>
+              }
+              <span>Провайдер:</span>
+              <strong [class.text-rose-600]="isProviderBalanceLow()">${{ providerBalanceUsd().toFixed(2) }}</strong>
+            </button>
+
+            <div class="h-4 w-px bg-slate-200 hidden sm:block"></div>
+
+            <div class="text-right">
+              <span class="text-slate-400 text-3xs block leading-none">Дохід</span>
+              <strong class="text-emerald-600 text-xs font-bold leading-tight">
+                {{ stats().currentMonthRevenue.toLocaleString('uk-UA') }} ₴
+              </strong>
+            </div>
+            <div class="h-4 w-px bg-slate-200 hidden sm:block"></div>
+            <div class="text-right hidden sm:block">
+              <span class="text-slate-400 text-3xs block leading-none">План</span>
+              <strong class="text-slate-800 text-xs font-semibold leading-tight">
+                {{ stats().projectedMonthlyRevenue.toLocaleString('uk-UA') }} ₴
+              </strong>
+            </div>
           </div>
         </div>
       </div>
     </div>
-  </div>
+  }
 
   <!-- Main Content Container -->
-  <main class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6">
+  <main class="max-w-7xl mx-auto px-3 sm:px-5 lg:px-6 py-2.5 sm:py-3.5">
     <!-- TAB 1: CLIENTS -->
     @if (activeTab() === 'clients') {
       <div id="clients-view-wrapper" class="space-y-3.5">
@@ -813,101 +1152,153 @@
     }
   </main>
 
-  <!-- Mobile Bottom Navigation Bar (Horizontally scrollable with smooth touch scrolling) -->
+  <!-- Mobile IPTV Sub-Menu Drawer (Appears above bottom nav when IPTV Білінг is tapped on mobile) -->
+  @if (isMobileIptvDrawerOpen() && hasAnyIptvTabAllowed()) {
+    <div
+      id="mobile-iptv-drawer"
+      class="lg:hidden fixed bottom-16 inset-x-3 z-50 rounded-2xl bg-slate-950/98 backdrop-blur-xl border border-slate-800 p-3 shadow-2xl text-white space-y-2 animate-fade-in"
+    >
+      <div class="flex items-center justify-between px-2 pb-1.5 border-b border-slate-800">
+        <span class="text-xs font-extrabold text-indigo-400 flex items-center gap-1.5">
+          <mat-icon class="text-base">live_tv</mat-icon>
+          <span>Розділи IPTV Білінгу</span>
+        </span>
+        <button
+          type="button"
+          (click)="closeMobileIptvDrawer()"
+          class="p-1 rounded-lg text-slate-400 hover:text-white cursor-pointer"
+        >
+          <mat-icon class="text-sm">close</mat-icon>
+        </button>
+      </div>
+
+      <div class="grid grid-cols-2 gap-1.5">
+        @if (isTabAllowed('clients')) {
+          <button
+            type="button"
+            (click)="selectIptvSubTab('clients')"
+            [class.bg-indigo-600]="activeTab() === 'clients'"
+            [class.bg-slate-800]="activeTab() !== 'clients'"
+            class="px-3 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between cursor-pointer"
+          >
+            <span class="flex items-center gap-1.5">
+              <mat-icon class="text-base">group</mat-icon>
+              <span>Клієнти</span>
+            </span>
+            <span class="text-2xs font-mono opacity-80">{{ clients().length }}</span>
+          </button>
+        }
+        @if (isTabAllowed('accounts')) {
+          <button
+            type="button"
+            (click)="selectIptvSubTab('accounts')"
+            [class.bg-indigo-600]="activeTab() === 'accounts'"
+            [class.bg-slate-800]="activeTab() !== 'accounts'"
+            class="px-3 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between cursor-pointer"
+          >
+            <span class="flex items-center gap-1.5">
+              <mat-icon class="text-base">dns</mat-icon>
+              <span>Акаунти</span>
+            </span>
+            <span class="text-2xs font-mono opacity-80">{{ accounts().length }}</span>
+          </button>
+        }
+        @if (isTabAllowed('budget')) {
+          <button
+            type="button"
+            (click)="selectIptvSubTab('budget')"
+            [class.bg-indigo-600]="activeTab() === 'budget'"
+            [class.bg-slate-800]="activeTab() !== 'budget'"
+            class="px-3 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between cursor-pointer"
+          >
+            <span class="flex items-center gap-1.5">
+              <mat-icon class="text-base">account_balance_wallet</mat-icon>
+              <span>Бюджет</span>
+            </span>
+            <span class="text-2xs font-mono opacity-80">${{ (budgetSummary()?.providerBalanceUsd || 0).toFixed(0) }}</span>
+          </button>
+        }
+        @if (isTabAllowed('analytics')) {
+          <button
+            type="button"
+            (click)="selectIptvSubTab('analytics')"
+            [class.bg-indigo-600]="activeTab() === 'analytics'"
+            [class.bg-slate-800]="activeTab() !== 'analytics'"
+            class="px-3 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+          >
+            <mat-icon class="text-base">analytics</mat-icon>
+            <span>Аналітика</span>
+          </button>
+        }
+        @if (isTabAllowed('payments')) {
+          <button
+            type="button"
+            (click)="selectIptvSubTab('payments')"
+            [class.bg-indigo-600]="activeTab() === 'payments'"
+            [class.bg-slate-800]="activeTab() !== 'payments'"
+            class="col-span-2 px-3 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+          >
+            <mat-icon class="text-base">receipt_long</mat-icon>
+            <span>Історія оплат та розсилка Viber</span>
+          </button>
+        }
+      </div>
+    </div>
+  }
+
+  <!-- Mobile Bottom Navigation Bar (Grouped IPTV Tab + Utilities) -->
   <nav
     id="mobile-bottom-nav"
-    class="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 py-1.5 px-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar overscroll-x-contain shadow-2xl"
+    class="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-slate-950/95 backdrop-blur-md border-t border-slate-800 py-1.5 px-2 flex items-center justify-around gap-1 overflow-x-auto no-scrollbar overscroll-x-contain shadow-2xl"
   >
-    <button
-      id="mobile-nav-clients"
-      type="button"
-      (click)="setTab('clients')"
-      [class.bg-slate-800]="activeTab() === 'clients'"
-      [class.text-emerald-400]="activeTab() === 'clients'"
-      [class.text-slate-400]="activeTab() !== 'clients'"
-      class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
-    >
-      <mat-icon class="text-lg">group</mat-icon>
-      <span class="mt-0.5 whitespace-nowrap">Клієнти</span>
-    </button>
+    @if (isTabAllowed('electricity')) {
+      <button
+        id="mobile-nav-electricity"
+        type="button"
+        (click)="setTab('electricity')"
+        [class.bg-indigo-600]="activeTab() === 'electricity'"
+        [class.text-white]="activeTab() === 'electricity'"
+        [class.text-slate-400]="activeTab() !== 'electricity'"
+        class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
+      >
+        <mat-icon class="text-lg">bolt</mat-icon>
+        <span class="mt-0.5 whitespace-nowrap">Електро</span>
+      </button>
+    }
 
-    <button
-      id="mobile-nav-accounts"
-      type="button"
-      (click)="setTab('accounts')"
-      [class.bg-slate-800]="activeTab() === 'accounts'"
-      [class.text-emerald-400]="activeTab() === 'accounts'"
-      [class.text-slate-400]="activeTab() !== 'accounts'"
-      class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
-    >
-      <mat-icon class="text-lg">dns</mat-icon>
-      <span class="mt-0.5 whitespace-nowrap">Акаунти</span>
-    </button>
+    @if (isTabAllowed('water_waste')) {
+      <button
+        id="mobile-nav-water-waste"
+        type="button"
+        (click)="setTab('water_waste')"
+        [class.bg-indigo-600]="activeTab() === 'water_waste'"
+        [class.text-white]="activeTab() === 'water_waste'"
+        [class.text-slate-400]="activeTab() !== 'water_waste'"
+        class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
+      >
+        <mat-icon class="text-lg">water_drop</mat-icon>
+        <span class="mt-0.5 whitespace-nowrap">Вода</span>
+      </button>
+    }
 
-    <button
-      id="mobile-nav-budget"
-      type="button"
-      (click)="setTab('budget')"
-      [class.bg-slate-800]="activeTab() === 'budget'"
-      [class.text-emerald-400]="activeTab() === 'budget'"
-      [class.text-slate-400]="activeTab() !== 'budget'"
-      class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
-    >
-      <mat-icon class="text-lg">account_balance_wallet</mat-icon>
-      <span class="mt-0.5 whitespace-nowrap">Бюджет</span>
-    </button>
-
-    <button
-      id="mobile-nav-analytics"
-      type="button"
-      (click)="setTab('analytics')"
-      [class.bg-slate-800]="activeTab() === 'analytics'"
-      [class.text-emerald-400]="activeTab() === 'analytics'"
-      [class.text-slate-400]="activeTab() !== 'analytics'"
-      class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
-    >
-      <mat-icon class="text-lg">analytics</mat-icon>
-      <span class="mt-0.5 whitespace-nowrap">Аналітика</span>
-    </button>
-
-    <button
-      id="mobile-nav-payments"
-      type="button"
-      (click)="setTab('payments')"
-      [class.bg-slate-800]="activeTab() === 'payments'"
-      [class.text-emerald-400]="activeTab() === 'payments'"
-      [class.text-slate-400]="activeTab() !== 'payments'"
-      class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
-    >
-      <mat-icon class="text-lg">receipt_long</mat-icon>
-      <span class="mt-0.5 whitespace-nowrap">Оплати</span>
-    </button>
-
-    <button
-      id="mobile-nav-electricity"
-      type="button"
-      (click)="setTab('electricity')"
-      [class.bg-slate-800]="activeTab() === 'electricity'"
-      [class.text-amber-400]="activeTab() === 'electricity'"
-      [class.text-slate-400]="activeTab() !== 'electricity'"
-      class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
-    >
-      <mat-icon class="text-lg">bolt</mat-icon>
-      <span class="mt-0.5 whitespace-nowrap">Електро</span>
-    </button>
-
-    <button
-      id="mobile-nav-water-waste"
-      type="button"
-      (click)="setTab('water_waste')"
-      [class.bg-slate-800]="activeTab() === 'water_waste'"
-      [class.text-cyan-400]="activeTab() === 'water_waste'"
-      [class.text-slate-400]="activeTab() !== 'water_waste'"
-      class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
-    >
-      <mat-icon class="text-lg">water_drop</mat-icon>
-      <span class="mt-0.5 whitespace-nowrap">Вода/Сміття</span>
-    </button>
+    <!-- Grouped Mobile Tab: IPTV Білінг -->
+    @if (hasAnyIptvTabAllowed()) {
+      <button
+        id="mobile-nav-iptv-group"
+        type="button"
+        (click)="toggleMobileIptvDrawer()"
+        [class.bg-indigo-600]="isIptvTabActive() || isMobileIptvDrawerOpen()"
+        [class.text-white]="isIptvTabActive() || isMobileIptvDrawerOpen()"
+        [class.text-slate-400]="!isIptvTabActive() && !isMobileIptvDrawerOpen()"
+        class="shrink-0 min-w-[68px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-bold rounded-xl transition-all cursor-pointer select-none active:scale-95 relative"
+      >
+        <mat-icon class="text-lg">live_tv</mat-icon>
+        <span class="mt-0.5 whitespace-nowrap flex items-center gap-0.5">
+          <span>{{ isIptvTabActive() ? activeIptvTabLabel() : 'IPTV' }}</span>
+          <mat-icon class="text-xs leading-none">{{ isMobileIptvDrawerOpen() ? 'expand_less' : 'expand_more' }}</mat-icon>
+        </span>
+      </button>
+    }
 
     <!-- Mobile Tab: Users (Admin Only) -->
     @if (isAdmin()) {
@@ -915,8 +1306,8 @@
         id="mobile-nav-users"
         type="button"
         (click)="setTab('users')"
-        [class.bg-slate-800]="activeTab() === 'users'"
-        [class.text-emerald-400]="activeTab() === 'users'"
+        [class.bg-indigo-600]="activeTab() === 'users'"
+        [class.text-white]="activeTab() === 'users'"
         [class.text-slate-400]="activeTab() !== 'users'"
         class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95 relative"
       >
@@ -928,18 +1319,20 @@
       </button>
     }
 
-    <button
-      id="mobile-nav-settings"
-      type="button"
-      (click)="setTab('settings')"
-      [class.bg-slate-800]="activeTab() === 'settings'"
-      [class.text-emerald-400]="activeTab() === 'settings'"
-      [class.text-slate-400]="activeTab() !== 'settings'"
-      class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
-    >
-      <mat-icon class="text-lg">settings</mat-icon>
-      <span class="mt-0.5 whitespace-nowrap">Опції</span>
-    </button>
+    @if (isTabAllowed('settings')) {
+      <button
+        id="mobile-nav-settings"
+        type="button"
+        (click)="setTab('settings')"
+        [class.bg-indigo-600]="activeTab() === 'settings'"
+        [class.text-white]="activeTab() === 'settings'"
+        [class.text-slate-400]="activeTab() !== 'settings'"
+        class="shrink-0 min-w-[64px] px-2.5 py-1.5 flex flex-col items-center justify-center text-2xs font-medium rounded-xl transition-all cursor-pointer select-none active:scale-95"
+      >
+        <mat-icon class="text-lg">settings</mat-icon>
+        <span class="mt-0.5 whitespace-nowrap">Опції</span>
+      </button>
+    }
   </nav>
 
   <!-- Modals -->

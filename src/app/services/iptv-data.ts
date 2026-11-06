@@ -18,6 +18,9 @@ import {
   ProviderBalanceAdjustment,
   UserRole,
   AppUser,
+  AppTabId,
+  DEFAULT_USER_TABS,
+  ALL_ADMIN_TABS,
   calculateExtension,
   addMonthsExact,
   computeClientStatus,
@@ -187,13 +190,63 @@ export interface BroadcastResult {
   }[];
 }
 
+export interface DatabaseInstanceInfo {
+  mode: 'cloudsql' | 'external';
+  provider: string;
+  host: string;
+  database: string;
+  configured: boolean;
+  connected: boolean;
+  error: string | null;
+  counts: {
+    clients: number;
+    payments: number;
+    providerAccounts: number;
+    providerDeposits: number;
+    utilityAccounts: number;
+    utilityReadings: number;
+    customLedgerEntries: number;
+    users: number;
+    settingsConfigured: boolean;
+  };
+}
+
+export interface CopyDatabasesSummary {
+  success: boolean;
+  sourceMode: 'cloudsql' | 'external';
+  targetMode: 'cloudsql' | 'external';
+  sourceProvider: string;
+  targetProvider: string;
+  counts: {
+    clients: number;
+    payments: number;
+    providerAccounts: number;
+    providerDeposits: number;
+    utilityAccounts: number;
+    utilityReadings: number;
+    customLedgerEntries: number;
+    providerBalanceAdjustments: number;
+    accountDeductionOverrides: number;
+    users: number;
+    settings: number;
+  };
+  totalCopied: number;
+  message?: string;
+  error?: string;
+}
+
 export interface CloudDbStatus {
+  activeMode?: 'cloudsql' | 'external';
   provider: string;
   projectId: string;
   databaseId: string;
   connected: boolean;
   lastSync: string | null;
   error?: string | null;
+  instances?: {
+    cloudsql: DatabaseInstanceInfo;
+    external: DatabaseInstanceInfo;
+  };
   stats?: {
     clientsCount: number;
     paymentsCount: number;
@@ -214,6 +267,18 @@ export interface DtekHourSchedule {
   secondHalfPower: boolean;
 }
 
+export interface DtekDaySchedule {
+  dateKey: string;
+  scheduleDate: string;
+  dayLabel: string;
+  isToday: boolean;
+  isTomorrow: boolean;
+  queueGroup: string;
+  totalPowerHours: number;
+  totalOutageHours: number;
+  hourlySchedule: DtekHourSchedule[];
+}
+
 export interface DtekShutdownInfo {
   success: boolean;
   city?: string;
@@ -228,6 +293,11 @@ export interface DtekShutdownInfo {
   queueGroup?: string | null;
   scheduleDate?: string | null;
   hourlySchedule?: DtekHourSchedule[];
+  dailySchedules?: DtekDaySchedule[];
+  tomorrowSchedule?: DtekDaySchedule | null;
+  isPowerAvailableNow?: boolean;
+  currentKyivHour?: number;
+  kyivTime?: string;
   houseData?: Record<string, unknown> | null;
   raw?: Record<string, unknown>;
   error?: string;
@@ -253,9 +323,15 @@ export class IptvData {
   readonly utilityReadings = signal<UtilityReading[]>([]);
   readonly dbStatus = signal<CloudDbStatus | null>(null);
   readonly dtekShutdownInfo = signal<DtekShutdownInfo | null>(null);
+  readonly dtekCities = signal<string[]>([]);
+  readonly dtekStreets = signal<string[]>([]);
+  readonly isDtekCatalogLoading = signal<boolean>(false);
   readonly isDtekLoading = signal<boolean>(false);
   readonly dtekError = signal<string | null>(null);
   readonly isSyncingCloud = signal<boolean>(false);
+  readonly isSwitchingDb = signal<boolean>(false);
+  readonly isCopyingDb = signal<boolean>(false);
+  readonly lastCopyResult = signal<CopyDatabasesSummary | null>(null);
   readonly isLoading = signal<boolean>(false);
   readonly errorMessage = signal<string | null>(null);
   readonly successMessage = signal<string | null>(null);
@@ -264,19 +340,51 @@ export class IptvData {
 
   // User Authentication & Role Management Signals
   readonly currentUser = signal<AppUser | null>(null);
+  readonly realAdminUser = signal<AppUser | null>(null);
+  readonly impersonatedUser = signal<AppUser | null>(null);
+  readonly isImpersonating = computed<boolean>(() => !!this.impersonatedUser());
   readonly authToken = signal<string | null>(null);
   readonly isAuthLoading = signal<boolean>(true);
   readonly googleClientId = signal<string>('');
   readonly usersList = signal<AppUser[]>([]);
+  readonly adminUtilityAccounts = signal<UtilityAccount[]>([]);
 
   // Role Computed Flags
   readonly isAuthenticated = computed<boolean>(() => !!this.currentUser());
   readonly isAdmin = computed<boolean>(() => this.currentUser()?.role === 'admin');
+  readonly isRealAdmin = computed<boolean>(() => this.isAdmin() || this.realAdminUser()?.role === 'admin');
   readonly isViewer = computed<boolean>(() => this.currentUser()?.role === 'user');
   readonly isNewUser = computed<boolean>(() => this.currentUser()?.role === 'new');
-  readonly canEdit = computed<boolean>(() => !this.currentUser() || this.currentUser()?.role === 'admin');
+  readonly canEdit = computed<boolean>(() => {
+    const user = this.currentUser();
+    if (!user) return true;
+    if (user.role === 'admin') return true;
+    if (user.role === 'user') return user.canManageOwnData !== false;
+    return false;
+  });
   readonly canView = computed<boolean>(() => !this.currentUser() || this.currentUser()?.role === 'admin' || this.currentUser()?.role === 'user');
   readonly pendingUsersCount = computed<number>(() => this.usersList().filter((u) => u.role === 'new').length);
+
+  readonly allowedTabs = computed<AppTabId[]>(() => {
+    const user = this.currentUser();
+    if (!user || user.role === 'admin') {
+      return ALL_ADMIN_TABS;
+    }
+    if (user.role === 'user') {
+      if (Array.isArray(user.allowedTabs) && user.allowedTabs.length > 0) {
+        return user.allowedTabs;
+      }
+      return DEFAULT_USER_TABS;
+    }
+    return [];
+  });
+
+  isTabAllowed(tab: AppTabId): boolean {
+    const user = this.currentUser();
+    if (!user || user.role === 'admin') return true;
+    if (tab === 'users') return false;
+    return this.allowedTabs().includes(tab);
+  }
 
   // Utility accounts & tariffs computed properties
   readonly electricityAccounts = computed(() =>
@@ -579,7 +687,9 @@ export class IptvData {
 
   getAuthHeaders(): { headers: Record<string, string> } {
     const token = this.authToken() || (typeof localStorage !== 'undefined' ? localStorage.getItem('iptv_auth_token') : null);
-    const user = this.currentUser();
+    const realAdmin = this.realAdminUser();
+    const impersonated = this.impersonatedUser();
+    const user = realAdmin || this.currentUser();
     const headers: Record<string, string> = {};
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
@@ -590,13 +700,68 @@ export class IptvData {
     if (user?.email) {
       headers['x-auth-user-email'] = user.email;
     }
+    if (impersonated?.id) {
+      headers['x-impersonate-user-id'] = impersonated.id;
+    }
     return { headers };
+  }
+
+  async switchToTestUser(targetUser?: AppUser): Promise<void> {
+    const curr = this.currentUser();
+    if (curr && curr.role === 'admin' && !this.realAdminUser()) {
+      this.realAdminUser.set(curr);
+    }
+    if (!this.isRealAdmin()) return;
+
+    if (this.usersList().length === 0) {
+      await this.fetchUsers();
+    }
+
+    let testTarget =
+      targetUser ||
+      this.usersList().find((u) => u.id === 'user_test_sandbox' || u.email.toLowerCase() === 'test.user@homehub.local');
+
+    if (!testTarget) {
+      testTarget = {
+        id: 'user_test_sandbox',
+        email: 'test.user@homehub.local',
+        name: 'Тестовий Користувач (Перевірка доступу)',
+        picture: 'https://ui-avatars.com/api/?name=%D0%A2%D0%B5%D1%81%D1%82&background=6366f1&color=fff',
+        role: 'user',
+        createdAt: new Date().toISOString(),
+        lastLoginAt: new Date().toISOString(),
+        allowedTabs: ['electricity', 'water_waste'],
+        assignedUtilityAccountIds: [],
+        assignedClientIds: [],
+        canManageOwnData: true,
+      };
+    }
+
+    this.impersonatedUser.set(testTarget);
+    this.currentUser.set(testTarget);
+    await this.checkAuth();
+    await this.refreshAllData(false);
+    this.triggerSuccess(`Увімкнено режим перегляду очима користувача: ${this.currentUser()?.name || testTarget.name}`);
+  }
+
+  async exitTestUserMode(): Promise<void> {
+    const admin = this.realAdminUser();
+    this.impersonatedUser.set(null);
+    if (admin) {
+      this.currentUser.set(admin);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('iptv_auth_user', JSON.stringify(admin));
+      }
+    }
+    await this.checkAuth();
+    await Promise.all([this.refreshAllData(false), this.fetchUsers(), this.fetchAdminUtilityAccounts()]);
+    this.triggerSuccess('Ви повернулись у режим Адміністратора з повним доступом');
   }
 
   async checkAuth(): Promise<AppUser | null> {
     this.isAuthLoading.set(true);
     try {
-      if (typeof window !== 'undefined') {
+      if (typeof window !== 'undefined' && !this.impersonatedUser()) {
         const savedToken = localStorage.getItem('iptv_auth_token');
         if (savedToken) {
           this.authToken.set(savedToken);
@@ -606,6 +771,9 @@ export class IptvData {
           try {
             const parsed = JSON.parse(savedUserStr) as AppUser;
             this.currentUser.set(parsed);
+            if (parsed.role === 'admin') {
+              this.realAdminUser.set(parsed);
+            }
           } catch (e) {
             console.debug('Failed to parse cached user:', e);
           }
@@ -613,20 +781,35 @@ export class IptvData {
       }
 
       const res = await firstValueFrom(
-        this.http.get<{ authenticated: boolean; user: AppUser | null; googleClientId: string; totalUsersCount: number }>('/api/auth/me', this.getAuthHeaders())
+        this.http.get<{
+          authenticated: boolean;
+          user: AppUser | null;
+          realAdminUser?: AppUser | null;
+          googleClientId: string;
+          totalUsersCount: number;
+        }>('/api/auth/me', this.getAuthHeaders())
       );
 
       if (res.googleClientId) {
         this.googleClientId.set(res.googleClientId);
       }
 
+      if (res.realAdminUser) {
+        this.realAdminUser.set(res.realAdminUser);
+      }
+
       if (res.user) {
         this.currentUser.set(res.user);
-        if (typeof window !== 'undefined') {
+        if (this.impersonatedUser() && res.user.id === this.impersonatedUser()?.id) {
+          this.impersonatedUser.set(res.user);
+        } else if (typeof window !== 'undefined' && !this.impersonatedUser()) {
           localStorage.setItem('iptv_auth_user', JSON.stringify(res.user));
+          if (res.user.role === 'admin') {
+            this.realAdminUser.set(res.user);
+          }
         }
-        if (res.user.role === 'admin') {
-          await this.fetchUsers();
+        if (res.user.role === 'admin' || res.realAdminUser?.role === 'admin') {
+          await Promise.all([this.fetchUsers(), this.fetchAdminUtilityAccounts()]);
         }
         return res.user;
       } else if (!this.currentUser()) {
@@ -649,7 +832,11 @@ export class IptvData {
       );
 
       if (res.success && res.user) {
+        this.impersonatedUser.set(null);
         this.currentUser.set(res.user);
+        if (res.user.role === 'admin') {
+          this.realAdminUser.set(res.user);
+        }
         this.authToken.set(res.token);
         if (typeof window !== 'undefined') {
           localStorage.setItem('iptv_auth_token', res.token);
@@ -657,7 +844,7 @@ export class IptvData {
         }
         this.triggerSuccess(res.message || 'Успішний вхід');
         if (res.user.role === 'admin') {
-          await this.fetchUsers();
+          await Promise.all([this.fetchUsers(), this.fetchAdminUtilityAccounts()]);
         }
         if (res.user.role !== 'new') {
           await this.refreshAllData(true);
@@ -675,12 +862,18 @@ export class IptvData {
   }
 
   async logout(): Promise<void> {
+    if (this.isImpersonating()) {
+      await this.exitTestUserMode();
+      return;
+    }
     try {
       await firstValueFrom(this.http.post('/api/auth/logout', {}, this.getAuthHeaders()));
     } catch (e) {
       console.debug('Logout request error:', e);
     }
     this.currentUser.set(null);
+    this.realAdminUser.set(null);
+    this.impersonatedUser.set(null);
     this.authToken.set(null);
     if (typeof window !== 'undefined') {
       localStorage.removeItem('iptv_auth_token');
@@ -690,14 +883,29 @@ export class IptvData {
   }
 
   async fetchUsers(): Promise<void> {
-    if (!this.isAdmin()) return;
+    if (!this.isRealAdmin()) return;
     try {
-      const data = await firstValueFrom(this.http.get<AppUser[]>('/api/users', this.getAuthHeaders()));
-      if (Array.isArray(data)) {
-        this.usersList.set(data);
+      const [usersData] = await Promise.all([
+        firstValueFrom(this.http.get<AppUser[]>('/api/users', this.getAuthHeaders())),
+        this.fetchAdminUtilityAccounts(),
+      ]);
+      if (Array.isArray(usersData)) {
+        this.usersList.set(usersData);
       }
     } catch (err) {
       console.warn('Error fetching users:', err);
+    }
+  }
+
+  async fetchAdminUtilityAccounts(): Promise<void> {
+    if (!this.isRealAdmin()) return;
+    try {
+      const data = await firstValueFrom(this.http.get<UtilityAccount[]>('/api/admin/utility-accounts', this.getAuthHeaders()));
+      if (Array.isArray(data)) {
+        this.adminUtilityAccounts.set(data);
+      }
+    } catch (err) {
+      console.warn('Error fetching admin utility accounts:', err);
     }
   }
 
@@ -705,12 +913,63 @@ export class IptvData {
     this.isLoading.set(true);
     try {
       const updated = await firstValueFrom(this.http.put<AppUser>(`/api/users/${userId}/role`, { role }, this.getAuthHeaders()));
-      this.usersList.update((list) => list.map((u) => (u.id === userId ? { ...u, role: updated.role } : u)));
-      const roleName = role === 'admin' ? 'Адміністратор (Повний доступ)' : (role === 'user' ? 'Користувач (Тільки перегляд)' : 'Новий (Без доступу)');
+      this.usersList.update((list) => list.map((u) => (u.id === userId ? { ...u, ...updated } : u)));
+      if (this.impersonatedUser()?.id === userId) {
+        const merged = { ...this.impersonatedUser()!, ...updated };
+        this.impersonatedUser.set(merged);
+        this.currentUser.set(merged);
+        if (role !== 'new') {
+          await this.refreshAllData(true);
+        }
+      }
+      const roleName = role === 'admin' ? 'Адміністратор (Повний доступ)' : (role === 'user' ? 'Користувач' : 'Новий (Без доступу)');
       this.triggerSuccess(`Права користувача змінено: ${roleName}`);
       return true;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Помилка зміни прав';
+      this.triggerError(msg);
+      return false;
+    } finally {
+      this.isLoading.set(false);
+    }
+  }
+
+  async updateUserPermissions(
+    userId: string,
+    payload: {
+      role?: UserRole;
+      name?: string;
+      allowedTabs?: AppTabId[];
+      assignedUtilityAccountIds?: string[];
+      assignedClientIds?: string[];
+      canManageOwnData?: boolean;
+    }
+  ): Promise<boolean> {
+    this.isLoading.set(true);
+    try {
+      const updated = await firstValueFrom(
+        this.http.put<AppUser>(`/api/users/${userId}/permissions`, payload, this.getAuthHeaders())
+      );
+      this.usersList.update((list) => list.map((u) => (u.id === userId ? { ...u, ...updated } : u)));
+      if (this.impersonatedUser()?.id === userId) {
+        const merged = { ...this.impersonatedUser()!, ...updated };
+        this.impersonatedUser.set(merged);
+        this.currentUser.set(merged);
+      } else {
+        const curr = this.currentUser();
+        if (curr && curr.id === userId) {
+          this.currentUser.set({ ...curr, ...updated });
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('iptv_auth_user', JSON.stringify(this.currentUser()));
+          }
+        }
+      }
+      await Promise.all([this.fetchAdminUtilityAccounts(), this.fetchUtilityData(), this.fetchClients()]);
+      this.triggerSuccess('Права доступу, вкладки та привʼязані будинки оновлено!');
+      return true;
+    } catch (err: unknown) {
+      const httpErr = err as { error?: { error?: string }; message?: string };
+      const msg = httpErr?.error?.error || httpErr?.message || 'Помилка оновлення прав доступу';
       this.triggerError(msg);
       return false;
     } finally {
@@ -826,12 +1085,41 @@ export class IptvData {
     }
   }
 
-  async fetchDtekShutdowns(): Promise<DtekShutdownInfo | null> {
+  async fetchDtekCatalog(city?: string): Promise<{ cities: string[]; streets: string[] }> {
+    this.isDtekCatalogLoading.set(true);
+    try {
+      const url = city ? `/api/utility/dtek-streets?city=${encodeURIComponent(city)}` : '/api/utility/dtek-streets';
+      const res = await firstValueFrom(this.http.get<{ cities: string[]; streets: string[] }>(url));
+      if (res && Array.isArray(res.cities) && res.cities.length > 0) {
+        this.dtekCities.set(res.cities);
+      }
+      if (res && Array.isArray(res.streets)) {
+        this.dtekStreets.set(res.streets);
+      }
+      return res || { cities: [], streets: [] };
+    } catch (e) {
+      console.warn('Error fetching DTEK catalog:', e);
+      return { cities: this.dtekCities(), streets: [] };
+    } finally {
+      this.isDtekCatalogLoading.set(false);
+    }
+  }
+
+  async fetchDtekShutdowns(city?: string, street?: string, houseNum?: string, forceRefresh = false): Promise<DtekShutdownInfo | null> {
     this.isDtekLoading.set(true);
     this.dtekError.set(null);
     try {
+      const params = new URLSearchParams();
+      if (city) params.set('city', city);
+      if (street) params.set('street', street);
+      if (houseNum) params.set('houseNum', houseNum);
+      if (forceRefresh) params.set('refresh', 'true');
+
+      const queryString = params.toString();
+      const url = queryString ? `/api/utility/dtek-shutdowns?${queryString}` : '/api/utility/dtek-shutdowns';
+
       const info = await firstValueFrom(
-        this.http.get<DtekShutdownInfo>('/api/utility/dtek-shutdowns')
+        this.http.get<DtekShutdownInfo>(url)
       );
       if (info) {
         this.dtekShutdownInfo.set(info);
@@ -846,10 +1134,13 @@ export class IptvData {
     }
   }
 
+
   async syncCloudDatabase(silent = false): Promise<boolean> {
     this.isSyncingCloud.set(true);
     try {
-      const res = await firstValueFrom(this.http.post<{ success: boolean; message: string }>('/api/database/sync', {}));
+      const res = await firstValueFrom(
+        this.http.post<{ success: boolean; message: string }>('/api/database/sync', {}, this.getAuthHeaders())
+      );
       await Promise.all([
         this.fetchClients(),
         this.fetchPayments(),
@@ -865,7 +1156,12 @@ export class IptvData {
       }
       return true;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Помилка синхронізації з базою даних';
+      const httpErr = err as { error?: { error?: string; message?: string }; message?: string };
+      const msg =
+        httpErr?.error?.error ||
+        httpErr?.error?.message ||
+        httpErr?.message ||
+        'Помилка синхронізації з базою даних';
       if (!silent) {
         this.triggerError(msg);
       }
@@ -878,12 +1174,19 @@ export class IptvData {
   async pushAllToCloud(): Promise<boolean> {
     this.isSyncingCloud.set(true);
     try {
-      const res = await firstValueFrom(this.http.post<{ success: boolean; message: string }>('/api/database/push-all', {}));
+      const res = await firstValueFrom(
+        this.http.post<{ success: boolean; message: string }>('/api/database/push-all', {}, this.getAuthHeaders())
+      );
       await this.fetchDbStatus();
       this.triggerSuccess(res.message || 'Всі записи завантажено у базу даних!');
       return true;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Помилка вивантаження у базу даних';
+      const httpErr = err as { error?: { error?: string; message?: string }; message?: string };
+      const msg =
+        httpErr?.error?.error ||
+        httpErr?.error?.message ||
+        httpErr?.message ||
+        'Помилка вивантаження у базу даних';
       this.triggerError(msg);
       return false;
     } finally {
@@ -891,10 +1194,86 @@ export class IptvData {
     }
   }
 
+  async switchDatabaseMode(mode: 'cloudsql' | 'external'): Promise<boolean> {
+    this.isSwitchingDb.set(true);
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{
+          success: boolean;
+          activeMode: 'cloudsql' | 'external';
+          provider: string;
+          databaseId: string;
+          message: string;
+          error?: string;
+        }>('/api/database/switch', { mode }, this.getAuthHeaders())
+      );
+      await this.refreshAllData(true);
+      await this.fetchDbStatus();
+      this.triggerSuccess(
+        res.message ||
+          (mode === 'cloudsql'
+            ? 'Перемкнуто на Google Cloud SQL!'
+            : 'Перемкнуто на зовнішню PostgreSQL (Aiven Cloud)!')
+      );
+      this.broadcastDataChange();
+      return true;
+    } catch (err: unknown) {
+      const httpErr = err as { error?: { error?: string; message?: string }; message?: string };
+      const msg =
+        httpErr?.error?.error ||
+        httpErr?.error?.message ||
+        httpErr?.message ||
+        'Помилка перемикання бази даних';
+      await this.fetchDbStatus();
+      this.triggerError(msg);
+      return false;
+    } finally {
+      this.isSwitchingDb.set(false);
+    }
+  }
+
+  async copyBetweenDatabases(
+    sourceMode?: 'cloudsql' | 'external',
+    targetMode?: 'cloudsql' | 'external'
+  ): Promise<boolean> {
+    this.isCopyingDb.set(true);
+    try {
+      const res = await firstValueFrom(
+        this.http.post<CopyDatabasesSummary>('/api/database/copy', {
+          sourceMode,
+          targetMode,
+        }, this.getAuthHeaders())
+      );
+      this.lastCopyResult.set(res);
+      await this.refreshAllData(true);
+      await this.fetchDbStatus();
+      this.triggerSuccess(
+        res.message ||
+          `Успішно скопійовано ${res.totalCopied} записів з "${res.sourceProvider}" у "${res.targetProvider}"!`
+      );
+      this.broadcastDataChange();
+      return true;
+    } catch (err: unknown) {
+      const httpErr = err as { error?: { error?: string; message?: string }; message?: string };
+      const msg =
+        httpErr?.error?.error ||
+        httpErr?.error?.message ||
+        httpErr?.message ||
+        'Помилка копіювання даних між базами';
+      await this.fetchDbStatus();
+      this.triggerError(msg);
+      return false;
+    } finally {
+      this.isCopyingDb.set(false);
+    }
+  }
+
   async purgeTestData(): Promise<boolean> {
     this.isSyncingCloud.set(true);
     try {
-      const res = await firstValueFrom(this.http.post<{ success: boolean; message: string }>('/api/database/purge-test-data', {}));
+      const res = await firstValueFrom(
+        this.http.post<{ success: boolean; message: string }>('/api/database/purge-test-data', {}, this.getAuthHeaders())
+      );
       await Promise.all([
         this.fetchClients(),
         this.fetchPayments(),
@@ -907,7 +1286,12 @@ export class IptvData {
       this.triggerSuccess(res.message || 'Тестові дані успішно видалено!');
       return true;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Помилка очищення тестових даних';
+      const httpErr = err as { error?: { error?: string; message?: string }; message?: string };
+      const msg =
+        httpErr?.error?.error ||
+        httpErr?.error?.message ||
+        httpErr?.message ||
+        'Помилка очищення тестових даних';
       this.triggerError(msg);
       return false;
     } finally {
@@ -917,7 +1301,7 @@ export class IptvData {
 
   async fetchClients(): Promise<void> {
     try {
-      const data = await firstValueFrom(this.http.get<Client[]>('/api/clients'));
+      const data = await firstValueFrom(this.http.get<Client[]>('/api/clients', this.getAuthHeaders()));
       if (Array.isArray(data)) {
         const mapped = data.map((c) => ({
           ...c,
@@ -935,7 +1319,7 @@ export class IptvData {
 
   async fetchPayments(): Promise<void> {
     try {
-      const data = await firstValueFrom(this.http.get<PaymentTransaction[]>('/api/payments'));
+      const data = await firstValueFrom(this.http.get<PaymentTransaction[]>('/api/payments', this.getAuthHeaders()));
       if (Array.isArray(data)) {
         this.payments.set(data);
         this.savePaymentsLocal(data);
@@ -947,7 +1331,7 @@ export class IptvData {
 
   async fetchSettings(): Promise<void> {
     try {
-      const data = await firstValueFrom(this.http.get<AppSettings>('/api/settings'));
+      const data = await firstValueFrom(this.http.get<AppSettings>('/api/settings', this.getAuthHeaders()));
       if (data) {
         const tariffs = normalizeUtilityTariffs(data.utilityTariffsSettings);
         const merged: AppSettings = { ...DEFAULT_SETTINGS, ...data, utilityTariffsSettings: tariffs };
@@ -962,7 +1346,7 @@ export class IptvData {
   async fetchStats(): Promise<void> {
     try {
       const data = await firstValueFrom(
-        this.http.get<{ summary: StatsSummary; monthlyBreakdown: MonthRevenueStat[] }>('/api/stats')
+        this.http.get<{ summary: StatsSummary; monthlyBreakdown: MonthRevenueStat[] }>('/api/stats', this.getAuthHeaders())
       );
       if (data && data.monthlyBreakdown) {
         this.monthlyStats.set(data.monthlyBreakdown);
@@ -974,7 +1358,7 @@ export class IptvData {
 
   async fetchAccounts(): Promise<void> {
     try {
-      const data = await firstValueFrom(this.http.get<ProviderAccountDetailed[]>('/api/accounts'));
+      const data = await firstValueFrom(this.http.get<ProviderAccountDetailed[]>('/api/accounts', this.getAuthHeaders()));
       if (Array.isArray(data)) {
         this.accounts.set(data);
       }
@@ -985,7 +1369,7 @@ export class IptvData {
 
   async fetchBudget(): Promise<void> {
     try {
-      const res = await firstValueFrom(this.http.get<BudgetApiResponse>('/api/budget'));
+      const res = await firstValueFrom(this.http.get<BudgetApiResponse>('/api/budget', this.getAuthHeaders()));
       if (res) {
         this.budgetSummary.set(res.summary);
         this.deposits.set(res.deposits || []);
@@ -1433,20 +1817,20 @@ export class IptvData {
       const resTariffs = normalizeUtilityTariffs(res.utilityTariffsSettings);
       const merged: AppSettings = { ...this.settings(), ...res, utilityTariffsSettings: resTariffs };
       this.settings.set(merged);
-      this.saveSettingsLocal(merged);
-      this.triggerSuccess('Налаштування успішно збережено в базу даних!');
+      this.triggerSuccess('Налаштування успішно збережено у базу даних PostgreSQL!');
+      this.broadcastDataChange();
     } catch (err: unknown) {
-      console.warn('Error saving settings to server, saving locally:', err);
-      const merged: AppSettings = { ...this.settings(), ...newSettings };
-      this.settings.set(merged);
-      this.saveSettingsLocal(merged);
-      this.triggerSuccess('Налаштування збережено локально');
+      console.error('Error saving settings to PostgreSQL database:', err);
+      const msg =
+        (err as { error?: { error?: string } })?.error?.error ||
+        (err instanceof Error ? err.message : 'Не вдалося зберегти налаштування в базу даних');
+      this.triggerError('Помилка збереження: ' + msg);
+      throw err;
     } finally {
       this.isLoading.set(false);
-      await this.refreshAllData(true);
-      this.broadcastDataChange();
     }
   }
+
 
   // Custom Ledger Entries CRUD
   async addLedgerEntry(entry: Partial<BudgetLedgerItem>): Promise<boolean> {
@@ -1544,7 +1928,7 @@ export class IptvData {
   async fetchUtilityData(): Promise<void> {
     try {
       const data = await firstValueFrom(
-        this.http.get<{ accounts: UtilityAccount[]; readings: UtilityReading[] }>('/api/utility/data')
+        this.http.get<{ accounts: UtilityAccount[]; readings: UtilityReading[] }>('/api/utility/data', this.getAuthHeaders())
       );
       if (data) {
         if (Array.isArray(data.accounts)) {
@@ -1556,8 +1940,178 @@ export class IptvData {
           this.saveUtilityReadingsLocal(data.readings);
         }
       }
+      if (this.isAdmin()) {
+        await this.fetchAdminUtilityAccounts();
+      }
     } catch (err) {
       console.warn('Error fetching utility data:', err);
+    }
+  }
+
+  async saveCabinetCredentials(
+    accountId: string,
+    payload: {
+      dtekLogin?: string;
+      dtekPassword?: string;
+      clearDtekPassword?: boolean;
+      ooekLogin?: string;
+      ooekPassword?: string;
+      clearOoekPassword?: boolean;
+      ooekAccountNumber?: string;
+    }
+  ): Promise<UtilityAccount | null> {
+    this.isLoading.set(true);
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{ success: boolean; account: UtilityAccount; message?: string }>(
+          `/api/utility/accounts/${accountId}/cabinet-credentials`,
+          payload,
+          this.getAuthHeaders()
+        )
+      );
+      if (res?.account) {
+        this.utilityAccounts.update((list) =>
+          list.map((a) => (a.id === res.account.id ? res.account : a))
+        );
+      }
+      this.triggerSuccess(res?.message || 'Облікові дані зашифровано (AES-256-GCM) та збережено!');
+      return res?.account || null;
+    } catch (err: unknown) {
+      const httpErr = err as { error?: { error?: string }; message?: string };
+      const msg = httpErr?.error?.error || httpErr?.message || 'Помилка збереження облікових даних';
+      this.triggerError(msg);
+      return null;
+    } finally {
+      this.isLoading.set(false);
+    }
+  }
+
+  async syncOoekCabinet(
+    accountId: string,
+    payload?: { ooekLogin?: string; ooekPassword?: string; ooekAccountNumber?: string }
+  ): Promise<{
+    success: boolean;
+    amountToPayUah?: number | null;
+    statusMessage?: string;
+    account?: UtilityAccount;
+    message?: string;
+  }> {
+    this.isLoading.set(true);
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{
+          success: boolean;
+          amountToPayUah?: number | null;
+          statusMessage?: string;
+          account?: UtilityAccount;
+          message?: string;
+          error?: string;
+        }>(`/api/utility/accounts/${accountId}/ooek-sync`, payload || {}, this.getAuthHeaders())
+      );
+      if (res?.account) {
+        this.utilityAccounts.update((list) =>
+          list.map((a) => (a.id === res.account!.id ? res.account! : a))
+        );
+      }
+      if (res?.success) {
+        this.triggerSuccess(res.message || 'Дані з кабінету ТОВ «ООЕК» оновлено!');
+      } else if (res?.statusMessage || res?.error) {
+        this.triggerError(res.statusMessage || res.error || 'Помилка синхронізації ООЕК');
+      }
+      return res;
+    } catch (err: unknown) {
+      const httpErr = err as { error?: { error?: string; statusMessage?: string; account?: UtilityAccount }; message?: string };
+      if (httpErr?.error?.account) {
+        this.utilityAccounts.update((list) =>
+          list.map((a) => (a.id === httpErr.error!.account!.id ? httpErr.error!.account! : a))
+        );
+      }
+      const msg = httpErr?.error?.error || httpErr?.error?.statusMessage || httpErr?.message || 'Помилка підключення до кабінету ООЕК';
+      this.triggerError(msg);
+      return { success: false, statusMessage: msg };
+    } finally {
+      this.isLoading.set(false);
+    }
+  }
+
+  async syncDtekCabinet(
+    accountId: string,
+    payload?: { dtekLogin?: string; dtekPassword?: string }
+  ): Promise<{
+    success: boolean;
+    wafBlocked?: boolean;
+    statusMessage?: string;
+    account?: UtilityAccount;
+    message?: string;
+  }> {
+    this.isLoading.set(true);
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{
+          success: boolean;
+          wafBlocked?: boolean;
+          statusMessage?: string;
+          account?: UtilityAccount;
+          message?: string;
+        }>(`/api/utility/accounts/${accountId}/dtek-cabinet-sync`, payload || {}, this.getAuthHeaders())
+      );
+      if (res?.account) {
+        this.utilityAccounts.update((list) =>
+          list.map((a) => (a.id === res.account!.id ? res.account! : a))
+        );
+      }
+      if (res?.success) {
+        this.triggerSuccess(res.message || res.statusMessage || 'Кабінет ДТЕК синхронізовано!');
+      } else if (res?.statusMessage) {
+        this.triggerSuccess(res.statusMessage);
+      }
+      return res;
+    } catch (err: unknown) {
+      const httpErr = err as { error?: { error?: string; statusMessage?: string; account?: UtilityAccount }; message?: string };
+      if (httpErr?.error?.account) {
+        this.utilityAccounts.update((list) =>
+          list.map((a) => (a.id === httpErr.error!.account!.id ? httpErr.error!.account! : a))
+        );
+      }
+      const msg = httpErr?.error?.error || httpErr?.error?.statusMessage || httpErr?.message || 'Помилка синхронізації з кабінетом ДТЕК';
+      this.triggerError(msg);
+      return { success: false, statusMessage: msg };
+    } finally {
+      this.isLoading.set(false);
+    }
+  }
+
+  async submitReadingToDtekCabinet(
+    accountId: string,
+    payload: { readingT1: number; readingT2?: number | null; date?: string }
+  ): Promise<{ success: boolean; reading?: UtilityReading; message?: string }> {
+    this.isLoading.set(true);
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{
+          success: boolean;
+          reading?: UtilityReading;
+          account?: UtilityAccount;
+          message?: string;
+        }>(`/api/utility/accounts/${accountId}/dtek-cabinet-submit`, payload, this.getAuthHeaders())
+      );
+      if (res?.reading) {
+        this.utilityReadings.update((list) => [res.reading!, ...list]);
+      }
+      if (res?.account) {
+        this.utilityAccounts.update((list) =>
+          list.map((a) => (a.id === res.account!.id ? res.account! : a))
+        );
+      }
+      this.triggerSuccess(res?.message || 'Покази зафіксовано та відправлено!');
+      return res;
+    } catch (err: unknown) {
+      const httpErr = err as { error?: { error?: string }; message?: string };
+      const msg = httpErr?.error?.error || httpErr?.message || 'Помилка передачі показів';
+      this.triggerError(msg);
+      return { success: false, message: msg };
+    } finally {
+      this.isLoading.set(false);
     }
   }
 

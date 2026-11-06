@@ -20,6 +20,7 @@ export const clients = pgTable('clients', {
   notes: text('notes'),
   lastReminderDate: text('last_reminder_date'),
   lastReminderStatus: text('last_reminder_status'),
+  ownerUserId: text('owner_user_id'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
 });
@@ -57,6 +58,7 @@ export const providerAccounts = pgTable('provider_accounts', {
   totalDeductedUsd: real('total_deducted_usd').notNull().default(0),
   renewals: jsonb('renewals').$type<Record<string, unknown>[]>() ,
   notes: text('notes'),
+  ownerUserId: text('owner_user_id'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at'),
 });
@@ -95,6 +97,10 @@ export const utilityAccounts = pgTable('utility_accounts', {
   name: text('name').notNull(),
   accountNumber: text('account_number').notNull(),
   address: text('address'),
+  city: text('city'),
+  street: text('street'),
+  houseNum: text('house_num'),
+  dtekQueueGroup: text('dtek_queue_group'),
   meterNumber: text('meter_number'),
   electricityTariffType: text('electricity_tariff_type').notNull().default('single'), // 'single' | 'dual'
   residentsCount: integer('residents_count').notNull().default(1),
@@ -105,6 +111,20 @@ export const utilityAccounts = pgTable('utility_accounts', {
   wasteEnabled: boolean('waste_enabled').default(true),
   balanceUah: real('balance_uah').default(0),
   notes: text('notes'),
+  ownerUserId: text('owner_user_id'),
+  assignedUserIds: jsonb('assigned_user_ids').$type<string[]>().default([]),
+  dtekLogin: text('dtek_login'),
+  dtekPasswordEnc: text('dtek_password_enc'),
+  dtekCabinetStatus: text('dtek_cabinet_status'),
+  dtekCabinetLastSync: text('dtek_cabinet_last_sync'),
+  ooekLogin: text('ooek_login'),
+  ooekPasswordEnc: text('ooek_password_enc'),
+  ooekAccountNumber: text('ooek_account_number'),
+  ooekBalanceUah: real('ooek_balance_uah'),
+  ooekLastBillUah: real('ooek_last_bill_uah'),
+  ooekHistory: jsonb('ooek_history').$type<Record<string, unknown>[]>().default([]),
+  ooekCabinetStatus: text('ooek_cabinet_status'),
+  ooekCabinetLastSync: text('ooek_cabinet_last_sync'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at'),
 });
@@ -131,6 +151,7 @@ export const utilityReadings = pgTable('utility_readings', {
   readingPurpose: text('reading_purpose').default('billing'),
   daysSinceLastReading: real('days_since_last_reading'),
   dailyAvgConsumption: real('daily_avg_consumption'),
+  ownerUserId: text('owner_user_id'),
   createdAt: text('created_at').notNull(),
 });
 
@@ -173,4 +194,21 @@ export const accountDeductionOverrides = pgTable('account_deduction_overrides', 
   note: text('note'),
   createdAt: text('created_at'),
 });
+
+export const users = pgTable('users', {
+  id: text('id').primaryKey(),
+  email: text('email').notNull(),
+  name: text('name').notNull(),
+  picture: text('picture'),
+  role: text('role').notNull().default('admin'),
+  status: text('status').notNull().default('active'),
+  sub: text('sub'),
+  allowedTabs: jsonb('allowed_tabs').$type<string[]>(),
+  assignedUtilityAccountIds: jsonb('assigned_utility_account_ids').$type<string[]>(),
+  assignedClientIds: jsonb('assigned_client_ids').$type<string[]>(),
+  canManageOwnData: boolean('can_manage_own_data').default(true),
+  createdAt: text('created_at').notNull(),
+  lastLoginAt: text('last_login_at'),
+});
+
 

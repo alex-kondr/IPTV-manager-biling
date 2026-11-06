@@ -5,12 +5,51 @@ export type SubscriptionPlanType = '1usd' | '2usd' | 'custom';
 
 export type UserRole = 'admin' | 'user' | 'new';
 
+export type AppTabId =
+  | 'clients'
+  | 'accounts'
+  | 'budget'
+  | 'analytics'
+  | 'payments'
+  | 'electricity'
+  | 'water_waste'
+  | 'users'
+  | 'settings';
+
+export const ALL_USER_ASSIGNABLE_TABS: { id: AppTabId; label: string; icon: string; badgeColor: string }[] = [
+  { id: 'electricity', label: 'Електроенергія', icon: 'bolt', badgeColor: 'amber' },
+  { id: 'water_waste', label: 'Вода та сміття', icon: 'water_drop', badgeColor: 'cyan' },
+  { id: 'clients', label: 'Клієнти IPTV', icon: 'group', badgeColor: 'emerald' },
+  { id: 'payments', label: 'Оплати', icon: 'receipt_long', badgeColor: 'indigo' },
+  { id: 'accounts', label: 'Акаунти IPTV', icon: 'dns', badgeColor: 'purple' },
+  { id: 'budget', label: 'Бюджет ($/₴)', icon: 'account_balance_wallet', badgeColor: 'teal' },
+  { id: 'analytics', label: 'Аналітика', icon: 'analytics', badgeColor: 'sky' },
+  { id: 'settings', label: 'Налаштування', icon: 'settings', badgeColor: 'slate' },
+];
+
+export const DEFAULT_USER_TABS: AppTabId[] = ['electricity', 'water_waste'];
+export const ALL_ADMIN_TABS: AppTabId[] = [
+  'clients',
+  'accounts',
+  'budget',
+  'analytics',
+  'payments',
+  'electricity',
+  'water_waste',
+  'users',
+  'settings',
+];
+
 export interface AppUser {
   id: string;
   email: string;
   name: string;
   picture?: string;
-  role: UserRole; // 'admin' (Всі права), 'user' (Тільки перегляд), 'new' (Зовсім без доступу)
+  role: UserRole; // 'admin' (Всі права), 'user' (Індивідуальний доступ), 'new' (Зовсім без доступу)
+  allowedTabs?: AppTabId[]; // Вкладки, доступні користувачу
+  assignedUtilityAccountIds?: string[]; // ID прив'язаних адміністратором будинків / комунальних рахунків
+  assignedClientIds?: string[]; // ID прив'язаних абонентів IPTV
+  canManageOwnData?: boolean; // Дозвіл додавати та редагувати власні дані й показники (за замовчуванням true)
   createdAt: string;
   lastLoginAt: string;
   sub?: string;
@@ -75,6 +114,7 @@ export interface ProviderAccount {
   totalDeductedUsd: number; // Total USD deducted from main balance for this account
   renewals?: ProviderAccountRenewal[];
   notes?: string;
+  ownerUserId?: string;
   createdAt: string;
   updatedAt?: string;
 }
@@ -188,6 +228,7 @@ export interface Client {
   notes?: string;
   lastReminderDate?: string;
   lastReminderStatus?: 'sent' | 'failed' | 'manual';
+  ownerUserId?: string;
   createdAt: string;
   updatedAt: string;
 }

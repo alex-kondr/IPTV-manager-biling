@@ -8,7 +8,15 @@ import {
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
 import { IptvData } from '../../services/iptv-data';
-import { AppUser, UserRole, formatDateUa } from '../../models/client.model';
+import {
+  AppUser,
+  UserRole,
+  AppTabId,
+  ALL_USER_ASSIGNABLE_TABS,
+  DEFAULT_USER_TABS,
+  formatDateUa,
+} from '../../models/client.model';
+import { UtilityAccount } from '../../models/utility.model';
 
 type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
 
@@ -22,17 +30,28 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
         <div>
           <div class="flex items-center gap-2">
-            <h2 class="text-lg font-bold text-slate-900">Користувачі та Права Доступу</h2>
+            <h2 class="text-lg font-bold text-slate-900">Користувачі, Привʼязка Будинків та Доступ до Вкладок</h2>
             <span class="px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-slate-700 text-xs font-bold font-mono">
               {{ users().length }}
             </span>
           </div>
           <p class="text-xs text-slate-500 mt-1">
-            Керування доступом до системи IPTV. Три типи користувачів: Адмін (всі права), Користувач (тільки перегляд), Новий (без доступу).
+            Кожен користувач бачить лише власні дані та будинки, привʼязані адміністратором. Адміністратор може вмикати та вимикати доступ до окремих вкладок для кожного користувача.
           </p>
         </div>
 
-        <div class="flex items-center gap-2">
+        <div class="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            (click)="enterTestSandbox()"
+            [disabled]="isLoading()"
+            class="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+            title="Перемкнутись на тестовий акаунт та перевірити відображення даних і дозволів очима іншого користувача"
+          >
+            <mat-icon class="text-sm">science</mat-icon>
+            <span>Увійти в Тестовий акаунт</span>
+          </button>
+
           <button
             type="button"
             (click)="refreshUsers()"
@@ -78,19 +97,19 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
             </div>
           </div>
           <div class="text-2xl font-black text-emerald-700 mt-2">{{ adminCount() }}</div>
-          <div class="text-3xs text-emerald-600 font-medium mt-0.5">👑 Повний доступ (всі права)</div>
+          <div class="text-3xs text-emerald-600 font-medium mt-0.5">👑 Повний доступ (всі вкладки і будинки)</div>
         </div>
 
-        <!-- Viewers -->
+        <!-- Users -->
         <div class="bg-white p-4 rounded-2xl border border-sky-200/80 shadow-xs">
           <div class="flex items-center justify-between">
             <span class="text-2xs font-bold text-sky-700 uppercase tracking-wider">Користувачі</span>
             <div class="w-7 h-7 rounded-lg bg-sky-100 text-sky-700 flex items-center justify-center">
-              <mat-icon class="text-base">visibility</mat-icon>
+              <mat-icon class="text-base">manage_accounts</mat-icon>
             </div>
           </div>
           <div class="text-2xl font-black text-sky-700 mt-2">{{ viewerCount() }}</div>
-          <div class="text-3xs text-sky-600 font-medium mt-0.5">👁️ Тільки перегляд (без змін)</div>
+          <div class="text-3xs text-sky-600 font-medium mt-0.5">👤 Власні дані + привʼязані будинки</div>
         </div>
 
         <!-- Pending New Users -->
@@ -127,7 +146,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
                 Є {{ pendingCount() }} новий(х) запит(ів) на доступ до застосунку!
               </div>
               <div class="text-2xs text-amber-700 mt-0.5">
-                Надайте користувачам роль «Користувач (Тільки перегляд)» або «Адміністратор», щоб відкрити доступ.
+                Надайте користувачам роль «Користувач» (та оберіть дозволені вкладки й будинки) або «Адміністратор».
               </div>
             </div>
           </div>
@@ -184,7 +203,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
             [class.shadow-xs]="selectedRoleFilter() === 'user'"
             [class.text-slate-600]="selectedRoleFilter() !== 'user'"
           >
-            👁️ Перегляд ({{ viewerCount() }})
+            👤 Користувачі ({{ viewerCount() }})
           </button>
 
           <button
@@ -213,121 +232,258 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
       </div>
 
       <!-- Users List Cards -->
-      <div class="space-y-3">
+      <div class="space-y-4">
         @for (user of filteredUsers(); track user.id) {
           <div
-            class="bg-white rounded-2xl border p-4 sm:p-5 shadow-xs transition-all flex flex-col md:flex-row md:items-center justify-between gap-4"
+            class="bg-white rounded-2xl border p-4 sm:p-5 shadow-xs transition-all space-y-4"
             [class.border-amber-300]="user.role === 'new'"
             [class.bg-amber-50/20]="user.role === 'new'"
             [class.border-slate-200]="user.role !== 'new'"
           >
-            <!-- User Info -->
-            <div class="flex items-start sm:items-center gap-3.5 min-w-0">
-              <img
-                [src]="user.picture || 'https://ui-avatars.com/api/?name=' + user.name + '&background=0284c7&color=fff'"
-                [alt]="user.name"
-                class="w-12 h-12 rounded-2xl object-cover border border-slate-200 shrink-0 shadow-2xs"
-                referrerpolicy="no-referrer"
-              />
+            <!-- Top Row: User Info + Role Actions -->
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <!-- User Info -->
+              <div class="flex items-start sm:items-center gap-3.5 min-w-0">
+                <img
+                  [src]="user.picture || 'https://ui-avatars.com/api/?name=' + user.name + '&background=0284c7&color=fff'"
+                  [alt]="user.name"
+                  class="w-12 h-12 rounded-2xl object-cover border border-slate-200 shrink-0 shadow-2xs"
+                  referrerpolicy="no-referrer"
+                />
 
-              <div class="min-w-0">
-                <div class="flex items-center gap-2 flex-wrap">
-                  <span class="text-sm font-bold text-slate-900 truncate">{{ user.name }}</span>
-                  
-                  @if (isCurrentLoggedInUser(user)) {
-                    <span class="px-1.5 py-0.2 rounded-md bg-slate-900 text-white text-3xs font-bold">
-                      Це ви
-                    </span>
-                  }
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-sm font-bold text-slate-900 truncate">{{ user.name }}</span>
 
-                  <!-- Role Badge -->
-                  @switch (user.role) {
-                    @case ('admin') {
-                      <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-2xs font-bold border border-emerald-200">
-                        <mat-icon class="text-xs">shield</mat-icon>
-                        <span>Адміністратор (Повний доступ)</span>
+                    @if (isCurrentLoggedInUser(user)) {
+                      <span class="px-1.5 py-0.2 rounded-md bg-slate-900 text-white text-3xs font-bold">
+                        Це ви
                       </span>
                     }
-                    @case ('user') {
-                      <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-sky-100 text-sky-800 text-2xs font-bold border border-sky-200">
-                        <mat-icon class="text-xs">visibility</mat-icon>
-                        <span>Користувач (Тільки перегляд)</span>
+
+                    @if (user.id === 'user_test_sandbox') {
+                      <span class="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-300 text-2xs font-extrabold inline-flex items-center gap-1">
+                        <mat-icon class="text-xs leading-none">science</mat-icon>
+                        <span>Тестовий акаунт для перевірки</span>
                       </span>
                     }
-                    @case ('new') {
-                      <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-2xs font-bold border border-amber-300 animate-pulse">
-                        <mat-icon class="text-xs">lock_clock</mat-icon>
-                        <span>Новий (Без доступу)</span>
-                      </span>
+
+                    <!-- Role Badge -->
+                    @switch (user.role) {
+                      @case ('admin') {
+                        <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-2xs font-bold border border-emerald-200">
+                          <mat-icon class="text-xs">shield</mat-icon>
+                          <span>Адміністратор (Повний доступ)</span>
+                        </span>
+                      }
+                      @case ('user') {
+                        <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-sky-100 text-sky-800 text-2xs font-bold border border-sky-200">
+                          <mat-icon class="text-xs">person</mat-icon>
+                          <span>Користувач (Власні + привʼязані дані)</span>
+                        </span>
+                      }
+                      @case ('new') {
+                        <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-2xs font-bold border border-amber-300 animate-pulse">
+                          <mat-icon class="text-xs">lock_clock</mat-icon>
+                          <span>Новий (Без доступу)</span>
+                        </span>
+                      }
                     }
-                  }
+                  </div>
+
+                  <div class="text-xs text-slate-600 font-mono mt-0.5">{{ user.email }}</div>
+
+                  <div class="flex items-center gap-3 text-3xs text-slate-400 mt-1.5 flex-wrap">
+                    <span>Створено: {{ formatDate(user.createdAt) }}</span>
+                    @if (user.lastLoginAt) {
+                      <span>•</span>
+                      <span>Останній вхід: {{ formatDate(user.lastLoginAt) }}</span>
+                    }
+                  </div>
                 </div>
+              </div>
 
-                <div class="text-xs text-slate-600 font-mono mt-0.5">{{ user.email }}</div>
+              <!-- Role Change & Quick Actions -->
+              <div class="flex items-center gap-2 flex-wrap shrink-0 border-t md:border-t-0 pt-3 md:pt-0 border-slate-100">
+                @if (user.role === 'new') {
+                  <!-- Quick Approve for New Users -->
+                  <button
+                    type="button"
+                    (click)="setRole(user, 'user')"
+                    [disabled]="isLoading()"
+                    class="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 active:bg-sky-700 text-white font-bold text-xs flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
+                    title="Надати доступ користувача"
+                  >
+                    <mat-icon class="text-sm">check_circle</mat-icon>
+                    <span>Надати доступ (Користувач)</span>
+                  </button>
 
-                <div class="flex items-center gap-3 text-3xs text-slate-400 mt-1.5 flex-wrap">
-                  <span>Створено: {{ formatDate(user.createdAt) }}</span>
-                  @if (user.lastLoginAt) {
-                    <span>•</span>
-                    <span>Останній вхід: {{ formatDate(user.lastLoginAt) }}</span>
+                  <button
+                    type="button"
+                    (click)="setRole(user, 'admin')"
+                    [disabled]="isLoading()"
+                    class="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
+                    title="Надати повний доступ адміністратора"
+                  >
+                    <mat-icon class="text-sm">shield</mat-icon>
+                    <span>Зробити Адміном</span>
+                  </button>
+                } @else {
+                  <!-- Role Select Dropdown -->
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-2xs text-slate-500 font-medium">Роль:</span>
+                    <select
+                      [value]="user.role"
+                      (change)="onRoleSelectChange(user, $event)"
+                      [disabled]="isLoading() || (user.role === 'admin' && adminCount() <= 1)"
+                      class="px-2.5 py-1.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-800 text-xs font-semibold focus:outline-none focus:border-emerald-500 cursor-pointer"
+                    >
+                      <option value="admin">👑 Адміністратор (Всі права)</option>
+                      <option value="user">👤 Користувач (Індивідуальний доступ)</option>
+                      <option value="new">⏳ Новий (Без доступу)</option>
+                    </select>
+                  </div>
+
+                  @if (user.role === 'user') {
+                    <button
+                      type="button"
+                      (click)="openPermissionsModal(user)"
+                      class="px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <mat-icon class="text-sm">tune</mat-icon>
+                      <span>Вкладки та Будинки</span>
+                    </button>
                   }
-                </div>
+                }
+
+                @if (user.role !== 'admin') {
+                  <button
+                    type="button"
+                    (click)="impersonateUser(user)"
+                    [disabled]="isLoading()"
+                    class="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                    title="Перемкнутись на цей акаунт і побачити застосунок очима цього користувача"
+                  >
+                    <mat-icon class="text-sm">visibility</mat-icon>
+                    <span>Увійти як користувач</span>
+                  </button>
+                }
+
+                <!-- Delete User -->
+                <button
+                  type="button"
+                  (click)="deleteUser(user)"
+                  [disabled]="isLoading() || (user.role === 'admin' && adminCount() <= 1)"
+                  class="p-1.5 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                  title="Видалити користувача"
+                >
+                  <mat-icon class="text-base">delete_outline</mat-icon>
+                </button>
               </div>
             </div>
 
-            <!-- Role Change Actions -->
-            <div class="flex items-center gap-2 flex-wrap shrink-0 border-t md:border-t-0 pt-3 md:pt-0 border-slate-100">
-              @if (user.role === 'new') {
-                <!-- Quick Approve for New Users -->
-                <button
-                  type="button"
-                  (click)="setRole(user, 'user')"
-                  [disabled]="isLoading()"
-                  class="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 active:bg-sky-700 text-white font-bold text-xs flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
-                  title="Надати доступ у режимі перегляду"
-                >
-                  <mat-icon class="text-sm">visibility</mat-icon>
-                  <span>Дозволити (Перегляд)</span>
-                </button>
+            <!-- Extended Per-User Controls: Allowed Tabs + Assigned Houses (for non-admin users) -->
+            @if (user.role === 'user') {
+              <div class="pt-3 border-t border-slate-100 grid grid-cols-1 lg:grid-cols-12 gap-4">
+                <!-- Left Column: Allowed Tabs Toggles -->
+                <div class="lg:col-span-7 space-y-2">
+                  <div class="flex items-center justify-between flex-wrap gap-2">
+                    <span class="text-2xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1">
+                      <mat-icon class="text-sm text-indigo-600">tab</mat-icon>
+                      <span>Доступні вкладки застосунку (натисніть, щоб увімкнути/вимкнути):</span>
+                    </span>
+                    <label class="inline-flex items-center gap-1.5 text-2xs font-semibold text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        [checked]="user.canManageOwnData !== false"
+                        (change)="toggleUserCanManageOwnData(user, $any($event.target).checked)"
+                        class="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <span>Дозволити додавати/редагувати свої дані</span>
+                    </label>
+                  </div>
 
-                <button
-                  type="button"
-                  (click)="setRole(user, 'admin')"
-                  [disabled]="isLoading()"
-                  class="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
-                  title="Надати повний доступ адміністратора"
-                >
-                  <mat-icon class="text-sm">shield</mat-icon>
-                  <span>Зробити Адміном</span>
-                </button>
-              } @else {
-                <!-- Role Select Dropdown -->
-                <div class="flex items-center gap-1.5">
-                  <span class="text-2xs text-slate-500 font-medium">Роль:</span>
-                  <select
-                    [value]="user.role"
-                    (change)="onRoleSelectChange(user, $event)"
-                    [disabled]="isLoading() || (user.role === 'admin' && adminCount() <= 1)"
-                    class="px-2.5 py-1.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-800 text-xs font-semibold focus:outline-none focus:border-emerald-500 cursor-pointer"
-                  >
-                    <option value="admin">👑 Адміністратор (Всі права)</option>
-                    <option value="user">👁️ Користувач (Тільки перегляд)</option>
-                    <option value="new">⏳ Новий (Без доступу)</option>
-                  </select>
+                  <div class="flex items-center gap-1.5 flex-wrap">
+                    @for (tabItem of assignableTabs; track tabItem.id) {
+                      @let isEnabled = isUserTabEnabled(user, tabItem.id);
+                      <button
+                        type="button"
+                        (click)="quickToggleUserTab(user, tabItem.id)"
+                        [disabled]="isLoading()"
+                        class="px-2.5 py-1.5 rounded-xl text-xs font-semibold border flex items-center gap-1.5 transition-all cursor-pointer"
+                        [class.bg-emerald-600]="isEnabled"
+                        [class.text-white]="isEnabled"
+                        [class.border-emerald-600]="isEnabled"
+                        [class.shadow-2xs]="isEnabled"
+                        [class.bg-slate-50]="!isEnabled"
+                        [class.text-slate-500]="!isEnabled"
+                        [class.border-slate-200]="!isEnabled"
+                        [title]="isEnabled ? 'Вимкнути вкладку «' + tabItem.label + '»' : 'Увімкнути вкладку «' + tabItem.label + '»'"
+                      >
+                        <mat-icon class="text-sm leading-none">{{ tabItem.icon }}</mat-icon>
+                        <span>{{ tabItem.label }}</span>
+                        <mat-icon class="text-xs leading-none">{{ isEnabled ? 'check_circle' : 'block' }}</mat-icon>
+                      </button>
+                    }
+                  </div>
                 </div>
-              }
 
-              <!-- Delete User -->
-              <button
-                type="button"
-                (click)="deleteUser(user)"
-                [disabled]="isLoading() || (user.role === 'admin' && adminCount() <= 1)"
-                class="p-1.5 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-                title="Видалити користувача"
-              >
-                <mat-icon class="text-base">delete_outline</mat-icon>
-              </button>
-            </div>
+                <!-- Right Column: Bound Houses / Utility Accounts -->
+                <div class="lg:col-span-5 space-y-2 lg:border-l lg:border-slate-100 lg:pl-4">
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="text-2xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1">
+                      <mat-icon class="text-sm text-amber-600">home_work</mat-icon>
+                      <span>Привʼязані будинки / рахунки ({{ getUserBoundHouses(user).length }}):</span>
+                    </span>
+                    <button
+                      type="button"
+                      (click)="openPermissionsModal(user)"
+                      class="text-2xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5 cursor-pointer"
+                    >
+                      <mat-icon class="text-xs">add_link</mat-icon>
+                      <span>Привʼязати будинок</span>
+                    </button>
+                  </div>
+
+                  @if (getUserBoundHouses(user).length > 0) {
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                      @for (house of getUserBoundHouses(user); track house.id) {
+                        <span
+                          class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-2xs font-semibold border"
+                          [class.bg-amber-50]="house.type === 'electricity'"
+                          [class.border-amber-200]="house.type === 'electricity'"
+                          [class.text-amber-900]="house.type === 'electricity'"
+                          [class.bg-cyan-50]="house.type === 'water_waste'"
+                          [class.border-cyan-200]="house.type === 'water_waste'"
+                          [class.text-cyan-900]="house.type === 'water_waste'"
+                        >
+                          <mat-icon class="text-xs leading-none">
+                            {{ house.type === 'electricity' ? 'bolt' : 'water_drop' }}
+                          </mat-icon>
+                          <span>{{ house.name }} ({{ house.accountNumber }})</span>
+                          @if (house.ownerUserId === user.id) {
+                            <span class="px-1 py-0.2 rounded bg-white/80 text-3xs font-bold">Власний</span>
+                          } @else {
+                            <button
+                              type="button"
+                              (click)="quickToggleHouseAssignment(user, house.id)"
+                              class="hover:text-rose-600 cursor-pointer ml-0.5"
+                              title="Відкріпити будинок від користувача"
+                            >
+                              <mat-icon class="text-xs leading-none">close</mat-icon>
+                            </button>
+                          }
+                        </span>
+                      }
+                    </div>
+                  } @else {
+                    <div class="text-2xs text-slate-400 italic bg-slate-50 rounded-xl px-3 py-2 border border-slate-200/70">
+                      Немає привʼязаних будинків адміна. Користувач бачить лише ті рахунки, які створить сам.
+                    </div>
+                  }
+                </div>
+              </div>
+            }
           </div>
         } @empty {
           <div class="text-center py-12 bg-white rounded-2xl border border-slate-200 p-8">
@@ -337,6 +493,219 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
           </div>
         }
       </div>
+
+      <!-- MODAL: PERMISSIONS, TABS & HOUSE BINDING -->
+      @if (editingUserForPermissions(); as targetUser) {
+        <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div class="bg-white rounded-3xl p-6 sm:p-7 max-w-2xl w-full shadow-2xl border border-slate-200 max-h-[90vh] flex flex-col">
+            <!-- Header -->
+            <div class="flex items-center justify-between pb-4 border-b border-slate-100 shrink-0">
+              <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-2xl bg-indigo-100 text-indigo-700 flex items-center justify-center">
+                  <mat-icon class="text-xl">admin_panel_settings</mat-icon>
+                </div>
+                <div>
+                  <h3 class="text-base font-bold text-slate-900">
+                    Налаштування доступу: {{ targetUser.name }}
+                  </h3>
+                  <p class="text-xs text-slate-500 font-mono">{{ targetUser.email }}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                (click)="closePermissionsModal()"
+                class="text-slate-400 hover:text-slate-600 cursor-pointer p-1"
+              >
+                <mat-icon>close</mat-icon>
+              </button>
+            </div>
+
+            <!-- Scrollable Body -->
+            <div class="py-4 space-y-5 overflow-y-auto flex-1 pr-1">
+              <!-- Section 1: Data Editing Permission -->
+              <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-4">
+                <div>
+                  <div class="text-xs font-bold text-slate-900">Дозвіл на внесення показів та створення власних рахунків</div>
+                  <div class="text-2xs text-slate-500 mt-0.5">
+                    Якщо увімкнено, користувач може додавати власні будинки та вносити покази лічильників.
+                  </div>
+                </div>
+                <input
+                  type="checkbox"
+                  [checked]="modalCanManageOwnData()"
+                  (change)="modalCanManageOwnData.set($any($event.target).checked)"
+                  class="w-5 h-5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer shrink-0"
+                />
+              </div>
+
+              <!-- Section 2: Allowed Application Tabs -->
+              <div class="space-y-2.5">
+                <div class="flex items-center justify-between">
+                  <div class="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                    <mat-icon class="text-base text-indigo-600">tab</mat-icon>
+                    <span>Доступ до вкладок застосунку</span>
+                  </div>
+                  <div class="flex items-center gap-2 text-2xs">
+                    <button
+                      type="button"
+                      (click)="selectAllModalTabs()"
+                      class="text-indigo-600 hover:underline font-semibold cursor-pointer"
+                    >
+                      Увімкнути всі
+                    </button>
+                    <span class="text-slate-300">•</span>
+                    <button
+                      type="button"
+                      (click)="selectUtilityOnlyModalTabs()"
+                      class="text-amber-700 hover:underline font-semibold cursor-pointer"
+                    >
+                      Тільки Комунальні (Електро + Вода)
+                    </button>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  @for (tabItem of assignableTabs; track tabItem.id) {
+                    @let checked = modalAllowedTabs().includes(tabItem.id);
+                    <button
+                      type="button"
+                      (click)="toggleModalTab(tabItem.id)"
+                      class="p-3 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer"
+                      [class.bg-emerald-50/80]="checked"
+                      [class.border-emerald-400]="checked"
+                      [class.bg-white]="!checked"
+                      [class.border-slate-200]="!checked"
+                    >
+                      <div class="flex items-center gap-2.5">
+                        <div
+                          class="w-8 h-8 rounded-lg flex items-center justify-center"
+                          [class.bg-emerald-600]="checked"
+                          [class.text-white]="checked"
+                          [class.bg-slate-100]="!checked"
+                          [class.text-slate-500]="!checked"
+                        >
+                          <mat-icon class="text-base">{{ tabItem.icon }}</mat-icon>
+                        </div>
+                        <div>
+                          <div class="text-xs font-bold text-slate-900">{{ tabItem.label }}</div>
+                          <div class="text-3xs text-slate-500">{{ checked ? 'Доступ відкрито' : 'Приховано' }}</div>
+                        </div>
+                      </div>
+                      <mat-icon
+                        class="text-lg"
+                        [class.text-emerald-600]="checked"
+                        [class.text-slate-300]="!checked"
+                      >
+                        {{ checked ? 'check_box' : 'check_box_outline_blank' }}
+                      </mat-icon>
+                    </button>
+                  }
+                </div>
+              </div>
+
+              <!-- Section 3: Bind Existing Houses / Utility Accounts -->
+              <div class="space-y-2.5">
+                <div>
+                  <div class="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                    <mat-icon class="text-base text-amber-600">home_work</mat-icon>
+                    <span>Привʼязка будинків (особових рахунків електроенергії та води)</span>
+                  </div>
+                  <p class="text-2xs text-slate-500 mt-0.5">
+                    Оберіть будинки, створені адміністратором, щоб привʼязати їх до акаунту цього користувача. Користувач бачитиме їхні графіки, покази та нарахування.
+                  </p>
+                </div>
+
+                @if (allUtilityAccounts().length > 0) {
+                  <div class="grid grid-cols-1 gap-2 max-h-60 overflow-y-auto pr-1">
+                    @for (acc of allUtilityAccounts(); track acc.id) {
+                      @let isOwner = acc.ownerUserId === targetUser.id;
+                      @let isBound = isOwner || modalAssignedUtilityIds().includes(acc.id);
+                      <button
+                        type="button"
+                        (click)="!isOwner && toggleModalUtilityAccount(acc.id)"
+                        class="p-3 rounded-xl border text-left flex items-center justify-between gap-3 transition-all cursor-pointer"
+                        [class.bg-amber-50/70]="isBound && acc.type === 'electricity'"
+                        [class.border-amber-400]="isBound && acc.type === 'electricity'"
+                        [class.bg-cyan-50/70]="isBound && acc.type === 'water_waste'"
+                        [class.border-cyan-400]="isBound && acc.type === 'water_waste'"
+                        [class.bg-white]="!isBound"
+                        [class.border-slate-200]="!isBound"
+                      >
+                        <div class="flex items-center gap-3 min-w-0">
+                          <div
+                            class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+                            [class.bg-amber-500]="acc.type === 'electricity'"
+                            [class.bg-cyan-600]="acc.type === 'water_waste'"
+                            class="text-white"
+                          >
+                            <mat-icon class="text-base">{{ acc.type === 'electricity' ? 'bolt' : 'water_drop' }}</mat-icon>
+                          </div>
+                          <div class="min-w-0">
+                            <div class="flex items-center gap-2 flex-wrap">
+                              <span class="text-xs font-bold text-slate-900">{{ acc.name }}</span>
+                              <span class="px-1.5 py-0.2 rounded bg-slate-100 text-slate-700 font-mono text-3xs font-semibold">
+                                № {{ acc.accountNumber }}
+                              </span>
+                              <span class="text-3xs font-bold uppercase px-1.5 py-0.2 rounded"
+                                [class.bg-amber-100]="acc.type === 'electricity'"
+                                [class.text-amber-800]="acc.type === 'electricity'"
+                                [class.bg-cyan-100]="acc.type === 'water_waste'"
+                                [class.text-cyan-800]="acc.type === 'water_waste'"
+                              >
+                                {{ acc.type === 'electricity' ? 'Електроенергія' : 'Вода та сміття' }}
+                              </span>
+                              @if (isOwner) {
+                                <span class="px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 text-3xs font-bold">
+                                  Створено цим користувачем
+                                </span>
+                              }
+                            </div>
+                            @if (acc.address) {
+                              <div class="text-2xs text-slate-500 truncate mt-0.5">{{ acc.address }}</div>
+                            }
+                          </div>
+                        </div>
+
+                        <mat-icon
+                          class="text-lg shrink-0"
+                          [class.text-emerald-600]="isBound"
+                          [class.text-slate-300]="!isBound"
+                        >
+                          {{ isBound ? 'check_circle' : 'radio_button_unchecked' }}
+                        </mat-icon>
+                      </button>
+                    }
+                  </div>
+                } @else {
+                  <div class="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 text-center">
+                    У системі ще немає створених будинків (особових рахунків електроенергії або води).
+                  </div>
+                }
+              </div>
+            </div>
+
+            <!-- Footer -->
+            <div class="pt-4 border-t border-slate-100 flex items-center justify-end gap-2.5 shrink-0">
+              <button
+                type="button"
+                (click)="closePermissionsModal()"
+                class="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs transition-colors cursor-pointer"
+              >
+                Скасувати
+              </button>
+              <button
+                type="button"
+                (click)="saveModalPermissions()"
+                [disabled]="isLoading()"
+                class="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-xs transition-colors cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <mat-icon class="text-sm">save</mat-icon>
+                <span>Зберегти налаштування користувача</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      }
 
       <!-- ADD USER MODAL -->
       @if (isAddModalOpen()) {
@@ -388,7 +757,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
                   formControlName="role"
                   class="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs font-semibold focus:outline-none focus:border-emerald-500"
                 >
-                  <option value="user">👁️ Користувач (Тільки перегляд)</option>
+                  <option value="user">👤 Користувач (Власні дані + вибрані вкладки/будинки)</option>
                   <option value="admin">👑 Адміністратор (Всі права)</option>
                   <option value="new">⏳ Новий (Без доступу)</option>
                 </select>
@@ -421,14 +790,35 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
 export class UsersView {
   private readonly dataService = inject(IptvData);
 
+  async enterTestSandbox(): Promise<void> {
+    await this.dataService.switchToTestUser();
+  }
+
+  async impersonateUser(user: AppUser): Promise<void> {
+    await this.dataService.switchToTestUser(user);
+  }
+
   readonly users = this.dataService.usersList;
   readonly currentUser = this.dataService.currentUser;
   readonly isLoading = this.dataService.isLoading;
   readonly pendingCount = this.dataService.pendingUsersCount;
+  readonly assignableTabs = ALL_USER_ASSIGNABLE_TABS;
+
+  readonly allUtilityAccounts = computed<UtilityAccount[]>(() => {
+    const adminList = this.dataService.adminUtilityAccounts();
+    if (adminList.length > 0) return adminList;
+    return this.dataService.utilityAccounts();
+  });
 
   readonly selectedRoleFilter = signal<UserFilterRole>('all');
   readonly searchControl = new FormControl('');
   readonly isAddModalOpen = signal<boolean>(false);
+
+  // Permissions & House Binding Modal state
+  readonly editingUserForPermissions = signal<AppUser | null>(null);
+  readonly modalAllowedTabs = signal<AppTabId[]>([]);
+  readonly modalAssignedUtilityIds = signal<string[]>([]);
+  readonly modalCanManageOwnData = signal<boolean>(true);
 
   readonly addUserForm = new FormGroup({
     email: new FormControl('', [Validators.required, Validators.email]),
@@ -457,6 +847,10 @@ export class UsersView {
     });
   });
 
+  constructor() {
+    this.dataService.fetchAdminUtilityAccounts();
+  }
+
   formatDate(dateStr: string): string {
     if (!dateStr) return '';
     return formatDateUa(dateStr);
@@ -465,6 +859,128 @@ export class UsersView {
   isCurrentLoggedInUser(user: AppUser): boolean {
     const curr = this.currentUser();
     return !!curr && (curr.id === user.id || curr.email.toLowerCase() === user.email.toLowerCase());
+  }
+
+  getUserAllowedTabs(user: AppUser): AppTabId[] {
+    if (user.role === 'admin') {
+      return this.assignableTabs.map((t) => t.id);
+    }
+    if (Array.isArray(user.allowedTabs) && user.allowedTabs.length > 0) {
+      return user.allowedTabs;
+    }
+    return [...DEFAULT_USER_TABS];
+  }
+
+  isUserTabEnabled(user: AppUser, tabId: AppTabId): boolean {
+    return this.getUserAllowedTabs(user).includes(tabId);
+  }
+
+  async quickToggleUserTab(user: AppUser, tabId: AppTabId): Promise<void> {
+    const currentTabs = this.getUserAllowedTabs(user);
+    let nextTabs: AppTabId[];
+    if (currentTabs.includes(tabId)) {
+      if (currentTabs.length <= 1) {
+        return; // Keep at least 1 tab active
+      }
+      nextTabs = currentTabs.filter((t) => t !== tabId);
+    } else {
+      nextTabs = [...currentTabs, tabId];
+    }
+    await this.dataService.updateUserPermissions(user.id, {
+      allowedTabs: nextTabs,
+    });
+  }
+
+  async toggleUserCanManageOwnData(user: AppUser, canManage: boolean): Promise<void> {
+    await this.dataService.updateUserPermissions(user.id, {
+      canManageOwnData: canManage,
+    });
+  }
+
+  getUserBoundHouses(user: AppUser): UtilityAccount[] {
+    const all = this.allUtilityAccounts();
+    const assignedSet = new Set(user.assignedUtilityAccountIds || []);
+    return all.filter(
+      (acc) =>
+        acc.ownerUserId === user.id ||
+        assignedSet.has(acc.id) ||
+        (Array.isArray(acc.assignedUserIds) && acc.assignedUserIds.includes(user.id))
+    );
+  }
+
+  async quickToggleHouseAssignment(user: AppUser, accountId: string): Promise<void> {
+    const currentAssigned = new Set(user.assignedUtilityAccountIds || []);
+    for (const acc of this.allUtilityAccounts()) {
+      if (Array.isArray(acc.assignedUserIds) && acc.assignedUserIds.includes(user.id)) {
+        currentAssigned.add(acc.id);
+      }
+    }
+    if (currentAssigned.has(accountId)) {
+      currentAssigned.delete(accountId);
+    } else {
+      currentAssigned.add(accountId);
+    }
+    await this.dataService.updateUserPermissions(user.id, {
+      assignedUtilityAccountIds: Array.from(currentAssigned),
+    });
+  }
+
+  openPermissionsModal(user: AppUser): void {
+    this.editingUserForPermissions.set(user);
+    this.modalAllowedTabs.set([...this.getUserAllowedTabs(user)]);
+
+    const assignedSet = new Set(user.assignedUtilityAccountIds || []);
+    for (const acc of this.allUtilityAccounts()) {
+      if (Array.isArray(acc.assignedUserIds) && acc.assignedUserIds.includes(user.id)) {
+        assignedSet.add(acc.id);
+      }
+    }
+    this.modalAssignedUtilityIds.set(Array.from(assignedSet));
+    this.modalCanManageOwnData.set(user.canManageOwnData !== false);
+  }
+
+  closePermissionsModal(): void {
+    this.editingUserForPermissions.set(null);
+  }
+
+  toggleModalTab(tabId: AppTabId): void {
+    const cur = this.modalAllowedTabs();
+    if (cur.includes(tabId)) {
+      if (cur.length <= 1) return;
+      this.modalAllowedTabs.set(cur.filter((t) => t !== tabId));
+    } else {
+      this.modalAllowedTabs.set([...cur, tabId]);
+    }
+  }
+
+  selectAllModalTabs(): void {
+    this.modalAllowedTabs.set(this.assignableTabs.map((t) => t.id));
+  }
+
+  selectUtilityOnlyModalTabs(): void {
+    this.modalAllowedTabs.set(['electricity', 'water_waste']);
+  }
+
+  toggleModalUtilityAccount(accountId: string): void {
+    const cur = this.modalAssignedUtilityIds();
+    if (cur.includes(accountId)) {
+      this.modalAssignedUtilityIds.set(cur.filter((id) => id !== accountId));
+    } else {
+      this.modalAssignedUtilityIds.set([...cur, accountId]);
+    }
+  }
+
+  async saveModalPermissions(): Promise<void> {
+    const user = this.editingUserForPermissions();
+    if (!user) return;
+    const ok = await this.dataService.updateUserPermissions(user.id, {
+      allowedTabs: this.modalAllowedTabs(),
+      assignedUtilityAccountIds: this.modalAssignedUtilityIds(),
+      canManageOwnData: this.modalCanManageOwnData(),
+    });
+    if (ok) {
+      this.closePermissionsModal();
+    }
   }
 
   async refreshUsers(): Promise<void> {

@@ -5,7 +5,7 @@
   "scripts": {
     "ng": "ng",
     "start": "node server.ts",
-    "dev": "ng serve --port=3000 --host=0.0.0.0 --allowed-hosts=true",
+    "dev": "node dev-server.cjs",
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
@@ -25,6 +25,7 @@
     "@angular/ssr": "^21.0.0",
     "@google/genai": "^2.4.0",
     "@types/pg": "^8.23.1",
+    "@types/semver": "^7.8.0",
     "dotenv": "^18.0.2",
     "drizzle-kit": "^0.31.11",
     "drizzle-orm": "^0.45.3",
@@ -32,12 +33,14 @@
     "motion": "^12.23.24",
     "pg": "^8.23.0",
     "rxjs": "~7.8.0",
+    "semver": "^7.8.6",
     "tslib": "^2.3.0"
   },
   "devDependencies": {
     "@angular/build": "^21.0.0",
     "@angular/cli": "^21.0.0",
     "@angular/compiler-cli": "^21.0.0",
+    "@tailwindcss/oxide-linux-x64-gnu": "^4.3.4",
     "@tailwindcss/postcss": "^4.1.12",
     "@types/express": "^5.0.1",
     "@types/node": "^20.17.19",

@@ -514,63 +514,64 @@ import { getGoogleCalendarUrl, generateIcsFile } from '../../utils/calendar-even
                 </div>
 
                 <!-- Assigned Clients Section -->
-                <div class="space-y-2 mt-4">
-                  <div class="flex items-center justify-between text-xs font-semibold text-slate-700">
-                    <span class="flex items-center gap-1.5">
+                <div class="space-y-2 mt-3 min-w-0">
+                  <div class="flex items-center justify-between gap-2 flex-wrap text-2xs sm:text-xs font-semibold text-slate-700">
+                    <span class="flex items-center gap-1.5 truncate">
                       <mat-icon class="text-xs text-emerald-600">group</mat-icon>
-                      Підключені абоненти ({{ occupied }} / 2)
+                      <span>Підключені абоненти ({{ occupied }}/2)</span>
                     </span>
                     @if (!isFull) {
                       <button
                         type="button"
                         (click)="openAssignClientDialog(acc)"
-                        class="text-xs text-emerald-700 hover:text-emerald-800 font-semibold flex items-center gap-1 cursor-pointer"
+                        class="text-2xs text-emerald-700 hover:text-emerald-800 font-bold flex items-center gap-0.5 cursor-pointer shrink-0"
                       >
                         <mat-icon class="text-xs">add</mat-icon>
-                        Підключити абонента
+                        <span>Підключити</span>
                       </button>
                     }
                   </div>
 
                   <!-- List of clients in slot 1 and slot 2 -->
-                  <div class="space-y-2">
+                  <div class="space-y-1.5 min-w-0">
                     @if (acc.clients && acc.clients.length > 0) {
                       @for (c of acc.clients; track c.id; let idx = $index) {
-                        <div class="p-3 bg-slate-50/80 rounded-xl border border-slate-200/80 flex items-center justify-between gap-3 text-xs">
-                          <div class="flex items-center gap-2.5">
-                            <span class="w-6 h-6 rounded-full bg-emerald-200 text-emerald-800 font-bold text-2xs flex items-center justify-center shrink-0">
+                        <div class="p-2 sm:p-2.5 bg-slate-50/90 rounded-xl border border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2 text-xs min-w-0">
+                          <div class="flex items-center gap-2 min-w-0 flex-1">
+                            <span class="w-5 h-5 rounded-full bg-emerald-200 text-emerald-800 font-bold text-3xs flex items-center justify-center shrink-0">
                               #{{ idx + 1 }}
                             </span>
-                            <div>
-                              <strong class="text-slate-900 font-semibold block">{{ c.fullName }}</strong>
-                              <div class="flex items-center gap-2 text-2xs text-slate-500">
-                                <span>{{ c.phone }}</span>
+                            <div class="min-w-0 flex-1">
+                              <strong class="text-slate-900 font-semibold block truncate leading-tight">{{ c.fullName }}</strong>
+                              <div class="flex items-center gap-1.5 text-3xs text-slate-500 truncate mt-0.5">
+                                <span class="truncate">{{ c.phone }}</span>
                                 <span>•</span>
-                                <span class="font-mono">{{ c.iptvLogin }}</span>
+                                <span class="font-mono truncate">{{ c.iptvLogin }}</span>
                               </div>
                             </div>
                           </div>
 
-                          <div class="flex items-center gap-2">
+                          <div class="flex items-center justify-between sm:justify-end gap-1.5 shrink-0 pt-1 sm:pt-0 border-t sm:border-t-0 border-slate-200/60">
                             <!-- Plan badge -->
                             <span
-                              class="px-2 py-0.5 rounded text-2xs font-bold"
+                              class="px-1.5 py-0.5 rounded text-3xs font-bold shrink-0"
                               [class.bg-emerald-100]="c.subscriptionPlan === '1usd'"
                               [class.text-emerald-800]="c.subscriptionPlan === '1usd'"
                               [class.bg-blue-100]="c.subscriptionPlan === '2usd'"
                               [class.text-blue-800]="c.subscriptionPlan === '2usd'"
                             >
-                              {{ c.subscriptionPlan === '2usd' ? '$2 (150 грн)' : '$1 (100 грн)' }}
+                              {{ c.subscriptionPlan === '2usd' ? '$2 (150₴)' : '$1 (100₴)' }}
                             </span>
 
                             <!-- Unassign button -->
                             <button
                               type="button"
                               (click)="unassignClient(acc.id, c.id, c.fullName)"
-                              class="p-1 text-slate-400 hover:text-rose-600 rounded transition-colors cursor-pointer"
-                              title="Відкріпити від акаунту"
+                              class="px-2 py-0.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200/80 rounded-md text-3xs font-bold inline-flex items-center gap-1 transition-colors cursor-pointer shrink-0"
+                              title="Відкріпити абонента від цього акаунту"
                             >
-                              <mat-icon class="text-base">link_off</mat-icon>
+                              <mat-icon class="text-xs leading-none">link_off</mat-icon>
+                              <span>Відв'язати</span>
                             </button>
                           </div>
                         </div>
@@ -583,15 +584,18 @@ import { getGoogleCalendarUrl, generateIcsFile } from '../../utils/calendar-even
                         <button
                           type="button"
                           (click)="openAssignClientDialog(acc)"
-                          class="w-full p-3 rounded-xl border border-dashed border-slate-300 bg-slate-50/50 hover:bg-emerald-50/50 hover:border-emerald-300 flex items-center justify-between text-xs text-slate-400 transition-colors cursor-pointer text-left"
+                          class="w-full p-2 sm:p-2.5 rounded-xl border border-dashed border-slate-300 bg-slate-50/50 hover:bg-emerald-50/50 hover:border-emerald-300 flex items-center justify-between gap-2 text-xs text-slate-500 transition-colors cursor-pointer text-left min-w-0"
                         >
-                          <div class="flex items-center gap-2">
-                            <span class="w-6 h-6 rounded-full bg-slate-200 text-slate-500 font-bold text-2xs flex items-center justify-center">
+                          <div class="flex items-center gap-2 min-w-0 flex-1">
+                            <span class="w-5 h-5 rounded-full bg-slate-200 text-slate-600 font-bold text-3xs flex items-center justify-center shrink-0">
                               #{{ occupied + $index + 1 }}
                             </span>
-                            <span class="italic">Вільний слот IPTV (натисніть для підключення)</span>
+                            <span class="italic text-2xs truncate">Вільний слот IPTV</span>
                           </div>
-                          <span class="text-xs font-semibold text-emerald-600">+ Підключити</span>
+                          <span class="text-3xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200/90 px-2 py-0.5 rounded-md inline-flex items-center gap-0.5 shrink-0">
+                            <mat-icon class="text-xs leading-none">add</mat-icon>
+                            <span>Прив'язати</span>
+                          </span>
                         </button>
                       }
                     }
@@ -1096,23 +1100,23 @@ import { getGoogleCalendarUrl, generateIcsFile } from '../../utils/calendar-even
                 } @else {
                   @for (c of assignableClients(); track c.id) {
                     <div
-                      class="p-3 hover:bg-emerald-50/60 transition-colors flex items-center justify-between gap-3 text-xs"
+                      class="p-2.5 sm:p-3 hover:bg-emerald-50/60 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs min-w-0"
                     >
-                      <div>
-                        <strong class="text-slate-900 font-semibold block">{{ c.fullName }}</strong>
-                        <span class="text-slate-500 text-2xs">{{ c.phone }} • Логін: {{ c.iptvLogin }}</span>
+                      <div class="min-w-0 flex-1">
+                        <strong class="text-slate-900 font-semibold block truncate leading-tight">{{ c.fullName }}</strong>
+                        <span class="text-slate-500 text-3xs truncate block mt-0.5">{{ c.phone }} • Логін: {{ c.iptvLogin }}</span>
                       </div>
-                      <div class="flex items-center gap-2 shrink-0">
-                        <span class="text-2xs font-bold px-1.5 py-0.5 rounded bg-slate-200 text-slate-700">
-                          {{ c.subscriptionPlan === '2usd' ? '$2 (150 грн)' : '$1 (100 грн)' }}
+                      <div class="flex items-center justify-between sm:justify-end gap-1.5 shrink-0 pt-1 sm:pt-0 border-t sm:border-t-0 border-slate-200/60">
+                        <span class="text-3xs font-bold px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 shrink-0">
+                          {{ c.subscriptionPlan === '2usd' ? '$2 (150₴)' : '$1 (100₴)' }}
                         </span>
                         <button
                           type="button"
                           (click)="assignClient(c.id)"
-                          class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg text-2xs flex items-center gap-1 cursor-pointer transition-colors"
+                          class="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-3xs flex items-center gap-0.5 cursor-pointer transition-colors shrink-0"
                         >
-                          <mat-icon class="text-xs">add</mat-icon>
-                          Прив'язати
+                          <mat-icon class="text-xs leading-none">add</mat-icon>
+                          <span>Прив'язати</span>
                         </button>
                       </div>
                     </div>

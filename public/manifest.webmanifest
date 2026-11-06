@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "IPTV Менеджер & Білінг",
-  "short_name": "IPTV Білінг",
-  "description": "Система обліку абонентів інтернет-ТБ, управління підписками число-в-число, автоматичний білінг та Telegram Web App.",
+  "name": "HomeHub: Сервіси та Облік v3.0",
+  "short_name": "HomeHub 3.0",
+  "description": "HomeHub v3.0 — облік комунальних послуг (ДТЕК, ООЕК, Вода), бюджету та IPTV білінгу.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

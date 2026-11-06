@@ -1,4 +1,14 @@
-import { db } from '../db/index';
+import {
+  db,
+  DatabaseMode,
+  getActiveDbMode,
+  setActiveDbMode,
+  getExternalDatabaseUrl,
+  getPoolForMode,
+  getDbForMode,
+  isCloudSqlEnvConfigured,
+  isExternalDbConfigured,
+} from '../db/index';
 import {
   clients,
   payments,
@@ -10,6 +20,7 @@ import {
   customLedgerEntries,
   providerBalanceAdjustments,
   accountDeductionOverrides,
+  users,
 } from '../db/schema';
 import { eq } from 'drizzle-orm';
 
@@ -18,30 +29,368 @@ let lastSyncTimestamp: string | null = null;
 let connectionError: string | null = null;
 
 export function isCloudSqlAvailable(): boolean {
-  return Boolean(process.env['SQL_HOST'] && process.env['SQL_USER'] && process.env['SQL_DB_NAME']);
+  const mode = getActiveDbMode();
+  return mode === 'cloudsql' ? isCloudSqlEnvConfigured() : isExternalDbConfigured();
+}
+
+export async function checkCloudSqlConnection(mode?: DatabaseMode): Promise<boolean> {
+  const targetPool = getPoolForMode(mode);
+  try {
+    await targetPool.query('SELECT 1');
+    if (!mode || mode === getActiveDbMode()) {
+      isConnectedToCloudSql = true;
+      connectionError = null;
+    }
+    return true;
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
+    if (!mode || mode === getActiveDbMode()) {
+      isConnectedToCloudSql = false;
+      connectionError = err;
+    }
+    console.warn(`[PostgreSQL:${mode || getActiveDbMode()}] Connection ping failed:`, err);
+    return false;
+  }
+}
+
+export function getModeMetadata(mode: DatabaseMode): {
+  mode: DatabaseMode;
+  provider: string;
+  host: string;
+  database: string;
+  configured: boolean;
+} {
+  if (mode === 'cloudsql') {
+    const rawHost = process.env['SQL_HOST'] || 'Cloud SQL Socket';
+    const shortHost = rawHost.startsWith('/app/cloudsql/')
+      ? rawHost.replace('/app/cloudsql/', '')
+      : rawHost;
+    return {
+      mode: 'cloudsql',
+      provider: 'Google Cloud SQL (PostgreSQL)',
+      host: shortHost,
+      database: process.env['SQL_DB_NAME'] || 'cloud_sql_development_database',
+      configured: isCloudSqlEnvConfigured(),
+    };
+  }
+
+  let host = 'internet-shop-4-alex-kondr.e.aivencloud.com:13316';
+  let database = 'iptv';
+  const dbUrl = getExternalDatabaseUrl();
+  if (dbUrl) {
+    try {
+      const parsed = new URL(dbUrl);
+      host = parsed.host || host;
+      database = parsed.pathname?.replace(/^\//, '') || database;
+    } catch {
+      // ignore URL parse error
+    }
+  }
+  return {
+    mode: 'external',
+    provider: 'Зовнішня PostgreSQL (Aiven Cloud)',
+    host,
+    database,
+    configured: isExternalDbConfigured(),
+  };
 }
 
 export function getCloudSqlDbStatus() {
+  const activeMode = getActiveDbMode();
+  const meta = getModeMetadata(activeMode);
+
   return {
-    provider: 'Google Cloud SQL (PostgreSQL)',
-    host: process.env['SQL_HOST'] || null,
-    database: process.env['SQL_DB_NAME'] || null,
-    connected: isConnectedToCloudSql || isCloudSqlAvailable(),
+    activeMode,
+    provider: meta.provider,
+    host: meta.host,
+    database: meta.database,
+    connected: isConnectedToCloudSql,
     lastSync: lastSyncTimestamp,
     error: connectionError,
   };
 }
 
-async function safeSelect<T>(queryPromise: Promise<T[]>): Promise<T[]> {
+export async function ensureDatabaseSchema(mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  const targetPool = getPoolForMode(targetMode);
+
+  // In managed Google Cloud SQL, DDL is applied via Drizzle UpdateSchema (admin role),
+  // whereas the runtime user only has DML privileges (SELECT/INSERT/UPDATE/DELETE) on public schema.
+  if (targetMode === 'cloudsql') {
+    try {
+      await targetPool.query('SELECT 1');
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn('[PostgreSQL:cloudsql] Connection check warning:', msg);
+      return false;
+    }
+  }
+
   try {
-    return await queryPromise;
-  } catch (e) {
-    console.warn('[Cloud SQL] Query warning:', e instanceof Error ? e.message : String(e));
-    return [];
+    const ddl = `
+CREATE TABLE IF NOT EXISTS clients (
+  id TEXT PRIMARY KEY,
+  full_name TEXT NOT NULL,
+  phone TEXT NOT NULL,
+  iptv_login TEXT NOT NULL,
+  device_info TEXT,
+  subscription_plan TEXT,
+  cost_usd REAL NOT NULL DEFAULT 1,
+  monthly_price REAL NOT NULL DEFAULT 100,
+  start_date TEXT NOT NULL,
+  active_until TEXT NOT NULL,
+  balance REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'active',
+  provider_account_id TEXT,
+  telegram_chat_id TEXT,
+  telegram_username TEXT,
+  viber_id TEXT,
+  notes TEXT,
+  last_reminder_date TEXT,
+  last_reminder_status TEXT,
+  owner_user_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+  id TEXT PRIMARY KEY,
+  client_id TEXT NOT NULL,
+  client_name TEXT NOT NULL,
+  amount REAL NOT NULL,
+  monthly_price REAL NOT NULL,
+  previous_balance REAL NOT NULL,
+  new_balance REAL NOT NULL,
+  months_added INTEGER NOT NULL,
+  cost_usd_per_month REAL,
+  total_usd_deducted REAL,
+  previous_active_until TEXT NOT NULL,
+  new_active_until TEXT NOT NULL,
+  date TEXT NOT NULL,
+  note TEXT
+);
+
+CREATE TABLE IF NOT EXISTS provider_accounts (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  login TEXT NOT NULL,
+  password TEXT,
+  playlist_url TEXT,
+  server_url TEXT,
+  max_slots INTEGER NOT NULL DEFAULT 2,
+  assigned_client_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+  price_per_month_usd REAL NOT NULL DEFAULT 1,
+  start_date TEXT,
+  months_count INTEGER NOT NULL DEFAULT 0,
+  valid_until TEXT NOT NULL,
+  total_deducted_usd REAL NOT NULL DEFAULT 0,
+  renewals JSONB,
+  notes TEXT,
+  owner_user_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS provider_deposits (
+  id TEXT PRIMARY KEY,
+  date TEXT NOT NULL,
+  amount_usd REAL NOT NULL,
+  spent_uah REAL NOT NULL,
+  exchange_rate REAL,
+  payment_method TEXT,
+  note TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  id TEXT PRIMARY KEY,
+  telegram_bot_token TEXT NOT NULL DEFAULT '',
+  telegram_bot_username TEXT NOT NULL DEFAULT '',
+  telegram_sender_name TEXT NOT NULL DEFAULT '',
+  default_monthly_price REAL NOT NULL DEFAULT 100,
+  reminder_days_before INTEGER NOT NULL DEFAULT 7,
+  card_requisites TEXT NOT NULL DEFAULT '',
+  reminder_message_template TEXT NOT NULL DEFAULT '',
+  auto_reminder_enabled BOOLEAN NOT NULL DEFAULT false,
+  viber_auth_token TEXT,
+  viber_sender_name TEXT,
+  viber_reminder_message_template TEXT,
+  viber_renewal_message_template TEXT,
+  utility_tariffs_settings JSONB
+);
+
+CREATE TABLE IF NOT EXISTS utility_accounts (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  account_number TEXT NOT NULL,
+  address TEXT,
+  city TEXT,
+  street TEXT,
+  house_num TEXT,
+  dtek_queue_group TEXT,
+  meter_number TEXT,
+  electricity_tariff_type TEXT NOT NULL DEFAULT 'single',
+  residents_count INTEGER NOT NULL DEFAULT 1,
+  initial_reading_t1 REAL DEFAULT 0,
+  initial_reading_t2 REAL DEFAULT 0,
+  initial_reading_water REAL DEFAULT 0,
+  water_enabled BOOLEAN DEFAULT true,
+  waste_enabled BOOLEAN DEFAULT true,
+  balance_uah REAL DEFAULT 0,
+  notes TEXT,
+  owner_user_id TEXT,
+  assigned_user_ids JSONB DEFAULT '[]'::jsonb,
+  dtek_login TEXT,
+  dtek_password_enc TEXT,
+  dtek_cabinet_status TEXT,
+  dtek_cabinet_last_sync TEXT,
+  ooek_login TEXT,
+  ooek_password_enc TEXT,
+  ooek_account_number TEXT,
+  ooek_balance_uah REAL,
+  ooek_last_bill_uah REAL,
+  ooek_history JSONB DEFAULT '[]'::jsonb,
+  ooek_cabinet_status TEXT,
+  ooek_cabinet_last_sync TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS utility_readings (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  utility_type TEXT NOT NULL,
+  date TEXT NOT NULL,
+  period_month TEXT,
+  reading_t1 REAL,
+  reading_t2 REAL,
+  consumption_t1 REAL,
+  consumption_t2 REAL,
+  rate_t1 REAL,
+  rate_t2 REAL,
+  total_cost REAL NOT NULL DEFAULT 0,
+  season TEXT,
+  is_paid BOOLEAN DEFAULT false,
+  paid_date TEXT,
+  paid_amount REAL,
+  note TEXT,
+  is_control_only BOOLEAN DEFAULT false,
+  reading_purpose TEXT DEFAULT 'billing',
+  days_since_last_reading REAL,
+  daily_avg_consumption REAL,
+  owner_user_id TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS custom_ledger_entries (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  category TEXT NOT NULL,
+  date TEXT NOT NULL,
+  amount_uah REAL NOT NULL DEFAULT 0,
+  amount_usd REAL,
+  title TEXT NOT NULL,
+  subtitle TEXT,
+  note TEXT,
+  payment_method TEXT,
+  client_id TEXT,
+  client_name TEXT,
+  account_id TEXT,
+  account_name TEXT,
+  balance_before_usd REAL,
+  balance_after_usd REAL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS provider_balance_adjustments (
+  id TEXT PRIMARY KEY,
+  date TEXT NOT NULL,
+  amount_usd REAL NOT NULL,
+  note TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS account_deduction_overrides (
+  id TEXT PRIMARY KEY,
+  is_excluded BOOLEAN DEFAULT false,
+  amount_usd REAL,
+  amount_uah REAL,
+  date TEXT,
+  title TEXT,
+  subtitle TEXT,
+  note TEXT,
+  created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL,
+  name TEXT NOT NULL,
+  picture TEXT,
+  role TEXT NOT NULL DEFAULT 'admin',
+  status TEXT NOT NULL DEFAULT 'active',
+  sub TEXT,
+  allowed_tabs JSONB,
+  assigned_utility_account_ids JSONB,
+  assigned_client_ids JSONB,
+  can_manage_own_data BOOLEAN DEFAULT true,
+  created_at TEXT NOT NULL,
+  last_login_at TEXT
+);
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS sub TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_tabs JSONB;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_utility_account_ids JSONB;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_client_ids JSONB;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS can_manage_own_data BOOLEAN DEFAULT true;
+
+ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS owner_user_id TEXT;
+ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS assigned_user_ids JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS dtek_login TEXT;
+ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS dtek_password_enc TEXT;
+ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS dtek_cabinet_status TEXT;
+ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS dtek_cabinet_last_sync TEXT;
+ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS ooek_login TEXT;
+ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS ooek_password_enc TEXT;
+ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS ooek_account_number TEXT;
+ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS ooek_balance_uah REAL;
+ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS ooek_last_bill_uah REAL;
+ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS ooek_history JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS ooek_cabinet_status TEXT;
+ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS ooek_cabinet_last_sync TEXT;
+
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS owner_user_id TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS owner_user_id TEXT;
+ALTER TABLE provider_accounts ADD COLUMN IF NOT EXISTS owner_user_id TEXT;
+`;
+    await targetPool.query(ddl);
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('permission denied for schema public') || msg.includes('must be owner')) {
+      return true;
+    }
+    console.warn(`[PostgreSQL:${targetMode}] Schema initialization warning:`, msg);
+    return false;
   }
 }
 
-export async function loadAllFromCloudSql(): Promise<{
+type QueryResult<T> = { ok: true; rows: T[] } | { ok: false; error: string };
+
+async function trySelect<T>(queryPromise: Promise<T[]>): Promise<QueryResult<T>> {
+  try {
+    const rows = await queryPromise;
+    return { ok: true, rows };
+  } catch (e) {
+    const err = e instanceof Error ? e.message : String(e);
+    console.error('[PostgreSQL] Query warning:', err);
+    return { ok: false, error: err };
+  }
+}
+
+export interface CloudSqlLoadResult {
   clients: Record<string, unknown>[];
   payments: Record<string, unknown>[];
   providerAccounts: Record<string, unknown>[];
@@ -51,63 +400,82 @@ export async function loadAllFromCloudSql(): Promise<{
   customLedgerEntries: Record<string, unknown>[];
   providerBalanceAdjustments: Record<string, unknown>[];
   accountDeductionOverrides: Record<string, unknown>[];
+  users: Record<string, unknown>[];
   settings: Record<string, unknown> | null;
-} | null> {
+  settingsReadSuccess: boolean;
+}
+
+export async function loadAllFromCloudSql(): Promise<CloudSqlLoadResult | null> {
   if (!isCloudSqlAvailable()) return null;
 
   try {
+    await ensureDatabaseSchema();
+
     const [
-      allClients,
-      allPayments,
-      allAccounts,
-      allDeposits,
-      allSettings,
-      allUtilityAccounts,
-      allUtilityReadings,
-      allLedgerEntries,
-      allAdjustments,
-      allOverrides,
+      clientsRes,
+      paymentsRes,
+      accountsRes,
+      depositsRes,
+      settingsRes,
+      utilityAccountsRes,
+      utilityReadingsRes,
+      ledgerEntriesRes,
+      adjustmentsRes,
+      overridesRes,
+      usersRes,
     ] = await Promise.all([
-      safeSelect(db.select().from(clients)),
-      safeSelect(db.select().from(payments)),
-      safeSelect(db.select().from(providerAccounts)),
-      safeSelect(db.select().from(providerDeposits)),
-      safeSelect(db.select().from(settings)),
-      safeSelect(db.select().from(utilityAccounts)),
-      safeSelect(db.select().from(utilityReadings)),
-      safeSelect(db.select().from(customLedgerEntries)),
-      safeSelect(db.select().from(providerBalanceAdjustments)),
-      safeSelect(db.select().from(accountDeductionOverrides)),
+      trySelect(db.select().from(clients)),
+      trySelect(db.select().from(payments)),
+      trySelect(db.select().from(providerAccounts)),
+      trySelect(db.select().from(providerDeposits)),
+      trySelect(db.select().from(settings)),
+      trySelect(db.select().from(utilityAccounts)),
+      trySelect(db.select().from(utilityReadings)),
+      trySelect(db.select().from(customLedgerEntries)),
+      trySelect(db.select().from(providerBalanceAdjustments)),
+      trySelect(db.select().from(accountDeductionOverrides)),
+      trySelect(db.select().from(users)),
     ]);
 
-    isConnectedToCloudSql = true;
-    lastSyncTimestamp = new Date().toISOString();
-    connectionError = null;
+    if (settingsRes.ok) {
+      isConnectedToCloudSql = true;
+      lastSyncTimestamp = new Date().toISOString();
+      connectionError = null;
+    } else {
+      isConnectedToCloudSql = false;
+      connectionError = settingsRes.error || 'Помилка читання таблиці settings';
+    }
 
     let settingsObj: Record<string, unknown> | null = null;
-    if (allSettings.length > 0) {
-      const globalDoc = allSettings.find((s) => s.id === 'global') || allSettings[0];
-      const rest = { ...globalDoc };
-      delete (rest as { id?: string }).id;
-      settingsObj = rest as Record<string, unknown>;
+    if (settingsRes.ok && settingsRes.rows.length > 0) {
+      const validRows = settingsRes.rows.filter((s) => s.id !== '__db_mode__');
+      const globalDoc = validRows.find((s) => s.id === 'global') || validRows[0];
+      if (globalDoc) {
+        const rest = { ...globalDoc };
+        delete (rest as { id?: string }).id;
+        settingsObj = rest as Record<string, unknown>;
+      }
     }
 
     return {
-      clients: allClients as Record<string, unknown>[],
-      payments: allPayments as Record<string, unknown>[],
-      providerAccounts: allAccounts as Record<string, unknown>[],
-      providerDeposits: allDeposits as Record<string, unknown>[],
-      utilityAccounts: allUtilityAccounts as Record<string, unknown>[],
-      utilityReadings: allUtilityReadings as Record<string, unknown>[],
-      customLedgerEntries: allLedgerEntries as Record<string, unknown>[],
-      providerBalanceAdjustments: allAdjustments as Record<string, unknown>[],
-      accountDeductionOverrides: allOverrides as Record<string, unknown>[],
+      clients: (clientsRes.ok ? clientsRes.rows : []) as Record<string, unknown>[],
+      payments: (paymentsRes.ok ? paymentsRes.rows : []) as Record<string, unknown>[],
+      providerAccounts: (accountsRes.ok ? accountsRes.rows : []) as Record<string, unknown>[],
+      providerDeposits: (depositsRes.ok ? depositsRes.rows : []) as Record<string, unknown>[],
+      utilityAccounts: (utilityAccountsRes.ok ? utilityAccountsRes.rows : []) as Record<string, unknown>[],
+      utilityReadings: (utilityReadingsRes.ok ? utilityReadingsRes.rows : []) as Record<string, unknown>[],
+      customLedgerEntries: (ledgerEntriesRes.ok ? ledgerEntriesRes.rows : []) as Record<string, unknown>[],
+      providerBalanceAdjustments: (adjustmentsRes.ok ? adjustmentsRes.rows : []) as Record<string, unknown>[],
+      accountDeductionOverrides: (overridesRes.ok ? overridesRes.rows : []) as Record<string, unknown>[],
+      users: (usersRes.ok ? usersRes.rows : []) as Record<string, unknown>[],
       settings: settingsObj,
+      settingsReadSuccess: settingsRes.ok,
     };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error('[Cloud SQL] loadAll error:', msg);
+    console.error('[PostgreSQL] loadAll error:', msg);
     connectionError = msg;
+    isConnectedToCloudSql = false;
     return null;
   }
 }
@@ -124,8 +492,8 @@ export async function saveClientToCloudSql(client: Record<string, unknown>): Pro
       subscriptionPlan: client['subscriptionPlan'] ? String(client['subscriptionPlan']) : null,
       costUsd: Number(client['costUsd']) || 1,
       monthlyPrice: Number(client['monthlyPrice']) || 100,
-      startDate: String(client['startDate'] || ''),
-      activeUntil: String(client['activeUntil'] || ''),
+      startDate: String(client['startDate'] || new Date().toISOString().split('T')[0]),
+      activeUntil: String(client['activeUntil'] || new Date().toISOString().split('T')[0]),
       balance: Number(client['balance']) || 0,
       status: String(client['status'] || 'active'),
       providerAccountId: client['providerAccountId'] ? String(client['providerAccountId']) : null,
@@ -135,6 +503,7 @@ export async function saveClientToCloudSql(client: Record<string, unknown>): Pro
       notes: client['notes'] ? String(client['notes']) : null,
       lastReminderDate: client['lastReminderDate'] ? String(client['lastReminderDate']) : null,
       lastReminderStatus: client['lastReminderStatus'] ? String(client['lastReminderStatus']) : null,
+      ownerUserId: client['ownerUserId'] ? String(client['ownerUserId']) : null,
       createdAt: String(client['createdAt'] || new Date().toISOString()),
       updatedAt: String(client['updatedAt'] || new Date().toISOString()),
     };
@@ -149,7 +518,7 @@ export async function saveClientToCloudSql(client: Record<string, unknown>): Pro
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] saveClient error:', err);
+    console.error('[PostgreSQL] saveClient error:', err);
     return false;
   }
 }
@@ -158,10 +527,11 @@ export async function deleteClientFromCloudSql(clientId: string): Promise<boolea
   if (!isCloudSqlAvailable()) return false;
   try {
     await db.delete(clients).where(eq(clients.id, clientId));
+    await db.delete(payments).where(eq(payments.clientId, clientId));
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] deleteClient error:', err);
+    console.error('[PostgreSQL] deleteClient error:', err);
     return false;
   }
 }
@@ -172,17 +542,17 @@ export async function savePaymentToCloudSql(payment: Record<string, unknown>): P
     const data = {
       id: String(payment['id']),
       clientId: String(payment['clientId']),
-      clientName: String(payment['clientName']),
+      clientName: String(payment['clientName'] || ''),
       amount: Number(payment['amount']) || 0,
-      monthlyPrice: Number(payment['monthlyPrice']) || 0,
+      monthlyPrice: Number(payment['monthlyPrice']) || 100,
       previousBalance: Number(payment['previousBalance']) || 0,
       newBalance: Number(payment['newBalance']) || 0,
       monthsAdded: Number(payment['monthsAdded']) || 0,
       costUsdPerMonth: payment['costUsdPerMonth'] != null ? Number(payment['costUsdPerMonth']) : null,
       totalUsdDeducted: payment['totalUsdDeducted'] != null ? Number(payment['totalUsdDeducted']) : null,
-      previousActiveUntil: String(payment['previousActiveUntil']),
-      newActiveUntil: String(payment['newActiveUntil']),
-      date: String(payment['date']),
+      previousActiveUntil: String(payment['previousActiveUntil'] || ''),
+      newActiveUntil: String(payment['newActiveUntil'] || ''),
+      date: String(payment['date'] || new Date().toISOString()),
       note: payment['note'] ? String(payment['note']) : null,
     };
 
@@ -196,7 +566,7 @@ export async function savePaymentToCloudSql(payment: Record<string, unknown>): P
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] savePayment error:', err);
+    console.error('[PostgreSQL] savePayment error:', err);
     return false;
   }
 }
@@ -208,7 +578,7 @@ export async function deletePaymentFromCloudSql(paymentId: string): Promise<bool
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] deletePayment error:', err);
+    console.error('[PostgreSQL] deletePayment error:', err);
     return false;
   }
 }
@@ -218,8 +588,8 @@ export async function saveProviderAccountToCloudSql(account: Record<string, unkn
   try {
     const data = {
       id: String(account['id']),
-      name: String(account['name']),
-      login: String(account['login']),
+      name: String(account['name'] || ''),
+      login: String(account['login'] || ''),
       password: account['password'] ? String(account['password']) : null,
       playlistUrl: account['playlistUrl'] ? String(account['playlistUrl']) : null,
       serverUrl: account['serverUrl'] ? String(account['serverUrl']) : null,
@@ -228,12 +598,13 @@ export async function saveProviderAccountToCloudSql(account: Record<string, unkn
       pricePerMonthUsd: Number(account['pricePerMonthUsd']) || 1,
       startDate: account['startDate'] ? String(account['startDate']) : null,
       monthsCount: Number(account['monthsCount']) || 0,
-      validUntil: String(account['validUntil']),
+      validUntil: String(account['validUntil'] || new Date().toISOString().split('T')[0]),
       totalDeductedUsd: Number(account['totalDeductedUsd']) || 0,
-      renewals: Array.isArray(account['renewals']) ? (account['renewals'] as Record<string, unknown>[]) : [],
+      renewals: Array.isArray(account['renewals']) ? (account['renewals'] as Record<string, unknown>[]) : null,
       notes: account['notes'] ? String(account['notes']) : null,
+      ownerUserId: account['ownerUserId'] ? String(account['ownerUserId']) : null,
       createdAt: String(account['createdAt'] || new Date().toISOString()),
-      updatedAt: String(account['updatedAt'] || new Date().toISOString()),
+      updatedAt: account['updatedAt'] ? String(account['updatedAt']) : null,
     };
 
     await db.insert(providerAccounts)
@@ -246,7 +617,7 @@ export async function saveProviderAccountToCloudSql(account: Record<string, unkn
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] saveProviderAccount error:', err);
+    console.error('[PostgreSQL] saveProviderAccount error:', err);
     return false;
   }
 }
@@ -258,7 +629,7 @@ export async function deleteProviderAccountFromCloudSql(accountId: string): Prom
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] deleteProviderAccount error:', err);
+    console.error('[PostgreSQL] deleteProviderAccount error:', err);
     return false;
   }
 }
@@ -268,7 +639,7 @@ export async function saveProviderDepositToCloudSql(deposit: Record<string, unkn
   try {
     const data = {
       id: String(deposit['id']),
-      date: String(deposit['date']),
+      date: String(deposit['date'] || new Date().toISOString().split('T')[0]),
       amountUsd: Number(deposit['amountUsd']) || 0,
       spentUah: Number(deposit['spentUah']) || 0,
       exchangeRate: deposit['exchangeRate'] != null ? Number(deposit['exchangeRate']) : null,
@@ -287,7 +658,7 @@ export async function saveProviderDepositToCloudSql(deposit: Record<string, unkn
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] saveProviderDeposit error:', err);
+    console.error('[PostgreSQL] saveProviderDeposit error:', err);
     return false;
   }
 }
@@ -299,7 +670,7 @@ export async function deleteProviderDepositFromCloudSql(depositId: string): Prom
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] deleteProviderDeposit error:', err);
+    console.error('[PostgreSQL] deleteProviderDeposit error:', err);
     return false;
   }
 }
@@ -313,6 +684,10 @@ export async function saveUtilityAccountToCloudSql(account: Record<string, unkno
       name: String(account['name'] || ''),
       accountNumber: String(account['accountNumber'] || ''),
       address: account['address'] ? String(account['address']) : null,
+      city: account['city'] ? String(account['city']) : null,
+      street: account['street'] ? String(account['street']) : null,
+      houseNum: account['houseNum'] ? String(account['houseNum']) : null,
+      dtekQueueGroup: account['dtekQueueGroup'] ? String(account['dtekQueueGroup']) : null,
       meterNumber: account['meterNumber'] ? String(account['meterNumber']) : null,
       electricityTariffType: String(account['electricityTariffType'] || 'single'),
       residentsCount: Number(account['residentsCount']) || 1,
@@ -323,6 +698,20 @@ export async function saveUtilityAccountToCloudSql(account: Record<string, unkno
       wasteEnabled: account['wasteEnabled'] !== undefined ? Boolean(account['wasteEnabled']) : true,
       balanceUah: Number(account['balanceUah']) || 0,
       notes: account['notes'] ? String(account['notes']) : null,
+      ownerUserId: account['ownerUserId'] ? String(account['ownerUserId']) : null,
+      assignedUserIds: Array.isArray(account['assignedUserIds']) ? (account['assignedUserIds'] as string[]) : [],
+      dtekLogin: account['dtekLogin'] ? String(account['dtekLogin']) : null,
+      dtekPasswordEnc: account['dtekPasswordEnc'] ? String(account['dtekPasswordEnc']) : null,
+      dtekCabinetStatus: account['dtekCabinetStatus'] ? String(account['dtekCabinetStatus']) : null,
+      dtekCabinetLastSync: account['dtekCabinetLastSync'] ? String(account['dtekCabinetLastSync']) : null,
+      ooekLogin: account['ooekLogin'] ? String(account['ooekLogin']) : null,
+      ooekPasswordEnc: account['ooekPasswordEnc'] ? String(account['ooekPasswordEnc']) : null,
+      ooekAccountNumber: account['ooekAccountNumber'] ? String(account['ooekAccountNumber']) : null,
+      ooekBalanceUah: account['ooekBalanceUah'] != null ? Number(account['ooekBalanceUah']) : null,
+      ooekLastBillUah: account['ooekLastBillUah'] != null ? Number(account['ooekLastBillUah']) : null,
+      ooekHistory: Array.isArray(account['ooekHistory']) ? (account['ooekHistory'] as Record<string, unknown>[]) : [],
+      ooekCabinetStatus: account['ooekCabinetStatus'] ? String(account['ooekCabinetStatus']) : null,
+      ooekCabinetLastSync: account['ooekCabinetLastSync'] ? String(account['ooekCabinetLastSync']) : null,
       createdAt: String(account['createdAt'] || new Date().toISOString()),
       updatedAt: account['updatedAt'] ? String(account['updatedAt']) : null,
     };
@@ -337,7 +726,7 @@ export async function saveUtilityAccountToCloudSql(account: Record<string, unkno
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] saveUtilityAccount error:', err);
+    console.error('[PostgreSQL] saveUtilityAccount error:', err);
     return false;
   }
 }
@@ -350,7 +739,7 @@ export async function deleteUtilityAccountFromCloudSql(accountId: string): Promi
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] deleteUtilityAccount error:', err);
+    console.error('[PostgreSQL] deleteUtilityAccount error:', err);
     return false;
   }
 }
@@ -381,6 +770,7 @@ export async function saveUtilityReadingToCloudSql(reading: Record<string, unkno
       readingPurpose: String(reading['readingPurpose'] || (isControlOnly ? 'control' : 'billing')),
       daysSinceLastReading: reading['daysSinceLastReading'] != null ? Number(reading['daysSinceLastReading']) : null,
       dailyAvgConsumption: reading['dailyAvgConsumption'] != null ? Number(reading['dailyAvgConsumption']) : null,
+      ownerUserId: reading['ownerUserId'] ? String(reading['ownerUserId']) : null,
       createdAt: String(reading['createdAt'] || new Date().toISOString()),
     };
 
@@ -394,7 +784,7 @@ export async function saveUtilityReadingToCloudSql(reading: Record<string, unkno
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] saveUtilityReading error:', err);
+    console.error('[PostgreSQL] saveUtilityReading error:', err);
     return false;
   }
 }
@@ -406,7 +796,7 @@ export async function deleteUtilityReadingFromCloudSql(readingId: string): Promi
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] deleteUtilityReading error:', err);
+    console.error('[PostgreSQL] deleteUtilityReading error:', err);
     return false;
   }
 }
@@ -416,11 +806,11 @@ export async function saveCustomLedgerEntryToCloudSql(entry: Record<string, unkn
   try {
     const data = {
       id: String(entry['id']),
-      type: String(entry['type'] || 'custom'),
-      category: String(entry['category'] || 'custom'),
+      type: String(entry['type']),
+      category: String(entry['category'] || 'other'),
       date: String(entry['date']),
       amountUah: Number(entry['amountUah']) || 0,
-      amountUsd: entry['amountUsd'] != null && entry['amountUsd'] !== '' ? Number(entry['amountUsd']) : null,
+      amountUsd: entry['amountUsd'] != null ? Number(entry['amountUsd']) : null,
       title: String(entry['title'] || ''),
       subtitle: entry['subtitle'] ? String(entry['subtitle']) : null,
       note: entry['note'] ? String(entry['note']) : null,
@@ -444,7 +834,7 @@ export async function saveCustomLedgerEntryToCloudSql(entry: Record<string, unkn
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] saveCustomLedgerEntry error:', err);
+    console.error('[PostgreSQL] saveCustomLedgerEntry error:', err);
     return false;
   }
 }
@@ -456,7 +846,7 @@ export async function deleteCustomLedgerEntryFromCloudSql(entryId: string): Prom
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] deleteCustomLedgerEntry error:', err);
+    console.error('[PostgreSQL] deleteCustomLedgerEntry error:', err);
     return false;
   }
 }
@@ -482,7 +872,7 @@ export async function saveProviderBalanceAdjustmentToCloudSql(adj: Record<string
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] saveProviderBalanceAdjustment error:', err);
+    console.error('[PostgreSQL] saveProviderBalanceAdjustment error:', err);
     return false;
   }
 }
@@ -494,7 +884,7 @@ export async function deleteProviderBalanceAdjustmentFromCloudSql(adjId: string)
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] deleteProviderBalanceAdjustment error:', err);
+    console.error('[PostgreSQL] deleteProviderBalanceAdjustment error:', err);
     return false;
   }
 }
@@ -511,7 +901,7 @@ export async function saveAccountDeductionOverrideToCloudSql(override: Record<st
       title: override['title'] ? String(override['title']) : null,
       subtitle: override['subtitle'] ? String(override['subtitle']) : null,
       note: override['note'] ? String(override['note']) : null,
-      createdAt: override['createdAt'] ? String(override['createdAt']) : new Date().toISOString(),
+      createdAt: override['createdAt'] ? String(override['createdAt']) : null,
     };
 
     await db.insert(accountDeductionOverrides)
@@ -524,19 +914,55 @@ export async function saveAccountDeductionOverrideToCloudSql(override: Record<st
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] saveAccountDeductionOverride error:', err);
+    console.error('[PostgreSQL] saveAccountDeductionOverride error:', err);
     return false;
   }
 }
 
-export async function deleteAccountDeductionOverrideFromCloudSql(overrideId: string): Promise<boolean> {
+export async function saveUserToCloudSql(user: Record<string, unknown>): Promise<boolean> {
   if (!isCloudSqlAvailable()) return false;
   try {
-    await db.delete(accountDeductionOverrides).where(eq(accountDeductionOverrides.id, overrideId));
+    const data = {
+      id: String(user['id']),
+      email: String(user['email'] || ''),
+      name: String(user['name'] || ''),
+      picture: user['picture'] ? String(user['picture']) : null,
+      role: String(user['role'] || 'admin'),
+      status: String(user['status'] || 'active'),
+      sub: user['sub'] ? String(user['sub']) : null,
+      allowedTabs: Array.isArray(user['allowedTabs']) ? (user['allowedTabs'] as string[]) : null,
+      assignedUtilityAccountIds: Array.isArray(user['assignedUtilityAccountIds'])
+        ? (user['assignedUtilityAccountIds'] as string[])
+        : [],
+      assignedClientIds: Array.isArray(user['assignedClientIds']) ? (user['assignedClientIds'] as string[]) : [],
+      canManageOwnData: user['canManageOwnData'] !== undefined ? Boolean(user['canManageOwnData']) : true,
+      createdAt: String(user['createdAt'] || new Date().toISOString()),
+      lastLoginAt: user['lastLoginAt'] ? String(user['lastLoginAt']) : null,
+    };
+
+    await db.insert(users)
+      .values(data)
+      .onConflictDoUpdate({
+        target: users.id,
+        set: data,
+      });
+
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] deleteAccountDeductionOverride error:', err);
+    console.error('[PostgreSQL] saveUser error:', err);
+    return false;
+  }
+}
+
+export async function deleteUserFromCloudSql(userId: string): Promise<boolean> {
+  if (!isCloudSqlAvailable()) return false;
+  try {
+    await db.delete(users).where(eq(users.id, userId));
+    lastSyncTimestamp = new Date().toISOString();
+    return true;
+  } catch (err: unknown) {
+    console.error('[PostgreSQL] deleteUser error:', err);
     return false;
   }
 }
@@ -568,10 +994,15 @@ export async function saveSettingsToCloudSql(settingsObj: Record<string, unknown
         set: data,
       });
 
+    isConnectedToCloudSql = true;
+    connectionError = null;
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] saveSettings error:', err);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[PostgreSQL] saveSettings error:', msg);
+    isConnectedToCloudSql = false;
+    connectionError = msg;
     return false;
   }
 }
@@ -588,7 +1019,7 @@ export async function getSettingsFromCloudSql(): Promise<Record<string, unknown>
     }
     return null;
   } catch (err: unknown) {
-    console.warn('[Cloud SQL] getSettings error:', err);
+    console.warn('[PostgreSQL] getSettings error:', err);
     return null;
   }
 }
@@ -626,10 +1057,13 @@ export async function seedInitialDataToCloudSql(fullDb: Record<string, unknown>)
     if (Array.isArray(fullDb['accountDeductionOverrides'])) {
       for (const o of fullDb['accountDeductionOverrides']) await saveAccountDeductionOverrideToCloudSql(o as Record<string, unknown>);
     }
-    console.log('[Cloud SQL] Full database synchronized and pushed to Cloud SQL');
+    if (Array.isArray(fullDb['users'])) {
+      for (const u of fullDb['users']) await saveUserToCloudSql(u as Record<string, unknown>);
+    }
+    console.log('[PostgreSQL] Full database initialized in PostgreSQL');
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] seedInitialData error:', err);
+    console.error('[PostgreSQL] seedInitialData error:', err);
     return false;
   }
 }
@@ -650,10 +1084,356 @@ export async function purgeTestDataFromCloudSql(): Promise<boolean> {
       db.delete(settings),
     ]);
     lastSyncTimestamp = new Date().toISOString();
-    console.log('[Cloud SQL] Purged all data');
+    console.log('[PostgreSQL] Purged all test data');
     return true;
   } catch (err: unknown) {
-    console.error('[Cloud SQL] purgeTestData error:', err);
+    console.error('[PostgreSQL] purgeTestData error:', err);
     return false;
   }
 }
+
+export async function loadPersistedDbMode(): Promise<DatabaseMode> {
+  const currentMode = getActiveDbMode();
+  try {
+    if (currentMode === 'external' && !isExternalDbConfigured()) {
+      return getActiveDbMode();
+    }
+    const targetDb = getDbForMode(currentMode);
+    await ensureDatabaseSchema(currentMode);
+    const rows = await targetDb.select().from(settings).where(eq(settings.id, '__db_mode__'));
+    if (rows.length > 0) {
+      const savedMode = rows[0].cardRequisites;
+      if (savedMode === 'cloudsql' || savedMode === 'external') {
+        setActiveDbMode(savedMode);
+        return savedMode;
+      }
+    }
+  } catch (err) {
+    console.warn(`[PostgreSQL] Could not load persisted db mode from ${currentMode}:`, err);
+  }
+  return getActiveDbMode();
+}
+
+export async function savePersistedDbMode(mode: DatabaseMode): Promise<void> {
+  setActiveDbMode(mode);
+  try {
+    if (mode === 'external' && !isExternalDbConfigured()) {
+      return;
+    }
+    const targetDb = getDbForMode(mode);
+    await ensureDatabaseSchema(mode);
+    const modeRow = {
+      id: '__db_mode__',
+      telegramBotToken: '',
+      telegramBotUsername: '',
+      telegramSenderName: mode,
+      defaultMonthlyPrice: 100,
+      reminderDaysBefore: 7,
+      cardRequisites: mode,
+      reminderMessageTemplate: '',
+      autoReminderEnabled: false,
+      viberAuthToken: null,
+      viberSenderName: null,
+      viberReminderMessageTemplate: null,
+      viberRenewalMessageTemplate: null,
+      utilityTariffsSettings: null,
+    };
+    await targetDb
+      .insert(settings)
+      .values(modeRow)
+      .onConflictDoUpdate({
+        target: settings.id,
+        set: modeRow,
+      });
+  } catch (err) {
+    console.warn(`[PostgreSQL] Failed to persist db mode in ${mode} db:`, err);
+  }
+}
+
+export interface DatabaseInstanceInspection {
+  mode: DatabaseMode;
+  provider: string;
+  host: string;
+  database: string;
+  configured: boolean;
+  connected: boolean;
+  error: string | null;
+  counts: {
+    clients: number;
+    payments: number;
+    providerAccounts: number;
+    providerDeposits: number;
+    utilityAccounts: number;
+    utilityReadings: number;
+    customLedgerEntries: number;
+    users: number;
+    settingsConfigured: boolean;
+  };
+}
+
+export async function inspectDatabaseInstance(mode: DatabaseMode): Promise<DatabaseInstanceInspection> {
+  const meta = getModeMetadata(mode);
+  if (!meta.configured) {
+    return {
+      ...meta,
+      connected: false,
+      error: 'База даних не налаштована у змінних середовища',
+      counts: {
+        clients: 0,
+        payments: 0,
+        providerAccounts: 0,
+        providerDeposits: 0,
+        utilityAccounts: 0,
+        utilityReadings: 0,
+        customLedgerEntries: 0,
+        users: 0,
+        settingsConfigured: false,
+      },
+    };
+  }
+
+  try {
+    const targetPool = getPoolForMode(mode);
+    await targetPool.query('SELECT 1');
+    await ensureDatabaseSchema(mode);
+    const res = await targetPool.query(`
+      SELECT
+        (SELECT COUNT(*)::int FROM clients) AS clients,
+        (SELECT COUNT(*)::int FROM payments) AS payments,
+        (SELECT COUNT(*)::int FROM provider_accounts) AS provider_accounts,
+        (SELECT COUNT(*)::int FROM provider_deposits) AS provider_deposits,
+        (SELECT COUNT(*)::int FROM utility_accounts) AS utility_accounts,
+        (SELECT COUNT(*)::int FROM utility_readings) AS utility_readings,
+        (SELECT COUNT(*)::int FROM custom_ledger_entries) AS custom_ledger_entries,
+        (SELECT COUNT(*)::int FROM users) AS users,
+        (SELECT COUNT(*)::int FROM settings WHERE id = 'global') AS settings_count
+    `);
+    const row = res.rows[0] || {};
+    return {
+      ...meta,
+      connected: true,
+      error: null,
+      counts: {
+        clients: Number(row.clients) || 0,
+        payments: Number(row.payments) || 0,
+        providerAccounts: Number(row.provider_accounts) || 0,
+        providerDeposits: Number(row.provider_deposits) || 0,
+        utilityAccounts: Number(row.utility_accounts) || 0,
+        utilityReadings: Number(row.utility_readings) || 0,
+        customLedgerEntries: Number(row.custom_ledger_entries) || 0,
+        users: Number(row.users) || 0,
+        settingsConfigured: Number(row.settings_count) > 0,
+      },
+    };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      ...meta,
+      connected: false,
+      error: msg,
+      counts: {
+        clients: 0,
+        payments: 0,
+        providerAccounts: 0,
+        providerDeposits: 0,
+        utilityAccounts: 0,
+        utilityReadings: 0,
+        customLedgerEntries: 0,
+        users: 0,
+        settingsConfigured: false,
+      },
+    };
+  }
+}
+
+export interface CopyDatabasesResult {
+  success: boolean;
+  sourceMode: DatabaseMode;
+  targetMode: DatabaseMode;
+  sourceProvider: string;
+  targetProvider: string;
+  counts: {
+    clients: number;
+    payments: number;
+    providerAccounts: number;
+    providerDeposits: number;
+    utilityAccounts: number;
+    utilityReadings: number;
+    customLedgerEntries: number;
+    providerBalanceAdjustments: number;
+    accountDeductionOverrides: number;
+    users: number;
+    settings: number;
+  };
+  totalCopied: number;
+  error?: string;
+}
+
+export async function copyAllBetweenDatabases(
+  sourceMode: DatabaseMode,
+  targetMode: DatabaseMode
+): Promise<CopyDatabasesResult> {
+  const sourceMeta = getModeMetadata(sourceMode);
+  const targetMeta = getModeMetadata(targetMode);
+
+  const emptyCounts = {
+    clients: 0,
+    payments: 0,
+    providerAccounts: 0,
+    providerDeposits: 0,
+    utilityAccounts: 0,
+    utilityReadings: 0,
+    customLedgerEntries: 0,
+    providerBalanceAdjustments: 0,
+    accountDeductionOverrides: 0,
+    users: 0,
+    settings: 0,
+  };
+
+  if (sourceMode === targetMode) {
+    return {
+      success: false,
+      sourceMode,
+      targetMode,
+      sourceProvider: sourceMeta.provider,
+      targetProvider: targetMeta.provider,
+      counts: emptyCounts,
+      totalCopied: 0,
+      error: 'Джерело та цільова база даних повинні відрізнятися',
+    };
+  }
+
+  try {
+    const sourceOk = await ensureDatabaseSchema(sourceMode);
+    if (!sourceOk) {
+      throw new Error(`Не вдалося підключитися до бази-джерела (${sourceMeta.provider})`);
+    }
+    const targetOk = await ensureDatabaseSchema(targetMode);
+    if (!targetOk) {
+      throw new Error(`Не вдалося підключитися або створити таблиці у цільовій базі (${targetMeta.provider})`);
+    }
+
+    const sourceDb = getDbForMode(sourceMode);
+    const targetDb = getDbForMode(targetMode);
+
+    const [
+      clientsRows,
+      paymentsRows,
+      accountsRows,
+      depositsRows,
+      settingsRows,
+      utilityAccountsRows,
+      utilityReadingsRows,
+      ledgerRows,
+      adjustmentsRows,
+      overridesRows,
+      usersRows,
+    ] = await Promise.all([
+      sourceDb.select().from(clients),
+      sourceDb.select().from(payments),
+      sourceDb.select().from(providerAccounts),
+      sourceDb.select().from(providerDeposits),
+      sourceDb.select().from(settings),
+      sourceDb.select().from(utilityAccounts),
+      sourceDb.select().from(utilityReadings),
+      sourceDb.select().from(customLedgerEntries),
+      sourceDb.select().from(providerBalanceAdjustments),
+      sourceDb.select().from(accountDeductionOverrides),
+      sourceDb.select().from(users),
+    ]);
+
+    const validSettingsRows = settingsRows.filter((s) => s.id !== '__db_mode__');
+
+    for (const row of validSettingsRows) {
+      await targetDb.insert(settings).values(row).onConflictDoUpdate({ target: settings.id, set: row });
+    }
+    for (const row of clientsRows) {
+      await targetDb.insert(clients).values(row).onConflictDoUpdate({ target: clients.id, set: row });
+    }
+    for (const row of paymentsRows) {
+      await targetDb.insert(payments).values(row).onConflictDoUpdate({ target: payments.id, set: row });
+    }
+    for (const row of accountsRows) {
+      await targetDb.insert(providerAccounts).values(row).onConflictDoUpdate({ target: providerAccounts.id, set: row });
+    }
+    for (const row of depositsRows) {
+      await targetDb.insert(providerDeposits).values(row).onConflictDoUpdate({ target: providerDeposits.id, set: row });
+    }
+    for (const row of utilityAccountsRows) {
+      await targetDb.insert(utilityAccounts).values(row).onConflictDoUpdate({ target: utilityAccounts.id, set: row });
+    }
+    for (const row of utilityReadingsRows) {
+      await targetDb.insert(utilityReadings).values(row).onConflictDoUpdate({ target: utilityReadings.id, set: row });
+    }
+    for (const row of ledgerRows) {
+      await targetDb.insert(customLedgerEntries).values(row).onConflictDoUpdate({ target: customLedgerEntries.id, set: row });
+    }
+    for (const row of adjustmentsRows) {
+      await targetDb
+        .insert(providerBalanceAdjustments)
+        .values(row)
+        .onConflictDoUpdate({ target: providerBalanceAdjustments.id, set: row });
+    }
+    for (const row of overridesRows) {
+      await targetDb
+        .insert(accountDeductionOverrides)
+        .values(row)
+        .onConflictDoUpdate({ target: accountDeductionOverrides.id, set: row });
+    }
+    for (const row of usersRows) {
+      await targetDb.insert(users).values(row).onConflictDoUpdate({ target: users.id, set: row });
+    }
+
+    const counts = {
+      clients: clientsRows.length,
+      payments: paymentsRows.length,
+      providerAccounts: accountsRows.length,
+      providerDeposits: depositsRows.length,
+      utilityAccounts: utilityAccountsRows.length,
+      utilityReadings: utilityReadingsRows.length,
+      customLedgerEntries: ledgerRows.length,
+      providerBalanceAdjustments: adjustmentsRows.length,
+      accountDeductionOverrides: overridesRows.length,
+      users: usersRows.length,
+      settings: validSettingsRows.length,
+    };
+
+    const totalCopied =
+      counts.clients +
+      counts.payments +
+      counts.providerAccounts +
+      counts.providerDeposits +
+      counts.utilityAccounts +
+      counts.utilityReadings +
+      counts.customLedgerEntries +
+      counts.providerBalanceAdjustments +
+      counts.accountDeductionOverrides +
+      counts.users +
+      counts.settings;
+
+    lastSyncTimestamp = new Date().toISOString();
+    return {
+      success: true,
+      sourceMode,
+      targetMode,
+      sourceProvider: sourceMeta.provider,
+      targetProvider: targetMeta.provider,
+      counts,
+      totalCopied,
+    };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[PostgreSQL] copyAllBetweenDatabases (${sourceMode} -> ${targetMode}) error:`, msg);
+    return {
+      success: false,
+      sourceMode,
+      targetMode,
+      sourceProvider: sourceMeta.provider,
+      targetProvider: targetMeta.provider,
+      counts: emptyCounts,
+      totalCopied: 0,
+      error: msg,
+    };
+  }
+}
+

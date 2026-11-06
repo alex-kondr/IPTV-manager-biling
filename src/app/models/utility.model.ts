@@ -2,12 +2,30 @@ export type UtilityType = 'electricity' | 'water' | 'waste';
 export type ElectricityTariffType = 'single' | 'dual';
 export type SeasonType = 'summer' | 'winter';
 
+export interface OoekAbonbookEntry {
+  id: string;
+  accountNumber?: string; // Особовий рахунок дому
+  period: string; // Період або дата (напр. "10.2026" або "15.10.2026")
+  date?: string; // Дата оплати або розрахунку
+  consumedKwh?: number | null; // Спожита електроенергія (кВт·год)
+  readingT1?: number | null; // Показник День / Загальний
+  readingT2?: number | null; // Показник Ніч
+  accruedUah?: number | null; // Нараховано (грн)
+  paidUah?: number | null; // Оплачено (грн)
+  balanceUah?: number | null; // Сальдо / Заборгованість (грн)
+  description?: string; // Додатковий опис операції
+}
+
 export interface UtilityAccount {
   id: string;
   type: 'electricity' | 'water_waste';
   name: string; // e.g. "Квартира (вул. Шевченка)", "Дача", "Гараж"
   accountNumber: string; // Особовий рахунок
   address?: string;
+  city?: string;
+  street?: string;
+  houseNum?: string;
+  dtekQueueGroup?: string;
   meterNumber?: string; // Номер лічильника
   electricityTariffType: ElectricityTariffType; // 'single' | 'dual'
   residentsCount?: number; // Кількість зареєстрованих осіб (для сміття)
@@ -18,9 +36,25 @@ export interface UtilityAccount {
   wasteEnabled?: boolean;
   balanceUah?: number; // Залишок коштів на рахунку (грн)
   notes?: string;
+  ownerUserId?: string; // ID користувача, який створив рахунок
+  assignedUserIds?: string[]; // ID користувачів, яким адміністратор прив'язав цей будинок/рахунок
+  dtekLogin?: string; // Логін від кабінету ДТЕК (auth.my.dtek-oem.com.ua)
+  hasDtekPassword?: boolean; // Прапорець наявності зашифрованого пароля AES-256-GCM на сервері
+  dtekCabinetStatus?: string; // Статус останньої синхронізації з кабінетом ДТЕК
+  dtekCabinetLastSync?: string; // Час останньої синхронізації з кабінетом ДТЕК
+  ooekLogin?: string; // Логін від кабінету ООЕК (personal.ooek.od.ua/home/)
+  hasOoekPassword?: boolean; // Прапорець наявності зашифрованого пароля ООЕК AES-256-GCM на сервері
+  ooekAccountNumber?: string; // Особовий рахунок ООЕК
+  ooekBalanceUah?: number; // Нарахована сума до сплати / баланс з сайту ООЕК (грн)
+  ooekLastBillUah?: number; // Нараховано за останній розрахунковий місяць в ООЕК (грн)
+  ooekHistory?: OoekAbonbookEntry[]; // Історія оплат та споживання електроенергії з abonbook/cards по особовому рахунку
+  ooekDiscoveredAccounts?: string[]; // Знайдені особові рахунки в кабінеті ООЕК
+  ooekCabinetStatus?: string; // Статус підключення до ООЕК
+  ooekCabinetLastSync?: string; // Час останнього оновлення суми з ООЕК
   createdAt: string;
   updatedAt?: string;
 }
+
 
 export interface UtilityReading {
   id: string;
@@ -44,6 +78,7 @@ export interface UtilityReading {
   readingPurpose?: 'billing' | 'control'; // 'billing' (офіційний розрахунок) або 'control' (тільки моніторинг)
   daysSinceLastReading?: number; // Днів з моменту попереднього показу
   dailyAvgConsumption?: number; // Середньодобове споживання між замірами
+  ownerUserId?: string;
   createdAt: string;
 }
 

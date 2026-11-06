@@ -2,6 +2,7 @@ import {
   ChangeDetectionStrategy,
   Component,
   computed,
+  effect,
   inject,
   signal,
 } from '@angular/core';
@@ -11,6 +12,7 @@ import { IptvData } from './services/iptv-data';
 import { TelegramWebApp } from './services/telegram-web-app';
 import {
   Client,
+  AppTabId,
   formatDateUa,
   getDaysRemaining,
   cleanPhoneNumber,
@@ -29,7 +31,16 @@ import { UsersView } from './components/users-view/users-view';
 import { ElectricityView } from './components/electricity-view/electricity-view';
 import { WaterWasteView } from './components/water-waste-view/water-waste-view';
 
-type ActiveTab = 'clients' | 'accounts' | 'budget' | 'analytics' | 'payments' | 'electricity' | 'water_waste' | 'users' | 'settings';
+export type ActiveTab =
+  | 'clients'
+  | 'accounts'
+  | 'budget'
+  | 'analytics'
+  | 'payments'
+  | 'electricity'
+  | 'water_waste'
+  | 'users'
+  | 'settings';
 type FilterStatus = 'all' | 'expiring_soon' | 'expired' | 'active' | 'paused';
 
 @Component({
@@ -58,27 +69,250 @@ export class App {
   readonly tgApp = inject(TelegramWebApp);
   readonly Math = Math;
 
-  // Application metadata for user tracking
-  readonly appVersion = 'v2.0';
-  readonly publishDateTime = '24.09.2026, 12:05 (Київ)';
+  // Application metadata for user tracking (v3.0)
+  readonly appVersion = 'v3.0';
+  readonly publishDateTime = '05.11.2026, 23:30 (Київ)';
+  readonly sharedAppUrl = 'https://ais-pre-xwrvn3here3zzs7lwxjyvb-427445800479.europe-west2.run.app';
+  readonly devAppUrl = 'https://ais-dev-xwrvn3here3zzs7lwxjyvb-427445800479.europe-west2.run.app';
+  readonly copiedAppUrl = signal<boolean>(false);
+
+  // IPTV Grouped Tree (Desktop Sidebar) & Drawer (Mobile) State
+  readonly isSidebarIptvOpen = signal<boolean>(true);
+  readonly isMobileIptvDrawerOpen = signal<boolean>(false);
 
   // User Auth and Permissions
   readonly currentUser = this.dataService.currentUser;
   readonly isAuthenticated = this.dataService.isAuthenticated;
   readonly isAuthLoading = this.dataService.isAuthLoading;
   readonly isAdmin = this.dataService.isAdmin;
+  readonly isRealAdmin = this.dataService.isRealAdmin;
+  readonly isImpersonating = this.dataService.isImpersonating;
   readonly isViewer = this.dataService.isViewer;
   readonly isNewUser = this.dataService.isNewUser;
   readonly canEdit = this.dataService.canEdit;
   readonly canView = this.dataService.canView;
   readonly pendingUsersCount = this.dataService.pendingUsersCount;
+  readonly adminUtilityAccounts = this.dataService.adminUtilityAccounts;
+
+  readonly sandboxTabs: { id: AppTabId; label: string }[] = [
+    { id: 'electricity', label: '⚡ Електро' },
+    { id: 'water_waste', label: '💧 Вода/Сміття' },
+    { id: 'clients', label: '👥 Клієнти' },
+    { id: 'accounts', label: '📺 Акаунти' },
+    { id: 'budget', label: '💵 Бюджет' },
+    { id: 'analytics', label: '📊 Аналітика' },
+    { id: 'payments', label: '🧾 Оплати' },
+    { id: 'settings', label: '⚙️ Опції' },
+  ];
+
+  async enterTestAccountMode(): Promise<void> {
+    await this.dataService.switchToTestUser();
+  }
+
+  async exitTestAccountMode(): Promise<void> {
+    await this.dataService.exitTestUserMode();
+  }
+
+  async setTestUserRole(role: 'user' | 'new'): Promise<void> {
+    const user = this.currentUser();
+    if (!user) return;
+    await this.dataService.updateUserRole(user.id, role);
+  }
+
+  async toggleTestUserTab(tab: AppTabId): Promise<void> {
+    const user = this.currentUser();
+    if (!user) return;
+    const currentTabs = Array.isArray(user.allowedTabs) && user.allowedTabs.length > 0
+      ? [...user.allowedTabs]
+      : ['electricity', 'water_waste'] as AppTabId[];
+    const exists = currentTabs.includes(tab);
+    const nextTabs = exists ? currentTabs.filter((t) => t !== tab) : [...currentTabs, tab];
+    await this.dataService.updateUserPermissions(user.id, {
+      allowedTabs: nextTabs,
+    });
+  }
+
+  isTestUserHouseAssigned(accId: string): boolean {
+    const user = this.currentUser();
+    if (!user) return false;
+    return Array.isArray(user.assignedUtilityAccountIds) && user.assignedUtilityAccountIds.includes(accId);
+  }
+
+  async toggleTestUserHouse(accId: string): Promise<void> {
+    const user = this.currentUser();
+    if (!user) return;
+    const currentHouses = Array.isArray(user.assignedUtilityAccountIds)
+      ? [...user.assignedUtilityAccountIds]
+      : [];
+    const exists = currentHouses.includes(accId);
+    const nextHouses = exists ? currentHouses.filter((id) => id !== accId) : [...currentHouses, accId];
+    await this.dataService.updateUserPermissions(user.id, {
+      assignedUtilityAccountIds: nextHouses,
+    });
+  }
 
   // Auto-sync status
   readonly autoSyncActive = this.dataService.autoSyncActive;
   readonly lastAutoSyncTime = this.dataService.lastAutoSyncTime;
 
   // Active navigation tab
-  readonly activeTab = signal<ActiveTab>('clients');
+  readonly activeTab = signal<ActiveTab>('electricity');
+  readonly allowedTabs = this.dataService.allowedTabs;
+
+  readonly isIptvTabActive = computed(() => {
+    const tab = this.activeTab();
+    return (
+      tab === 'clients' ||
+      tab === 'accounts' ||
+      tab === 'budget' ||
+      tab === 'analytics' ||
+      tab === 'payments'
+    );
+  });
+
+  readonly activeIptvTabLabel = computed(() => {
+    switch (this.activeTab()) {
+      case 'clients':
+        return 'Клієнти';
+      case 'accounts':
+        return 'Акаунти';
+      case 'budget':
+        return 'Бюджет';
+      case 'analytics':
+        return 'Аналітика';
+      case 'payments':
+        return 'Оплати';
+      default:
+        return '';
+    }
+  });
+
+  readonly activeSectionInfo = computed(() => {
+    switch (this.activeTab()) {
+      case 'electricity':
+        return {
+          category: 'Комунальні сервіси',
+          title: 'Електроенергія (ДТЕК / ООЕК)',
+          icon: 'bolt',
+          iconColor: 'text-amber-500',
+        };
+      case 'water_waste':
+        return {
+          category: 'Комунальні сервіси',
+          title: 'Водопостачання та вивіз сміття',
+          icon: 'water_drop',
+          iconColor: 'text-cyan-500',
+        };
+      case 'clients':
+        return {
+          category: 'IPTV Білінг',
+          title: 'Клієнти та абоненти',
+          icon: 'group',
+          iconColor: 'text-indigo-500',
+        };
+      case 'accounts':
+        return {
+          category: 'IPTV Білінг',
+          title: 'Акаунти IPTV провайдера',
+          icon: 'dns',
+          iconColor: 'text-emerald-500',
+        };
+      case 'budget':
+        return {
+          category: 'IPTV Білінг',
+          title: 'Бюджет та баланс ($/₴)',
+          icon: 'account_balance_wallet',
+          iconColor: 'text-teal-500',
+        };
+      case 'analytics':
+        return {
+          category: 'IPTV Білінг',
+          title: 'Аналітика доходів',
+          icon: 'analytics',
+          iconColor: 'text-indigo-500',
+        };
+      case 'payments':
+        return {
+          category: 'IPTV Білінг',
+          title: 'Історія оплат та Viber розсилка',
+          icon: 'receipt_long',
+          iconColor: 'text-purple-500',
+        };
+      case 'users':
+        return {
+          category: 'Адміністрування',
+          title: 'Користувачі та права доступу',
+          icon: 'admin_panel_settings',
+          iconColor: 'text-emerald-500',
+        };
+      case 'settings':
+      default:
+        return {
+          category: 'Система',
+          title: 'Налаштування тарифів та БД',
+          icon: 'settings',
+          iconColor: 'text-slate-600',
+        };
+    }
+  });
+
+  constructor() {
+    effect(() => {
+      const user = this.currentUser();
+      const allowed = this.allowedTabs();
+      const current = this.activeTab();
+      if (!user || user.role === 'admin') return;
+      if (current === 'users' || !allowed.includes(current as AppTabId)) {
+        const fallback = (allowed[0] as ActiveTab) || 'electricity';
+        if (fallback && fallback !== current) {
+          this.activeTab.set(fallback);
+        }
+      }
+    });
+  }
+
+  copyAppLink(): void {
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(this.sharedAppUrl);
+      this.copiedAppUrl.set(true);
+      setTimeout(() => this.copiedAppUrl.set(false), 2000);
+    }
+  }
+
+  isTabAllowed(tab: AppTabId): boolean {
+    return this.dataService.isTabAllowed(tab);
+  }
+
+  hasAnyIptvTabAllowed(): boolean {
+    return (
+      this.isTabAllowed('clients') ||
+      this.isTabAllowed('accounts') ||
+      this.isTabAllowed('budget') ||
+      this.isTabAllowed('analytics') ||
+      this.isTabAllowed('payments')
+    );
+  }
+
+  toggleSidebarIptv(): void {
+    this.isSidebarIptvOpen.update((v) => !v);
+  }
+
+  toggleMobileIptvDrawer(): void {
+    this.isMobileIptvDrawerOpen.update((v) => !v);
+  }
+
+  closeMobileIptvDrawer(): void {
+    this.isMobileIptvDrawerOpen.set(false);
+  }
+
+  selectIptvSubTab(tab: ActiveTab): void {
+    this.activeTab.set(tab);
+    this.isSidebarIptvOpen.set(true);
+    this.isMobileIptvDrawerOpen.set(false);
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }
 
   // Client filtering & search
   readonly searchControl = new FormControl('');
@@ -161,7 +395,10 @@ export class App {
 
   setTab(tab: ActiveTab): void {
     this.activeTab.set(tab);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    this.isMobileIptvDrawerOpen.set(false);
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   }
 
   setFilter(filter: FilterStatus): void {

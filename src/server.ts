@@ -6,12 +6,14 @@ import {
 } from '@angular/ssr/node';
 import express from 'express';
 import { GoogleGenAI } from '@google/genai';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'node:crypto';
 import {
   isCloudSqlAvailable,
   getCloudSqlDbStatus,
+  checkCloudSqlConnection,
   loadAllFromCloudSql,
+  CloudSqlLoadResult,
   saveSettingsToCloudSql,
   getSettingsFromCloudSql,
   saveClientToCloudSql,
@@ -33,23 +35,25 @@ import {
   saveAccountDeductionOverrideToCloudSql,
   seedInitialDataToCloudSql,
   purgeTestDataFromCloudSql,
+  loadPersistedDbMode,
+  savePersistedDbMode,
+  inspectDatabaseInstance,
+  copyAllBetweenDatabases,
+  saveUserToCloudSql,
+  deleteUserFromCloudSql,
 } from './server/cloudsql-sync';
+import { DatabaseMode, getActiveDbMode } from './db/index';
 import { DEFAULT_UTILITY_TARIFFS, UtilityTariffsSettings } from './app/models/utility.model';
 import {
   BudgetLedgerItem,
   ProviderBalanceAdjustment,
   AccountDeductionOverride,
+  AppTabId,
+  DEFAULT_USER_TABS,
 } from './app/models/client.model';
 
 const browserDistFolder = join(import.meta.dirname, '../browser');
-const dbDir = join(process.cwd(), 'data');
-const dbFile = join(dbDir, 'iptv_database.json');
-const settingsFile = join(dbDir, 'settings.json');
 
-// Ensure db directory exists
-if (!existsSync(dbDir)) {
-  mkdirSync(dbDir, { recursive: true });
-}
 
 function deepMergeTariffs(
   currentTariffs: UtilityTariffsSettings | Record<string, unknown> | undefined,
@@ -210,6 +214,7 @@ interface Client {
   notes?: string;
   lastReminderDate?: string;
   lastReminderStatus?: 'sent' | 'failed' | 'manual';
+  ownerUserId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -258,6 +263,7 @@ interface ProviderAccount {
   totalDeductedUsd: number; // total USD deducted from main balance
   renewals?: ProviderAccountRenewal[];
   notes?: string;
+  ownerUserId?: string;
   createdAt: string;
   updatedAt?: string;
 }
@@ -293,12 +299,30 @@ export type UtilityType = 'electricity' | 'water' | 'waste';
 export type ElectricityTariffType = 'single' | 'dual';
 export type SeasonType = 'summer' | 'winter';
 
+export interface OoekAbonbookEntry {
+  id: string;
+  accountNumber?: string;
+  period: string;
+  date?: string;
+  consumedKwh?: number | null;
+  readingT1?: number | null;
+  readingT2?: number | null;
+  accruedUah?: number | null;
+  paidUah?: number | null;
+  balanceUah?: number | null;
+  description?: string;
+}
+
 export interface UtilityAccount {
   id: string;
   type: 'electricity' | 'water_waste';
   name: string;
   accountNumber: string;
   address?: string;
+  city?: string;
+  street?: string;
+  houseNum?: string;
+  dtekQueueGroup?: string;
   meterNumber?: string;
   electricityTariffType: ElectricityTariffType;
   residentsCount?: number;
@@ -309,6 +333,23 @@ export interface UtilityAccount {
   wasteEnabled?: boolean;
   balanceUah?: number;
   notes?: string;
+  ownerUserId?: string;
+  assignedUserIds?: string[];
+  dtekLogin?: string;
+  dtekPasswordEnc?: string;
+  hasDtekPassword?: boolean;
+  dtekCabinetStatus?: string;
+  dtekCabinetLastSync?: string;
+  ooekLogin?: string;
+  ooekPasswordEnc?: string;
+  hasOoekPassword?: boolean;
+  ooekAccountNumber?: string;
+  ooekBalanceUah?: number;
+  ooekLastBillUah?: number;
+  ooekHistory?: OoekAbonbookEntry[];
+  ooekDiscoveredAccounts?: string[];
+  ooekCabinetStatus?: string;
+  ooekCabinetLastSync?: string;
   createdAt: string;
   updatedAt?: string;
 }
@@ -335,6 +376,7 @@ export interface UtilityReading {
   readingPurpose?: 'billing' | 'control';
   daysSinceLastReading?: number;
   dailyAvgConsumption?: number;
+  ownerUserId?: string;
   createdAt: string;
 }
 
@@ -345,10 +387,14 @@ export interface AppUser {
   email: string;
   name: string;
   picture?: string;
-  role: UserRole; // 'admin' (Всі права), 'user' (Тільки перегляд), 'new' (Зовсім без доступу)
+  role: UserRole; // 'admin' (Всі права), 'user' (Особистий кабінет), 'new' (Зовсім без доступу)
   createdAt: string;
   lastLoginAt: string;
   sub?: string;
+  allowedTabs?: AppTabId[];
+  assignedUtilityAccountIds?: string[];
+  assignedClientIds?: string[];
+  canManageOwnData?: boolean;
 }
 
 interface DatabaseSchema {
@@ -493,6 +539,19 @@ function getInitialDb(): DatabaseSchema {
       createdAt: new Date().toISOString(),
       lastLoginAt: new Date().toISOString(),
     },
+    {
+      id: 'user_test_sandbox',
+      email: 'test.user@homehub.local',
+      name: 'Тестовий Користувач (Перевірка доступу)',
+      picture: `https://ui-avatars.com/api/?name=${encodeURIComponent('Тестовий Користувач')}&background=6366f1&color=fff`,
+      role: 'user',
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+      allowedTabs: ['electricity', 'water_waste'],
+      assignedUtilityAccountIds: [],
+      assignedClientIds: [],
+      canManageOwnData: true,
+    },
   ];
 
   return {
@@ -515,8 +574,10 @@ let startupSyncPromise: Promise<void> | null = null;
 
 async function syncWithDatabaseOnStartup(): Promise<void> {
   try {
+    await loadPersistedDbMode();
     if (isCloudSqlAvailable()) {
-      console.log('[Cloud SQL] Connecting to Cloud SQL PostgreSQL database...');
+      console.log(`[PostgreSQL] Connecting to ${getActiveDbMode()} PostgreSQL database and verifying schema...`);
+      await checkCloudSqlConnection();
       const cloudSqlData = await loadAllFromCloudSql();
       if (cloudSqlData) {
         const init = getInitialDb();
@@ -540,7 +601,9 @@ async function syncWithDatabaseOnStartup(): Promise<void> {
               })
             : [],
           settings: init.settings,
-          users: init.users,
+          users: Array.isArray(cloudSqlData.users) && cloudSqlData.users.length > 0
+            ? (cloudSqlData.users as unknown as AppUser[])
+            : init.users,
         };
 
         if (cloudSqlData.settings) {
@@ -557,40 +620,38 @@ async function syncWithDatabaseOnStartup(): Promise<void> {
             ...init.settings,
             ...cloudSqlData.settings,
             utilityTariffsSettings: deepMergeTariffs(
-              DEFAULT_UTILITY_TARIFFS,
+              parsedTariffs as Partial<UtilityTariffsSettings>,
               parsedTariffs as Partial<UtilityTariffsSettings>
             ),
           } as unknown as AppSettings;
-        } else {
-          console.log('[Cloud SQL] Initializing default settings in Cloud SQL...');
+        } else if (cloudSqlData.settingsReadSuccess && !cloudSqlData.settings) {
+          console.log('[PostgreSQL] Database has no settings yet. Initializing default settings in PostgreSQL...');
           await seedInitialDataToCloudSql(current as unknown as Record<string, unknown>);
+        } else {
+          console.error('[PostgreSQL] Settings read failed. Skipping seed to prevent data loss!');
         }
 
-        // Restore user list from local cache if present
-        if (existsSync(dbFile)) {
-          try {
-            const raw = JSON.parse(readFileSync(dbFile, 'utf-8'));
-            if (Array.isArray(raw.users) && raw.users.length > 0) {
-              current.users = raw.users;
-            }
-          } catch {
-            // ignore
-          }
+        // Auto-update client status based on current date and normalize plans
+        if (current.clients && Array.isArray(current.clients)) {
+          current.clients = current.clients.map((c: Client) => {
+            const plan: SubscriptionPlanType = c.subscriptionPlan || (c.monthlyPrice >= 150 ? '2usd' : '1usd');
+            const cost = c.costUsd || (plan === '2usd' ? 2 : 1);
+            return {
+              ...c,
+              subscriptionPlan: plan,
+              costUsd: cost,
+              status: computeClientStatus(c),
+            };
+          });
         }
 
         cachedDb = current;
-        try {
-          writeFileSync(dbFile, JSON.stringify(current, null, 2), 'utf-8');
-          writeFileSync(settingsFile, JSON.stringify(current.settings, null, 2), 'utf-8');
-        } catch (e) {
-          console.warn('Cache write warning:', e);
-        }
-        console.log('[Cloud SQL] Successfully loaded application state directly from Cloud SQL PostgreSQL database!');
+        console.log('[PostgreSQL] Successfully loaded application state directly from PostgreSQL database!');
         return;
       }
     }
   } catch (err) {
-    console.error('[Cloud SQL] Startup sync error:', err);
+    console.error('[PostgreSQL] Startup sync error:', err);
   }
 }
 
@@ -601,91 +662,8 @@ function loadDb(): DatabaseSchema {
   if (cachedDb) {
     return cachedDb;
   }
-  try {
-    if (existsSync(dbFile)) {
-      const data = readFileSync(dbFile, 'utf-8');
-      const parsed = JSON.parse(data);
-
-      const init = getInitialDb();
-      if (!parsed.providerAccounts || !Array.isArray(parsed.providerAccounts)) {
-        parsed.providerAccounts = init.providerAccounts;
-      }
-      if (!parsed.providerDeposits || !Array.isArray(parsed.providerDeposits)) {
-        parsed.providerDeposits = init.providerDeposits;
-      }
-      if (!parsed.customLedgerEntries || !Array.isArray(parsed.customLedgerEntries)) {
-        parsed.customLedgerEntries = [];
-      }
-      if (!parsed.providerBalanceAdjustments || !Array.isArray(parsed.providerBalanceAdjustments)) {
-        parsed.providerBalanceAdjustments = [];
-      }
-      if (!parsed.accountDeductionOverrides || !Array.isArray(parsed.accountDeductionOverrides)) {
-        parsed.accountDeductionOverrides = [];
-      }
-      if (!parsed.utilityAccounts || !Array.isArray(parsed.utilityAccounts)) {
-        parsed.utilityAccounts = [];
-      }
-      if (!parsed.utilityReadings || !Array.isArray(parsed.utilityReadings)) {
-        parsed.utilityReadings = [];
-      } else {
-        parsed.utilityReadings = parsed.utilityReadings.map((r: UtilityReading) => {
-          const isCtrl = r.isControlOnly === true || String(r.isControlOnly) === 'true' || r.readingPurpose === 'control';
-          return {
-            ...r,
-            isControlOnly: isCtrl,
-            readingPurpose: isCtrl ? 'control' : 'billing',
-          };
-        });
-      }
-      if (!parsed.settings) {
-        parsed.settings = init.settings;
-      } else {
-        const mergedTariffs = deepMergeTariffs(
-          init.settings.utilityTariffsSettings,
-          parsed.settings.utilityTariffsSettings
-        );
-        parsed.settings = {
-          ...init.settings,
-          ...parsed.settings,
-          utilityTariffsSettings: mergedTariffs,
-        };
-      }
-
-      if (!parsed.users || !Array.isArray(parsed.users) || parsed.users.length === 0) {
-        parsed.users = init.users;
-      } else {
-        const hasAdmin = parsed.users.some((u: AppUser) => u.email.toLowerCase() === defaultAdminEmail.toLowerCase());
-        if (!hasAdmin) {
-          parsed.users.unshift(init.users[0]);
-        }
-      }
-
-      // Auto-update client status based on current date and normalize plans
-      if (parsed.clients && Array.isArray(parsed.clients)) {
-        parsed.clients = parsed.clients.map((c: Client) => {
-          const plan: SubscriptionPlanType = c.subscriptionPlan || (c.monthlyPrice >= 150 ? '2usd' : '1usd');
-          const cost = c.costUsd || (plan === '2usd' ? 2 : 1);
-          return {
-            ...c,
-            subscriptionPlan: plan,
-            costUsd: cost,
-            status: computeClientStatus(c),
-          };
-        });
-      }
-      cachedDb = parsed;
-      return parsed;
-    }
-  } catch (err) {
-    console.error('Error loading DB file, falling back to seed:', err);
-  }
   const init = getInitialDb();
   cachedDb = init;
-  try {
-    writeFileSync(dbFile, JSON.stringify(init, null, 2), 'utf-8');
-  } catch {
-    // ignore
-  }
   return init;
 }
 
@@ -696,11 +674,6 @@ function saveDb(data: DatabaseSchema): void {
   cachedDb = data;
   dbRevision++;
   lastDbUpdate = new Date().toISOString();
-  try {
-    writeFileSync(dbFile, JSON.stringify(data, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving DB file:', err);
-  }
 }
 
 // Active user sessions: token -> session info
@@ -719,7 +692,36 @@ function parseGoogleJwt(token: string): { sub?: string; email?: string; name?: s
   }
 }
 
-function getAuthenticatedUser(req: express.Request, db: DatabaseSchema): AppUser | null {
+function ensureTestSandboxUser(db: DatabaseSchema): AppUser {
+  if (!db.users) db.users = [];
+  let testUser = db.users.find((u) => u.id === 'user_test_sandbox' || u.email.toLowerCase() === 'test.user@homehub.local');
+  if (!testUser) {
+    testUser = {
+      id: 'user_test_sandbox',
+      email: 'test.user@homehub.local',
+      name: 'Тестовий Користувач (Перевірка доступу)',
+      picture: `https://ui-avatars.com/api/?name=${encodeURIComponent('Тестовий Користувач')}&background=6366f1&color=fff`,
+      role: 'user',
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+      allowedTabs: ['electricity', 'water_waste'],
+      assignedUtilityAccountIds: [],
+      assignedClientIds: [],
+      canManageOwnData: true,
+    };
+    db.users.push(testUser);
+    saveDb(db);
+    if (isCloudSqlAvailable()) {
+      saveUserToCloudSql(testUser as unknown as Record<string, unknown>).catch((e) =>
+        console.warn('[PostgreSQL] Save test user warning:', e)
+      );
+    }
+  }
+  return testUser;
+}
+
+function getRealAuthenticatedUser(req: express.Request, db: DatabaseSchema): AppUser | null {
+  ensureTestSandboxUser(db);
   const authHeader = (req.headers['authorization'] || '') as string;
   const headerToken = authHeader.startsWith('Bearer ') ? authHeader.substring(7) : '';
   const customUserId = req.headers['x-auth-user-id'] as string;
@@ -732,7 +734,7 @@ function getAuthenticatedUser(req: express.Request, db: DatabaseSchema): AppUser
     if (user) return user;
   }
 
-  // 2. Custom header
+  // 2. Custom header (only if user exists in database)
   if (customUserId) {
     const user = (db.users || []).find((u) => u.id === customUserId);
     if (user) return user;
@@ -742,8 +744,105 @@ function getAuthenticatedUser(req: express.Request, db: DatabaseSchema): AppUser
     if (user) return user;
   }
 
-  // Fallback default admin if no auth header passed in local environment
-  return (db.users || []).find((u) => u.role === 'admin') || null;
+  // Strict Authentication: Never fallback to admin for anonymous visitors!
+  // Any user opening the application link must explicitly authenticate.
+  return null;
+}
+
+function getAuthenticatedUser(req: express.Request, db: DatabaseSchema): AppUser | null {
+  const realUser = getRealAuthenticatedUser(req, db);
+  const impersonateId = ((req.headers['x-impersonate-user-id'] || '') as string).trim();
+  if (realUser && realUser.role === 'admin' && impersonateId) {
+    if (impersonateId === 'user_test_sandbox') {
+      return ensureTestSandboxUser(db);
+    }
+    const target = (db.users || []).find((u) => u.id === impersonateId);
+    if (target) return target;
+  }
+  return realUser;
+}
+
+function canUserAccessUtilityAccount(user: AppUser | null, account: UtilityAccount): boolean {
+  if (!user || user.role === 'admin') return true;
+  if (user.role === 'new') return false;
+  if (account.ownerUserId && account.ownerUserId === user.id) return true;
+  if (Array.isArray(account.assignedUserIds) && account.assignedUserIds.includes(user.id)) return true;
+  if (Array.isArray(user.assignedUtilityAccountIds) && user.assignedUtilityAccountIds.includes(account.id)) return true;
+  return false;
+}
+
+function canUserAccessClient(user: AppUser | null, client: Client): boolean {
+  if (!user || user.role === 'admin') return true;
+  if (user.role === 'new') return false;
+  if (client.ownerUserId && client.ownerUserId === user.id) return true;
+  if (Array.isArray(user.assignedClientIds) && user.assignedClientIds.includes(client.id)) return true;
+  return false;
+}
+
+function canUserAccessProviderAccount(user: AppUser | null, account: ProviderAccount): boolean {
+  if (!user || user.role === 'admin') return true;
+  if (user.role === 'new') return false;
+  if (account.ownerUserId && account.ownerUserId === user.id) return true;
+  return false;
+}
+
+// AES-256-GCM encryption for DTEK & OOEK cabinet passwords (uses stable key across container restarts)
+function getCabinetEncryptionKey(): Buffer {
+  const rawSecret =
+    process.env['CABINET_ENCRYPTION_KEY'] ||
+    'aistudio_utility_cabinet_aes256_secret_key_2026';
+  return createHash('sha256').update(rawSecret).digest();
+}
+
+function encryptCabinetSecret(plainText: string): string {
+  if (!plainText) return '';
+  const key = getCabinetEncryptionKey();
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(plainText, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return `${iv.toString('hex')}:${authTag.toString('hex')}:${encrypted.toString('hex')}`;
+}
+
+function decryptCabinetSecret(encText?: string): string {
+  if (!encText || !encText.includes(':')) return '';
+  const parts = encText.split(':');
+  if (parts.length !== 3) return '';
+  const [ivHex, authTagHex, dataHex] = parts;
+
+  const candidateSecrets = [
+    process.env['CABINET_ENCRYPTION_KEY'] || 'aistudio_utility_cabinet_aes256_secret_key_2026',
+    process.env['GEMINI_API_KEY'] || '',
+  ].filter(Boolean);
+
+  for (const secret of candidateSecrets) {
+    try {
+      const key = createHash('sha256').update(secret).digest();
+      const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(ivHex, 'hex'));
+      decipher.setAuthTag(Buffer.from(authTagHex, 'hex'));
+      const decrypted = Buffer.concat([
+        decipher.update(Buffer.from(dataHex, 'hex')),
+        decipher.final(),
+      ]);
+      return decrypted.toString('utf8');
+    } catch {
+      // try next candidate
+    }
+  }
+  return '';
+}
+
+function sanitizeUtilityAccountForClient(acc: UtilityAccount): UtilityAccount {
+  const copy: UtilityAccount = {
+    ...acc,
+    hasDtekPassword: Boolean(acc.dtekPasswordEnc && decryptCabinetSecret(acc.dtekPasswordEnc)),
+    hasOoekPassword: Boolean(acc.ooekPasswordEnc && decryptCabinetSecret(acc.ooekPasswordEnc)),
+    ooekHistory: Array.isArray(acc.ooekHistory) ? acc.ooekHistory : [],
+    ooekDiscoveredAccounts: Array.isArray(acc.ooekDiscoveredAccounts) ? acc.ooekDiscoveredAccounts : [],
+  };
+  delete copy.dtekPasswordEnc;
+  delete copy.ooekPasswordEnc;
+  return copy;
 }
 
 const app = express();
@@ -763,31 +862,48 @@ app.use('/api', async (req, res, next) => {
     }
   }
 
-  // Allow all auth endpoints, sync version, database status, photo recognition, dtek shutdowns, settings, budget endpoints, and GET requests
+  // Allow all auth endpoints, sync version, database status, photo recognition, dtek shutdowns, and GET/OPTIONS requests
   if (
     req.path.startsWith('/auth') ||
     req.path === '/sync/version' ||
     req.path === '/database/status' ||
     req.path === '/utility/recognize-meter' ||
-    req.path.startsWith('/utility/dtek-shutdowns') ||
-    req.path === '/settings' ||
-    req.path.startsWith('/budget') ||
+    req.path.startsWith('/utility/dtek-') ||
     req.method === 'GET' ||
     req.method === 'OPTIONS'
   ) {
     return next();
   }
 
-  // For POST/PUT/DELETE mutating requests: require Admin role
   const db = loadDb();
+  const realUser = getRealAuthenticatedUser(req, db);
   const user = getAuthenticatedUser(req, db);
 
   if (!user) {
     return res.status(401).json({ error: 'Необхідна Google авторизація для виконання цієї дії' });
   }
 
-  if (user.role !== 'admin') {
-    return res.status(403).json({ error: 'У вас режим тільки для перегляду. Тільки адміністратор може вносити зміни' });
+  // Admin-only endpoints: user management, database switching/copying, global settings
+  // Check realUser as well so Admin can live-edit the Test Account while impersonating!
+  if (
+    req.path.startsWith('/users') ||
+    req.path.startsWith('/database') ||
+    req.path === '/settings' ||
+    req.path.startsWith('/budget')
+  ) {
+    if (realUser?.role !== 'admin' && user.role !== 'admin') {
+      return res.status(403).json({ error: 'Тільки адміністратор може змінювати глобальні налаштування або керувати системою' });
+    }
+    return next();
+  }
+
+  if (user.role === 'new') {
+    return res.status(403).json({ error: 'Ваш акаунт очікує підтвердження адміністратором' });
+  }
+
+  // Regular user ('user' role) can manage their own data if canManageOwnData !== false
+  if (user.role === 'user' && user.canManageOwnData === false) {
+    return res.status(403).json({ error: 'У вас режим тільки для перегляду. Зверніться до адміністратора для надання прав редагування.' });
   }
 
   next();
@@ -796,10 +912,12 @@ app.use('/api', async (req, res, next) => {
 // API Endpoints: Auth & User Management
 app.get('/api/auth/me', (req, res) => {
   const db = loadDb();
+  const realUser = getRealAuthenticatedUser(req, db);
   const user = getAuthenticatedUser(req, db);
   res.json({
     authenticated: !!user,
     user: user || null,
+    realAdminUser: realUser?.role === 'admin' ? realUser : null,
     googleClientId: process.env['GOOGLE_CLIENT_ID'] || '',
     totalUsersCount: (db.users || []).length,
     pendingUsersCount: (db.users || []).filter((u) => u.role === 'new').length,
@@ -839,6 +957,12 @@ app.post('/api/auth/google', (req, res): void => {
     if (name && (!user.name || user.name.startsWith('usr_'))) user.name = name;
     if (picture) user.picture = picture;
     if (sub && !user.sub) user.sub = sub;
+    if (user.role === 'user' && (!Array.isArray(user.allowedTabs) || user.allowedTabs.length === 0)) {
+      user.allowedTabs = [...DEFAULT_USER_TABS];
+    }
+    if (user.canManageOwnData === undefined) {
+      user.canManageOwnData = true;
+    }
   } else {
     // Initial role determination:
     // If email matches creator/admin or if no admin exists: 'admin'
@@ -856,11 +980,18 @@ app.post('/api/auth/google', (req, res): void => {
       createdAt: now,
       lastLoginAt: now,
       sub: sub || undefined,
+      allowedTabs: [...DEFAULT_USER_TABS],
+      assignedUtilityAccountIds: [],
+      assignedClientIds: [],
+      canManageOwnData: true,
     };
     db.users.push(user);
   }
 
   saveDb(db);
+  if (isCloudSqlAvailable()) {
+    saveUserToCloudSql(user as unknown as Record<string, unknown>).catch((e) => console.warn('[PostgreSQL] Save Google user error:', e));
+  }
 
   const sessionToken = 'tok_' + Math.random().toString(36).substring(2) + Date.now().toString(36);
   activeSessions.set(sessionToken, {
@@ -877,7 +1008,7 @@ app.post('/api/auth/google', (req, res): void => {
     message: user.role === 'admin'
       ? 'Вхід виконано (Адміністратор - повний доступ)'
       : (user.role === 'user'
-        ? 'Вхід виконано (Користувач - режим перегляду)'
+        ? 'Вхід виконано (Особистий кабінет користувача)'
         : 'Акаунт зареєстровано. Доступ надається адміністратором.'),
   });
 });
@@ -894,26 +1025,45 @@ app.post('/api/auth/logout', (req, res): void => {
 // User access management by Admin
 app.get('/api/users', (req, res): void => {
   const db = loadDb();
+  ensureTestSandboxUser(db);
+  const realUser = getRealAuthenticatedUser(req, db);
   const currentUser = getAuthenticatedUser(req, db);
-  if (!currentUser || currentUser.role !== 'admin') {
+  if ((!realUser || realUser.role !== 'admin') && (!currentUser || currentUser.role !== 'admin')) {
     res.status(403).json({ error: 'Тільки адміністратор має доступ до списку користувачів' });
     return;
   }
 
   const roleOrder: Record<UserRole, number> = { new: 0, user: 1, admin: 2 };
-  const sorted = [...(db.users || [])].sort((a, b) => (roleOrder[a.role] ?? 3) - (roleOrder[b.role] ?? 3));
+  const sorted = [...(db.users || [])].sort((a, b) => {
+    if (a.id === 'user_test_sandbox') return -1;
+    if (b.id === 'user_test_sandbox') return 1;
+    return (roleOrder[a.role] ?? 3) - (roleOrder[b.role] ?? 3);
+  });
   res.json(sorted);
+});
+
+// Return all utility accounts for Admin house binding UI
+app.get('/api/admin/utility-accounts', (req, res): void => {
+  const db = loadDb();
+  const realUser = getRealAuthenticatedUser(req, db);
+  const currentUser = getAuthenticatedUser(req, db);
+  if ((!realUser || realUser.role !== 'admin') && (!currentUser || currentUser.role !== 'admin')) {
+    res.status(403).json({ error: 'Тільки адміністратор має доступ до всіх обʼєктів' });
+    return;
+  }
+  res.json((db.utilityAccounts || []).map(sanitizeUtilityAccountForClient));
 });
 
 app.post('/api/users', (req, res): void => {
   const db = loadDb();
+  const realUser = getRealAuthenticatedUser(req, db);
   const currentUser = getAuthenticatedUser(req, db);
-  if (!currentUser || currentUser.role !== 'admin') {
+  if ((!realUser || realUser.role !== 'admin') && (!currentUser || currentUser.role !== 'admin')) {
     res.status(403).json({ error: 'Тільки адміністратор може додавати користувачів' });
     return;
   }
 
-  const { email, name, role } = req.body;
+  const { email, name, role, allowedTabs, assignedUtilityAccountIds, assignedClientIds, canManageOwnData } = req.body;
   if (!email || !email.includes('@')) {
     res.status(400).json({ error: 'Вкажіть коректний Google Email' });
     return;
@@ -922,9 +1072,16 @@ app.post('/api/users', (req, res): void => {
   const cleanEmail = email.trim().toLowerCase();
   const existing = (db.users || []).find((u) => u.email.toLowerCase() === cleanEmail);
   if (existing) {
-    existing.role = (role as UserRole) || 'user';
+    existing.role = (role as UserRole) || existing.role || 'user';
     if (name) existing.name = name;
+    if (Array.isArray(allowedTabs)) existing.allowedTabs = allowedTabs;
+    if (Array.isArray(assignedUtilityAccountIds)) existing.assignedUtilityAccountIds = assignedUtilityAccountIds;
+    if (Array.isArray(assignedClientIds)) existing.assignedClientIds = assignedClientIds;
+    if (canManageOwnData !== undefined) existing.canManageOwnData = Boolean(canManageOwnData);
     saveDb(db);
+    if (isCloudSqlAvailable()) {
+      saveUserToCloudSql(existing as unknown as Record<string, unknown>).catch((e) => console.warn('[PostgreSQL] Update user error:', e));
+    }
     res.json(existing);
     return;
   }
@@ -937,18 +1094,43 @@ app.post('/api/users', (req, res): void => {
     role: (role as UserRole) || 'user',
     createdAt: new Date().toISOString(),
     lastLoginAt: '',
+    allowedTabs: Array.isArray(allowedTabs) && allowedTabs.length > 0 ? allowedTabs : [...DEFAULT_USER_TABS],
+    assignedUtilityAccountIds: Array.isArray(assignedUtilityAccountIds) ? assignedUtilityAccountIds : [],
+    assignedClientIds: Array.isArray(assignedClientIds) ? assignedClientIds : [],
+    canManageOwnData: canManageOwnData !== undefined ? Boolean(canManageOwnData) : true,
   };
 
   if (!db.users) db.users = [];
   db.users.push(newUser);
+
+  // Sync assignedUserIds on utilityAccounts if any bound on creation
+  if (newUser.assignedUtilityAccountIds && newUser.assignedUtilityAccountIds.length > 0) {
+    for (const acc of db.utilityAccounts || []) {
+      if (newUser.assignedUtilityAccountIds.includes(acc.id)) {
+        if (!Array.isArray(acc.assignedUserIds)) acc.assignedUserIds = [];
+        if (!acc.assignedUserIds.includes(newUser.id)) {
+          acc.assignedUserIds.push(newUser.id);
+          if (isCloudSqlAvailable()) {
+            saveUtilityAccountToCloudSql(acc as unknown as Record<string, unknown>).catch((e) => console.warn('[PostgreSQL] Sync utility account error:', e));
+          }
+        }
+      }
+    }
+  }
+
   saveDb(db);
+  if (isCloudSqlAvailable()) {
+    saveUserToCloudSql(newUser as unknown as Record<string, unknown>).catch((e) => console.warn('[PostgreSQL] Save new user error:', e));
+  }
   res.status(201).json(newUser);
 });
 
 app.put('/api/users/:id/role', (req, res): void => {
   const db = loadDb();
+  ensureTestSandboxUser(db);
+  const realUser = getRealAuthenticatedUser(req, db);
   const currentUser = getAuthenticatedUser(req, db);
-  if (!currentUser || currentUser.role !== 'admin') {
+  if ((!realUser || realUser.role !== 'admin') && (!currentUser || currentUser.role !== 'admin')) {
     res.status(403).json({ error: 'Тільки адміністратор може змінювати права' });
     return;
   }
@@ -977,8 +1159,108 @@ app.put('/api/users/:id/role', (req, res): void => {
   }
 
   target.role = role as UserRole;
+  if (target.role === 'user' && (!Array.isArray(target.allowedTabs) || target.allowedTabs.length === 0)) {
+    target.allowedTabs = [...DEFAULT_USER_TABS];
+  }
+  if (target.canManageOwnData === undefined) {
+    target.canManageOwnData = true;
+  }
   saveDb(db);
+  if (isCloudSqlAvailable()) {
+    saveUserToCloudSql(target as unknown as Record<string, unknown>).catch((e) => console.warn('[PostgreSQL] Update user role error:', e));
+  }
   res.json(target);
+});
+
+app.put('/api/users/:id/permissions', async (req, res) => {
+  try {
+    const db = loadDb();
+    ensureTestSandboxUser(db);
+    const realUser = getRealAuthenticatedUser(req, db);
+    const currentUser = getAuthenticatedUser(req, db);
+    if ((!realUser || realUser.role !== 'admin') && (!currentUser || currentUser.role !== 'admin')) {
+      return res.status(403).json({ error: 'Тільки адміністратор може налаштовувати доступи користувачів' });
+    }
+
+    const { id } = req.params;
+    const target = (db.users || []).find((u) => u.id === id);
+    if (!target) {
+      return res.status(404).json({ error: 'Користувача не знайдено' });
+    }
+
+    const {
+      role,
+      name,
+      allowedTabs,
+      assignedUtilityAccountIds,
+      assignedClientIds,
+      canManageOwnData,
+    } = req.body || {};
+
+    if (role && ['admin', 'user', 'new'].includes(role)) {
+      if (target.role === 'admin' && role !== 'admin') {
+        const adminCount = (db.users || []).filter((u) => u.role === 'admin').length;
+        if (adminCount <= 1) {
+          return res.status(400).json({ error: 'Неможливо забрати права у єдиного адміністратора системи' });
+        }
+      }
+      target.role = role as UserRole;
+    }
+
+    if (name !== undefined && String(name).trim()) {
+      target.name = String(name).trim();
+    }
+
+    if (Array.isArray(allowedTabs)) {
+      target.allowedTabs = allowedTabs.filter(Boolean) as AppTabId[];
+    }
+
+    if (canManageOwnData !== undefined) {
+      target.canManageOwnData = Boolean(canManageOwnData);
+    }
+
+    if (Array.isArray(assignedClientIds)) {
+      target.assignedClientIds = assignedClientIds.filter(Boolean);
+    }
+
+    if (Array.isArray(assignedUtilityAccountIds)) {
+      const cleanIds = assignedUtilityAccountIds.filter(Boolean) as string[];
+      target.assignedUtilityAccountIds = cleanIds;
+
+      // Synchronize assignedUserIds on all utilityAccounts
+      for (const acc of db.utilityAccounts || []) {
+        const currentAssigned = Array.isArray(acc.assignedUserIds) ? [...acc.assignedUserIds] : [];
+        const shouldBeAssigned = cleanIds.includes(acc.id);
+        const alreadyAssigned = currentAssigned.includes(target.id);
+
+        if (shouldBeAssigned && !alreadyAssigned) {
+          acc.assignedUserIds = [...currentAssigned, target.id];
+          if (isCloudSqlAvailable()) {
+            await saveUtilityAccountToCloudSql(acc as unknown as Record<string, unknown>);
+          }
+        } else if (!shouldBeAssigned && alreadyAssigned) {
+          acc.assignedUserIds = currentAssigned.filter((uid) => uid !== target.id);
+          if (isCloudSqlAvailable()) {
+            await saveUtilityAccountToCloudSql(acc as unknown as Record<string, unknown>);
+          }
+        }
+      }
+    }
+
+    saveDb(db);
+    if (isCloudSqlAvailable()) {
+      await saveUserToCloudSql(target as unknown as Record<string, unknown>);
+    }
+
+    return res.json({
+      success: true,
+      user: target,
+      message: 'Налаштування доступу та привʼязані будинки збережено!',
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: msg });
+  }
 });
 
 app.delete('/api/users/:id', (req, res): void => {
@@ -1005,8 +1287,21 @@ app.delete('/api/users/:id', (req, res): void => {
     }
   }
 
+  // Unassign user from any utilityAccounts
+  for (const acc of db.utilityAccounts || []) {
+    if (Array.isArray(acc.assignedUserIds) && acc.assignedUserIds.includes(id)) {
+      acc.assignedUserIds = acc.assignedUserIds.filter((uid) => uid !== id);
+      if (isCloudSqlAvailable()) {
+        saveUtilityAccountToCloudSql(acc as unknown as Record<string, unknown>).catch((e) => console.warn('[PostgreSQL] Unassign user from utility account error:', e));
+      }
+    }
+  }
+
   db.users.splice(index, 1);
   saveDb(db);
+  if (isCloudSqlAvailable()) {
+    deleteUserFromCloudSql(id).catch((e) => console.warn('[PostgreSQL] Delete user error:', e));
+  }
   res.json({ success: true, message: 'Користувача видалено' });
 });
 
@@ -1020,15 +1315,18 @@ app.get('/api/sync/version', (_req, res) => {
 });
 
 // API Endpoints
-// 1. Get all clients
-app.get('/api/clients', (_req, res) => {
+// 1. Get all clients (filtered by user access)
+app.get('/api/clients', (req, res) => {
   const db = loadDb();
-  res.json(db.clients);
+  const user = getAuthenticatedUser(req, db);
+  const clients = (db.clients || []).filter((c) => canUserAccessClient(user, c));
+  res.json(clients);
 });
 
 // 2. Add client
 app.post('/api/clients', (req, res) => {
   const db = loadDb();
+  const currentUser = getAuthenticatedUser(req, db);
   const body = req.body;
 
   const plan: SubscriptionPlanType = body.subscriptionPlan || '1usd';
@@ -1058,6 +1356,7 @@ app.post('/api/clients', (req, res) => {
     telegramUsername: body.telegramUsername || '',
     viberId: body.viberId || '',
     notes: body.notes || '',
+    ownerUserId: currentUser?.id,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -1256,9 +1555,16 @@ app.post('/api/clients/:id/pay', (req, res) => {
 });
 
 // 6. Payments history
-app.get('/api/payments', (_req, res) => {
+app.get('/api/payments', (req, res) => {
   const db = loadDb();
-  res.json(db.payments);
+  const user = getAuthenticatedUser(req, db);
+  if (!user || user.role === 'admin') {
+    return res.json(db.payments);
+  }
+  const allowedClientIds = new Set(
+    (db.clients || []).filter((c) => canUserAccessClient(user, c)).map((c) => c.id)
+  );
+  return res.json((db.payments || []).filter((p) => allowedClientIds.has(p.clientId)));
 });
 
 // 6.0.1 Update payment
@@ -1332,9 +1638,11 @@ app.delete('/api/payments/:id', (req, res) => {
 });
 
 // 6.1 Provider Accounts API
-app.get('/api/accounts', (_req, res) => {
+app.get('/api/accounts', (req, res) => {
   const db = loadDb();
-  const accountsWithDetails = db.providerAccounts.map((acc) => {
+  const user = getAuthenticatedUser(req, db);
+  const visibleAccounts = (db.providerAccounts || []).filter((acc) => canUserAccessProviderAccount(user, acc));
+  const accountsWithDetails = visibleAccounts.map((acc) => {
     const assignedIds = acc.assignedClientIds || [];
     const connectedClients = assignedIds
       .map((cid) => db.clients.find((c) => c.id === cid))
@@ -1381,6 +1689,7 @@ app.get('/api/accounts', (_req, res) => {
 
 app.post('/api/accounts', (req, res) => {
   const db = loadDb();
+  const currentUser = getAuthenticatedUser(req, db);
   const body = req.body;
 
   if (!body.name || !body.login) {
@@ -1408,6 +1717,7 @@ app.post('/api/accounts', (req, res) => {
     totalDeductedUsd: 0,
     renewals: [],
     notes: body.notes?.trim() || '',
+    ownerUserId: currentUser?.id,
     createdAt: new Date().toISOString(),
   };
 
@@ -2379,7 +2689,7 @@ app.get('/api/settings', async (_req, res) => {
         }
         const db = loadDb();
         const mergedTariffs = deepMergeTariffs(
-          db.settings?.utilityTariffsSettings,
+          parsedTariffs as Partial<UtilityTariffsSettings>,
           parsedTariffs as Partial<UtilityTariffsSettings>
         );
         db.settings = {
@@ -2388,20 +2698,14 @@ app.get('/api/settings', async (_req, res) => {
           utilityTariffsSettings: mergedTariffs,
         } as unknown as AppSettings;
         cachedDb = db;
-        try {
-          writeFileSync(settingsFile, JSON.stringify(db.settings, null, 2), 'utf-8');
-        } catch {
-          // ignore
-        }
-        res.json(db.settings);
-        return;
+        return res.json(db.settings);
       }
     } catch (e) {
-      console.warn('[Cloud SQL] Direct get settings error:', e);
+      console.warn('[PostgreSQL] Direct get settings error:', e);
     }
   }
   const db = loadDb();
-  res.json(db.settings);
+  return res.json(db.settings);
 });
 
 app.post('/api/settings', async (req, res) => {
@@ -2424,26 +2728,23 @@ app.post('/api/settings', async (req, res) => {
     reminderDaysBefore: body.reminderDaysBefore !== undefined ? Number(body.reminderDaysBefore) : db.settings.reminderDaysBefore,
     utilityTariffsSettings: mergedTariffs,
   };
+
+  if (isCloudSqlAvailable()) {
+    const saved = await saveSettingsToCloudSql(updatedSettings as unknown as Record<string, unknown>);
+    if (!saved) {
+      return res.status(500).json({
+        error: 'Не вдалося зберегти налаштування в базу даних PostgreSQL. Перевірте з\'єднання з БД.',
+      });
+    }
+  }
+
   db.settings = updatedSettings;
   cachedDb = db;
   saveDb(db);
 
-  try {
-    writeFileSync(settingsFile, JSON.stringify(updatedSettings, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error writing settings backup file:', err);
-  }
-
-  if (isCloudSqlAvailable()) {
-    try {
-      await saveSettingsToCloudSql(updatedSettings as unknown as Record<string, unknown>);
-    } catch (err) {
-      console.warn('[Cloud SQL] Direct save settings error:', err);
-    }
-  }
-
-  res.json(db.settings);
+  return res.json(db.settings);
 });
+
 
 // 8. Real-Time Analytics & Monthly Revenue Stats
 app.get('/api/stats', (_req, res) => {
@@ -2688,17 +2989,30 @@ app.get('/api/stats', (_req, res) => {
 });
 
 // 13. Cloud Database Status & Management Endpoints
-app.get('/api/database/status', (_req, res) => {
+app.get('/api/database/status', async (_req, res) => {
+  if (isCloudSqlAvailable()) {
+    await checkCloudSqlConnection();
+  }
+  const [cloudsqlInfo, externalInfo] = await Promise.all([
+    inspectDatabaseInstance('cloudsql'),
+    inspectDatabaseInstance('external'),
+  ]);
   const db = loadDb();
   const cloudSqlStatus = getCloudSqlDbStatus();
-  
+  const activeMode = getActiveDbMode();
+
   res.json({
-    provider: isCloudSqlAvailable() ? 'Google Cloud SQL (PostgreSQL)' : 'Локальна база даних (JSON)',
-    databaseId: isCloudSqlAvailable() ? (process.env['SQL_DB_NAME'] || 'postgres') : 'iptv_database.json',
-    connected: isCloudSqlAvailable() ? cloudSqlStatus.connected : true,
+    activeMode,
+    provider: cloudSqlStatus.provider,
+    databaseId: cloudSqlStatus.database,
+    connected: cloudSqlStatus.connected,
     lastSync: cloudSqlStatus.lastSync || lastDbUpdate,
     error: cloudSqlStatus.error,
     cloudSql: cloudSqlStatus,
+    instances: {
+      cloudsql: cloudsqlInfo,
+      external: externalInfo,
+    },
     stats: {
       clientsCount: db.clients.length,
       paymentsCount: db.payments.length,
@@ -2709,22 +3023,111 @@ app.get('/api/database/status', (_req, res) => {
   });
 });
 
+app.post('/api/database/switch', async (req, res) => {
+  try {
+    const mode = req.body?.mode as DatabaseMode | undefined;
+    if (mode !== 'cloudsql' && mode !== 'external') {
+      return res.status(400).json({
+        success: false,
+        error: 'Некоректний режим бази даних. Доступні варіанти: cloudsql або external.',
+      });
+    }
+
+    await savePersistedDbMode(mode);
+    cachedDb = null;
+    await syncWithDatabaseOnStartup();
+    lastDbUpdate = new Date().toISOString();
+
+    const cloudSqlStatus = getCloudSqlDbStatus();
+    if (!cloudSqlStatus.connected) {
+      return res.status(500).json({
+        success: false,
+        activeMode: mode,
+        error: cloudSqlStatus.error || 'Не вдалося підключитися до обраної бази даних',
+      });
+    }
+
+    return res.json({
+      success: true,
+      activeMode: mode,
+      provider: cloudSqlStatus.provider,
+      databaseId: cloudSqlStatus.database,
+      message:
+        mode === 'cloudsql'
+          ? 'Активну базу даних перемкнуто на Google Cloud SQL!'
+          : 'Активну базу даних перемкнуто на зовнішню PostgreSQL (Aiven Cloud)!',
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({
+      success: false,
+      error: msg,
+    });
+  }
+});
+
+app.post('/api/database/copy', async (req, res) => {
+  try {
+    const currentActive = getActiveDbMode();
+    const sourceMode: DatabaseMode =
+      req.body?.sourceMode === 'cloudsql' || req.body?.sourceMode === 'external'
+        ? req.body.sourceMode
+        : currentActive;
+    const targetMode: DatabaseMode =
+      req.body?.targetMode === 'cloudsql' || req.body?.targetMode === 'external'
+        ? req.body.targetMode
+        : sourceMode === 'cloudsql'
+          ? 'external'
+          : 'cloudsql';
+
+    if (sourceMode === currentActive && isCloudSqlAvailable()) {
+      await seedInitialDataToCloudSql(loadDb() as unknown as Record<string, unknown>);
+    }
+
+    const result = await copyAllBetweenDatabases(sourceMode, targetMode);
+    if (!result.success) {
+      return res.status(500).json({
+        ...result,
+        message: result.error || 'Помилка копіювання даних між базами',
+      });
+    }
+
+    if (targetMode === currentActive) {
+      cachedDb = null;
+      await syncWithDatabaseOnStartup();
+    }
+    lastDbUpdate = new Date().toISOString();
+
+    return res.json({
+      ...result,
+      message: `Успішно скопійовано всі дані (${result.totalCopied} записів) з "${result.sourceProvider}" у "${result.targetProvider}"!`,
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({
+      success: false,
+      error: msg,
+      message: `Помилка копіювання: ${msg}`,
+    });
+  }
+});
+
 app.post('/api/database/sync', async (_req, res) => {
   try {
-    let cloudData: Record<string, unknown> | null = null;
+    let cloudData: CloudSqlLoadResult | null = null;
     if (isCloudSqlAvailable()) {
       cloudData = await loadAllFromCloudSql();
     }
 
     if (cloudData) {
       const current = loadDb();
-      if (cloudData['clients']) current.clients = cloudData['clients'] as unknown as Client[];
-      if (cloudData['payments']) current.payments = cloudData['payments'] as unknown as PaymentTransaction[];
-      if (cloudData['providerAccounts']) current.providerAccounts = cloudData['providerAccounts'] as unknown as ProviderAccount[];
-      if (cloudData['providerDeposits']) current.providerDeposits = cloudData['providerDeposits'] as unknown as ProviderDeposit[];
-      if (cloudData['utilityAccounts']) current.utilityAccounts = cloudData['utilityAccounts'] as unknown as UtilityAccount[];
-      if (cloudData['utilityReadings']) {
-        current.utilityReadings = (cloudData['utilityReadings'] as unknown as UtilityReading[]).map((r) => {
+      if (cloudData.clients) current.clients = cloudData.clients as unknown as Client[];
+      if (cloudData.payments) current.payments = cloudData.payments as unknown as PaymentTransaction[];
+      if (cloudData.providerAccounts) current.providerAccounts = cloudData.providerAccounts as unknown as ProviderAccount[];
+      if (cloudData.providerDeposits) current.providerDeposits = cloudData.providerDeposits as unknown as ProviderDeposit[];
+      if (cloudData.utilityAccounts) current.utilityAccounts = cloudData.utilityAccounts as unknown as UtilityAccount[];
+      if (cloudData.utilityReadings) {
+        current.utilityReadings = (cloudData.utilityReadings as unknown as UtilityReading[]).map((r) => {
           const isCtrl = r.isControlOnly === true || String(r.isControlOnly) === 'true' || r.readingPurpose === 'control';
           return {
             ...r,
@@ -2733,11 +3136,11 @@ app.post('/api/database/sync', async (_req, res) => {
           };
         });
       }
-      if (cloudData['customLedgerEntries']) current.customLedgerEntries = cloudData['customLedgerEntries'] as unknown as BudgetLedgerItem[];
-      if (cloudData['providerBalanceAdjustments']) current.providerBalanceAdjustments = cloudData['providerBalanceAdjustments'] as unknown as ProviderBalanceAdjustment[];
-      if (cloudData['accountDeductionOverrides']) current.accountDeductionOverrides = cloudData['accountDeductionOverrides'] as unknown as AccountDeductionOverride[];
-      if (cloudData['settings']) {
-        const rawTariffs = (cloudData['settings'] as Record<string, unknown>)['utilityTariffsSettings'];
+      if (cloudData.customLedgerEntries) current.customLedgerEntries = cloudData.customLedgerEntries as unknown as BudgetLedgerItem[];
+      if (cloudData.providerBalanceAdjustments) current.providerBalanceAdjustments = cloudData.providerBalanceAdjustments as unknown as ProviderBalanceAdjustment[];
+      if (cloudData.accountDeductionOverrides) current.accountDeductionOverrides = cloudData.accountDeductionOverrides as unknown as AccountDeductionOverride[];
+      if (cloudData.settings) {
+        const rawTariffs = cloudData.settings['utilityTariffsSettings'];
         let parsedTariffs = rawTariffs;
         if (typeof rawTariffs === 'string') {
           try {
@@ -2748,14 +3151,12 @@ app.post('/api/database/sync', async (_req, res) => {
         }
         current.settings = {
           ...current.settings,
-          ...(cloudData['settings'] as Record<string, unknown>),
-          utilityTariffsSettings: deepMergeTariffs(DEFAULT_UTILITY_TARIFFS, parsedTariffs as Partial<UtilityTariffsSettings>),
+          ...cloudData.settings,
+          utilityTariffsSettings: deepMergeTariffs(
+            parsedTariffs as Partial<UtilityTariffsSettings>,
+            parsedTariffs as Partial<UtilityTariffsSettings>
+          ),
         } as unknown as AppSettings;
-        try {
-          writeFileSync(settingsFile, JSON.stringify(current.settings, null, 2), 'utf-8');
-        } catch {
-          // ignore
-        }
       }
       
       saveDb(current);
@@ -2839,17 +3240,30 @@ app.post('/api/database/push-all', async (_req, res) => {
 });
 
 // 10. Utility (Electricity, Water, Waste) APIs
-app.get('/api/utility/data', (_req, res) => {
+app.get('/api/utility/data', (req, res) => {
   const db = loadDb();
-  res.json({
-    accounts: db.utilityAccounts || [],
-    readings: db.utilityReadings || [],
+  const user = getAuthenticatedUser(req, db);
+  if (!user || user.role === 'admin') {
+    return res.json({
+      accounts: (db.utilityAccounts || []).map(sanitizeUtilityAccountForClient),
+      readings: db.utilityReadings || [],
+    });
+  }
+  const visibleAccounts = (db.utilityAccounts || []).filter((acc) => canUserAccessUtilityAccount(user, acc));
+  const visibleAccountIds = new Set(visibleAccounts.map((a) => a.id));
+  const visibleReadings = (db.utilityReadings || []).filter(
+    (r) => visibleAccountIds.has(r.accountId) || (r.ownerUserId && r.ownerUserId === user.id)
+  );
+  return res.json({
+    accounts: visibleAccounts.map(sanitizeUtilityAccountForClient),
+    readings: visibleReadings,
   });
 });
 
 app.post('/api/utility/accounts', async (req, res) => {
   try {
     const db = loadDb();
+    const currentUser = getAuthenticatedUser(req, db);
     const body = req.body;
     if (!body.name || !body.accountNumber) {
       return res.status(400).json({ error: "Назва та номер особового рахунку обов'язкові" });
@@ -2861,12 +3275,35 @@ app.post('/api/utility/accounts', async (req, res) => {
     const existingIndex = (db.utilityAccounts || []).findIndex((a) => a.id === id);
     const existing = existingIndex >= 0 ? db.utilityAccounts[existingIndex] : null;
 
+    if (existing && currentUser && currentUser.role !== 'admin' && !canUserAccessUtilityAccount(currentUser, existing)) {
+      return res.status(403).json({ error: 'У вас немає доступу до редагування цього рахунку' });
+    }
+
+    const city = body.city ? String(body.city).trim() : (existing?.city || '');
+    const street = body.street ? String(body.street).trim() : (existing?.street || '');
+    const houseNum = body.houseNum ? String(body.houseNum).trim() : (existing?.houseNum || '');
+    const dtekQueueGroup = body.dtekQueueGroup ? String(body.dtekQueueGroup).trim() : (existing?.dtekQueueGroup || '');
+    let address = body.address ? String(body.address).trim() : '';
+    if (!address && (city || street)) {
+      address = [city, street, houseNum ? `буд. ${houseNum}` : ''].filter(Boolean).join(', ');
+    } else if (!address && existing?.address) {
+      address = existing.address;
+    }
+
+    const assignedUserIds = Array.isArray(body.assignedUserIds)
+      ? (body.assignedUserIds as string[])
+      : (existing?.assignedUserIds || []);
+
     const account: UtilityAccount = {
       id,
       type: body.type === 'water_waste' ? 'water_waste' : 'electricity',
       name: String(body.name).trim(),
       accountNumber: String(body.accountNumber).trim(),
-      address: body.address ? String(body.address).trim() : '',
+      address,
+      city,
+      street,
+      houseNum,
+      dtekQueueGroup,
       meterNumber: body.meterNumber ? String(body.meterNumber).trim() : '',
       electricityTariffType: body.electricityTariffType === 'dual' ? 'dual' : 'single',
       residentsCount: body.residentsCount !== undefined ? Math.max(1, Number(body.residentsCount) || 1) : 1,
@@ -2877,6 +3314,21 @@ app.post('/api/utility/accounts', async (req, res) => {
       wasteEnabled: body.wasteEnabled !== undefined ? Boolean(body.wasteEnabled) : true,
       balanceUah: body.balanceUah !== undefined ? Number(body.balanceUah) || 0 : (existing ? existing.balanceUah || 0 : 0),
       notes: body.notes ? String(body.notes) : '',
+      ownerUserId: existing ? existing.ownerUserId : currentUser?.id,
+      assignedUserIds,
+      dtekLogin: body.dtekLogin !== undefined ? String(body.dtekLogin).trim() : existing?.dtekLogin,
+      dtekPasswordEnc: existing?.dtekPasswordEnc,
+      dtekCabinetStatus: existing?.dtekCabinetStatus,
+      dtekCabinetLastSync: existing?.dtekCabinetLastSync,
+      ooekLogin: body.ooekLogin !== undefined ? String(body.ooekLogin).trim() : existing?.ooekLogin,
+      ooekPasswordEnc: existing?.ooekPasswordEnc,
+      ooekAccountNumber: body.ooekAccountNumber !== undefined ? String(body.ooekAccountNumber).trim() : existing?.ooekAccountNumber,
+      ooekBalanceUah: existing?.ooekBalanceUah,
+      ooekLastBillUah: existing?.ooekLastBillUah,
+      ooekHistory: existing?.ooekHistory || [],
+      ooekDiscoveredAccounts: existing?.ooekDiscoveredAccounts || [],
+      ooekCabinetStatus: existing?.ooekCabinetStatus,
+      ooekCabinetLastSync: existing?.ooekCabinetLastSync,
       createdAt: existing ? existing.createdAt : now,
       updatedAt: now,
     };
@@ -2893,11 +3345,871 @@ app.post('/api/utility/accounts', async (req, res) => {
       try {
         await saveUtilityAccountToCloudSql(account as unknown as Record<string, unknown>);
       } catch (e) {
-        console.warn('[Cloud SQL] Direct save utility account warning:', e);
+        console.warn('[PostgreSQL] Direct save utility account warning:', e);
       }
     }
 
-    return res.json({ success: true, account });
+    return res.json({ success: true, account: sanitizeUtilityAccountForClient(account) });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: msg });
+  }
+});
+
+// Save encrypted DTEK & OOEK cabinet credentials for a utility account
+app.post('/api/utility/accounts/:id/cabinet-credentials', async (req, res) => {
+  try {
+    const db = loadDb();
+    const currentUser = getAuthenticatedUser(req, db);
+    const id = req.params.id;
+    const acc = (db.utilityAccounts || []).find((a) => a.id === id);
+    if (!acc) {
+      return res.status(404).json({ error: 'Особовий рахунок не знайдено' });
+    }
+    if (currentUser && currentUser.role !== 'admin' && !canUserAccessUtilityAccount(currentUser, acc)) {
+      return res.status(403).json({ error: 'У вас немає доступу до цього рахунку' });
+    }
+
+    const {
+      dtekLogin,
+      dtekPassword,
+      clearDtekPassword,
+      ooekLogin,
+      ooekPassword,
+      clearOoekPassword,
+      ooekAccountNumber,
+    } = req.body || {};
+
+    if (dtekLogin !== undefined) {
+      acc.dtekLogin = String(dtekLogin).trim();
+    }
+    if (clearDtekPassword) {
+      acc.dtekPasswordEnc = undefined;
+    } else if (dtekPassword && String(dtekPassword).trim()) {
+      acc.dtekPasswordEnc = encryptCabinetSecret(String(dtekPassword).trim());
+    }
+
+    if (ooekLogin !== undefined) {
+      acc.ooekLogin = String(ooekLogin).trim();
+    }
+    if (ooekAccountNumber !== undefined) {
+      acc.ooekAccountNumber = String(ooekAccountNumber).trim();
+    }
+    if (clearOoekPassword) {
+      acc.ooekPasswordEnc = undefined;
+    } else if (ooekPassword && String(ooekPassword).trim()) {
+      acc.ooekPasswordEnc = encryptCabinetSecret(String(ooekPassword).trim());
+    }
+
+    acc.updatedAt = new Date().toISOString();
+    saveDb(db);
+
+    if (isCloudSqlAvailable()) {
+      await saveUtilityAccountToCloudSql(acc as unknown as Record<string, unknown>);
+    }
+
+    return res.json({
+      success: true,
+      account: sanitizeUtilityAccountForClient(acc),
+      message: 'Облікові дані безпечно зашифровано (AES-256-GCM) та збережено на сервері!',
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: msg });
+  }
+});
+
+// Connect to https://personal.ooek.od.ua/home/ and https://personal.ooek.od.ua/home/abonbook/cards
+// Fetches accrued electricity amount to pay + payment & consumption history per personal account (Особовий рахунок)
+app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
+  try {
+    const db = loadDb();
+    const currentUser = getAuthenticatedUser(req, db);
+    const id = req.params.id;
+    const acc = (db.utilityAccounts || []).find((a) => a.id === id);
+    if (!acc) {
+      return res.status(404).json({ error: 'Особовий рахунок не знайдено' });
+    }
+    if (currentUser && currentUser.role !== 'admin' && !canUserAccessUtilityAccount(currentUser, acc)) {
+      return res.status(403).json({ error: 'У вас немає доступу до цього рахунку' });
+    }
+
+    if (req.body?.ooekAccountNumber !== undefined) {
+      acc.ooekAccountNumber = String(req.body.ooekAccountNumber).trim();
+    }
+
+    const login = (req.body?.ooekLogin ? String(req.body.ooekLogin).trim() : acc.ooekLogin) || '';
+    const password =
+      (req.body?.ooekPassword ? String(req.body.ooekPassword).trim() : decryptCabinetSecret(acc.ooekPasswordEnc)) || '';
+
+    if (!login || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Вкажіть логін та пароль від кабінету ТОВ «ООЕК» (personal.ooek.od.ua/home/)',
+      });
+    }
+
+    // Save credentials if passed directly
+    acc.ooekLogin = login;
+    if (req.body?.ooekPassword && String(req.body.ooekPassword).trim()) {
+      acc.ooekPasswordEnc = encryptCabinetSecret(String(req.body.ooekPassword).trim());
+    }
+
+    const ua =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+    const cookieJar = new Map<string, string>();
+    const absorbCookies = (resp: Response) => {
+      const raw = resp.headers.getSetCookie
+        ? resp.headers.getSetCookie()
+        : [resp.headers.get('set-cookie') || ''];
+      for (const c of raw.filter(Boolean)) {
+        const pair = c.split(';')[0];
+        const eqIdx = pair.indexOf('=');
+        if (eqIdx > 0) {
+          cookieJar.set(pair.substring(0, eqIdx).trim(), pair.substring(eqIdx + 1).trim());
+        }
+      }
+    };
+    const serializeCookies = () =>
+      Array.from(cookieJar.entries())
+        .map(([k, v]) => `${k}=${v}`)
+        .join('; ');
+
+    // Step 1: GET /home/ to retrieve CSRF token and session cookie
+    const homeResp = await fetch('https://personal.ooek.od.ua/home/', {
+      headers: {
+        'User-Agent': ua,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8',
+      },
+      signal: AbortSignal.timeout(12000),
+    });
+    absorbCookies(homeResp);
+    const homeHtml = await homeResp.text();
+
+    const tokenMatch =
+      homeHtml.match(/name=["']authenticity_token["']\s+value=["']([^"']+)["']/i) ||
+      homeHtml.match(/meta\s+name=["']csrf-token["']\s+content=["']([^"']+)["']/i);
+    const authenticityToken = tokenMatch ? tokenMatch[1] : '';
+
+    if (!authenticityToken) {
+      acc.ooekCabinetStatus = 'Не вдалося отримати CSRF-токен із сайту personal.ooek.od.ua';
+      acc.ooekCabinetLastSync = getKyivFormattedDate();
+      saveDb(db);
+      return res.status(502).json({
+        success: false,
+        error: acc.ooekCabinetStatus,
+      });
+    }
+
+    // Step 2: POST /home/login with credentials
+    const formParams = new URLSearchParams();
+    formParams.set('utf8', '✓');
+    formParams.set('authenticity_token', authenticityToken);
+    formParams.set('username', login);
+    formParams.set('password', password);
+    formParams.set('commit', 'Увійти');
+
+    const loginResp = await fetch('https://personal.ooek.od.ua/home/login', {
+      method: 'POST',
+      redirect: 'manual',
+      headers: {
+        'User-Agent': ua,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        Origin: 'https://personal.ooek.od.ua',
+        Referer: 'https://personal.ooek.od.ua/home/',
+        Cookie: serializeCookies(),
+      },
+      body: formParams.toString(),
+      signal: AbortSignal.timeout(12000),
+    });
+    absorbCookies(loginResp);
+
+    let cabinetHtml = '';
+    const redirectLocation = loginResp.headers.get('location');
+    if (redirectLocation) {
+      const targetUrl = redirectLocation.startsWith('http')
+        ? redirectLocation
+        : `https://personal.ooek.od.ua${redirectLocation.startsWith('/') ? '' : '/'}${redirectLocation}`;
+      const dashResp = await fetch(targetUrl, {
+        headers: {
+          'User-Agent': ua,
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          Referer: 'https://personal.ooek.od.ua/home/',
+          Cookie: serializeCookies(),
+        },
+        signal: AbortSignal.timeout(12000),
+      });
+      absorbCookies(dashResp);
+      cabinetHtml = await dashResp.text();
+    } else {
+      cabinetHtml = await loginResp.text();
+    }
+
+    // Check if login failed
+    const isStillLoginForm =
+      cabinetHtml.includes('action="/home/login"') &&
+      (cabinetHtml.includes('Невірний логін') ||
+        cabinetHtml.includes('невірний пароль') ||
+        cabinetHtml.includes('Неправильний') ||
+        cabinetHtml.includes('flash_error') ||
+        cabinetHtml.includes('alert-error') ||
+        !redirectLocation);
+
+    if (isStillLoginForm) {
+      acc.ooekCabinetStatus = 'Помилка авторизації: перевірте правильність логіна та пароля ООЕК';
+      acc.ooekCabinetLastSync = getKyivFormattedDate();
+      saveDb(db);
+      if (isCloudSqlAvailable()) {
+        await saveUtilityAccountToCloudSql(acc as unknown as Record<string, unknown>);
+      }
+      return res.status(401).json({
+        success: false,
+        error: 'Не вдалося увійти в кабінет ООЕК. Перевірте логін та пароль на сайті personal.ooek.od.ua/home/',
+        account: sanitizeUtilityAccountForClient(acc),
+      });
+    }
+
+    // Step 3: Fetch https://personal.ooek.od.ua/home/abonbook/cards for payment & consumption history
+    let abonbookCardsHtml = '';
+    try {
+      const cardsResp = await fetch('https://personal.ooek.od.ua/home/abonbook/cards', {
+        headers: {
+          'User-Agent': ua,
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          Referer: 'https://personal.ooek.od.ua/home/',
+          Cookie: serializeCookies(),
+        },
+        signal: AbortSignal.timeout(12000),
+      });
+      absorbCookies(cardsResp);
+      if (cardsResp.ok) {
+        abonbookCardsHtml = await cardsResp.text();
+      }
+    } catch (cardsErr) {
+      console.warn('[OOEK] Failed to fetch /home/abonbook/cards:', cardsErr);
+    }
+
+    const combinedRawHtml = `${abonbookCardsHtml}\n${cabinetHtml}`;
+
+    // Discover all personal account numbers (Особовий рахунок) on the page
+    const discoveredSet = new Set<string>();
+    const accRegexes = [
+      /(?:Особовий\s*рахунок|О\/р|Рахунок\s*абонента|№\s*особового\s*рахунку)[^0-9]{0,25}([0-9]{5,15}(?:\/[0-9]{4,10})?)/gi,
+      /\b(572[0-9]{7,10})\b/g,
+      /\b([0-9]{5}\/[0-9]{6,10})\b/g,
+    ];
+    for (const rx of accRegexes) {
+      let m: RegExpExecArray | null;
+      while ((m = rx.exec(combinedRawHtml)) !== null) {
+        if (m[1]) discoveredSet.add(m[1].trim());
+      }
+    }
+    const discoveredAccounts = Array.from(discoveredSet);
+    if (discoveredAccounts.length > 0) {
+      acc.ooekDiscoveredAccounts = discoveredAccounts;
+    }
+
+    // Determine target personal account for this house
+    let targetAccNum = (acc.ooekAccountNumber || acc.accountNumber || '').trim();
+    const targetDigits = targetAccNum.replace(/\D/g, '');
+
+    // If multiple accounts exist and current targetAccNum isn't in discoveredAccounts, check if street/houseNum matches a specific card block
+    const findMatchedAccountFromAddress = (htmlSource: string): string | null => {
+      if (!acc.street || discoveredAccounts.length === 0) return null;
+      const streetLower = acc.street.toLowerCase().replace(/^(вул\.|вулиця|пров\.|пр-т)\s*/i, '').trim();
+      if (!streetLower) return null;
+      for (const candidateAcc of discoveredAccounts) {
+        const idx = htmlSource.indexOf(candidateAcc);
+        if (idx >= 0) {
+          const windowSlice = htmlSource.substring(Math.max(0, idx - 600), Math.min(htmlSource.length, idx + 1200)).toLowerCase();
+          if (windowSlice.includes(streetLower)) {
+            if (!acc.houseNum || windowSlice.includes(acc.houseNum.toLowerCase())) {
+              return candidateAcc;
+            }
+          }
+        }
+      }
+      return null;
+    };
+
+    const isTargetInDiscovered = discoveredAccounts.some(
+      (d) => d === targetAccNum || d.replace(/\D/g, '') === targetDigits
+    );
+    if (!isTargetInDiscovered && discoveredAccounts.length > 0) {
+      const byAddress = findMatchedAccountFromAddress(combinedRawHtml);
+      if (byAddress) {
+        targetAccNum = byAddress;
+        acc.ooekAccountNumber = byAddress;
+      } else if (discoveredAccounts.length === 1 && !acc.ooekAccountNumber) {
+        targetAccNum = discoveredAccounts[0];
+        acc.ooekAccountNumber = discoveredAccounts[0];
+      }
+    } else if (isTargetInDiscovered && !acc.ooekAccountNumber) {
+      const matched = discoveredAccounts.find(
+        (d) => d === targetAccNum || d.replace(/\D/g, '') === targetDigits
+      );
+      if (matched) {
+        targetAccNum = matched;
+        acc.ooekAccountNumber = matched;
+      }
+    }
+
+    // Check if /home/abonbook/cards has a sub-link for this specific card/personal account and fetch it
+    let specificCardDetailHtml = '';
+    if (abonbookCardsHtml) {
+      const linkRegex = /href=["'](\/home\/abonbook\/[^"']+)["']/gi;
+      const candidateLinks: string[] = [];
+      let lm: RegExpExecArray | null;
+      while ((lm = linkRegex.exec(abonbookCardsHtml)) !== null) {
+        const href = lm[1];
+        if (href && href !== '/home/abonbook/cards' && !candidateLinks.includes(href)) {
+          // Check proximity to targetAccNum
+          const pos = lm.index;
+          const nearby = abonbookCardsHtml.substring(Math.max(0, pos - 700), Math.min(abonbookCardsHtml.length, pos + 700));
+          if (
+            (targetAccNum && nearby.includes(targetAccNum)) ||
+            (targetDigits && targetDigits.length >= 6 && nearby.includes(targetDigits))
+          ) {
+            candidateLinks.unshift(href);
+          } else {
+            candidateLinks.push(href);
+          }
+        }
+      }
+
+      for (const href of candidateLinks.slice(0, 2)) {
+        try {
+          const subResp = await fetch(`https://personal.ooek.od.ua${href}`, {
+            headers: {
+              'User-Agent': ua,
+              Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              Referer: 'https://personal.ooek.od.ua/home/abonbook/cards',
+              Cookie: serializeCookies(),
+            },
+            signal: AbortSignal.timeout(10000),
+          });
+          absorbCookies(subResp);
+          if (subResp.ok) {
+            const subText = await subResp.text();
+            if (!targetAccNum || subText.includes(targetAccNum) || (targetDigits && subText.includes(targetDigits))) {
+              specificCardDetailHtml += `\n${subText}`;
+            }
+          }
+        } catch {
+          // ignore sub-page fetch error
+        }
+      }
+    }
+
+    // Isolate the HTML block belonging to targetAccNum when multiple houses are present on the page
+    const isolateHouseSection = (fullHtml: string): string => {
+      if (!fullHtml || !targetAccNum) return fullHtml;
+      const otherAccounts = discoveredAccounts.filter(
+        (d) => d !== targetAccNum && d.replace(/\D/g, '') !== targetDigits
+      );
+      if (otherAccounts.length === 0) return fullHtml;
+
+      const targetIdx = fullHtml.indexOf(targetAccNum) >= 0
+        ? fullHtml.indexOf(targetAccNum)
+        : (targetDigits.length >= 6 ? fullHtml.indexOf(targetDigits) : -1);
+      if (targetIdx === -1) return fullHtml;
+
+      // Find where the current card/section starts (up to 600 chars before targetAccNum)
+      const startIdx = Math.max(0, targetIdx - 500);
+      // Find where the next different account number starts after targetIdx
+      let endIdx = fullHtml.length;
+      for (const otherAcc of otherAccounts) {
+        const nextIdx = fullHtml.indexOf(otherAcc, targetIdx + targetAccNum.length);
+        if (nextIdx !== -1 && nextIdx < endIdx) {
+          endIdx = Math.max(targetIdx + targetAccNum.length, nextIdx - 250);
+        }
+      }
+      return fullHtml.substring(startIdx, endIdx);
+    };
+
+    const scopedAbonbookHtml = specificCardDetailHtml
+      ? `${specificCardDetailHtml}\n${isolateHouseSection(abonbookCardsHtml)}`
+      : isolateHouseSection(abonbookCardsHtml || cabinetHtml);
+    const scopedCabinetHtml = isolateHouseSection(cabinetHtml);
+
+    const stripTagsToText = (html: string): string =>
+      html
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&mdash;|&#8212;/gi, '-')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const scopedCleanText = stripTagsToText(`${scopedAbonbookHtml}\n${scopedCabinetHtml}`);
+    const fallbackCleanText = stripTagsToText(combinedRawHtml);
+
+    const parseAmountFromText = (textSource: string, patterns: RegExp[]): number | null => {
+      for (const re of patterns) {
+        const m = textSource.match(re);
+        if (m && m[1]) {
+          const val = parseFloat(m[1].replace(/\s+/g, '').replace(',', '.'));
+          if (!isNaN(val)) return Math.round(val * 100) / 100;
+        }
+      }
+      return null;
+    };
+
+    const amountPatterns = [
+      /(?:До сплати|Сума до сплати|Заборгованість|Борг|Кінцеве сальдо|Сальдо|Залишок)[^0-9-]{0,45}(-?\d+[\s\d]*[.,]\d{2})/i,
+      /(-?\d+[\s\d]*[.,]\d{2})\s*(?:грн|₴)/i,
+    ];
+    const billPatterns = [
+      /(?:Нараховано|Нарахування за|Рахунок за)[^0-9]{0,45}(\d+[\s\d]*[.,]\d{2})/i,
+    ];
+
+    const amountToPay =
+      parseAmountFromText(scopedCleanText, amountPatterns) ??
+      parseAmountFromText(fallbackCleanText, amountPatterns);
+
+    const lastBill =
+      parseAmountFromText(scopedCleanText, billPatterns) ??
+      parseAmountFromText(fallbackCleanText, billPatterns);
+
+    // Parse payment & electricity consumption history from tables/cards in scopedAbonbookHtml
+    const parseAbonbookHistory = (htmlSource: string): OoekAbonbookEntry[] => {
+      const entries: OoekAbonbookEntry[] = [];
+      if (!htmlSource) return entries;
+
+      const parseNum = (raw: string | undefined): number | null => {
+        if (!raw) return null;
+        const cleaned = raw.replace(/[^\d.,-]/g, '').replace(',', '.');
+        if (!cleaned || cleaned === '-' || cleaned === '.') return null;
+        const num = parseFloat(cleaned);
+        return isNaN(num) ? null : Math.round(num * 100) / 100;
+      };
+
+      const uaMonths =
+        /(?:січ(?:ень|ня)?|лют(?:ий|ого)?|берез(?:ень|ня)?|квіт(?:ень|ня)?|трав(?:ень|ня)?|черв(?:ень|ня)?|лип(?:ень|ня)?|серп(?:ень|ня)?|верес(?:ень|ня)?|жовт(?:ень|ня)?|листопад(?:а)?|груд(?:ень|ня)?)\s*20\d{2}/i;
+      const dateOrPeriodRe = /\b(\d{2}\.\d{2}\.20\d{2}|20\d{2}-\d{2}-\d{2}|\d{2}\.20\d{2}|20\d{2}\.\d{2})\b/;
+
+      // 1. Parse HTML <table> blocks
+      const tableRegex = /<table[\s\S]*?<\/table>/gi;
+      let tm: RegExpExecArray | null;
+      while ((tm = tableRegex.exec(htmlSource)) !== null) {
+        const tableHtml = tm[0];
+        const rowRegex = /<tr[\s\S]*?<\/tr>/gi;
+        const rows: string[][] = [];
+        let rm: RegExpExecArray | null;
+        while ((rm = rowRegex.exec(tableHtml)) !== null) {
+          const cellRegex = /<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi;
+          const cells: string[] = [];
+          let cm: RegExpExecArray | null;
+          while ((cm = cellRegex.exec(rm[0])) !== null) {
+            cells.push(stripTagsToText(cm[1]));
+          }
+          if (cells.length >= 2) {
+            rows.push(cells);
+          }
+        }
+
+        if (rows.length < 2) continue;
+
+        // Detect header columns from first 1-2 rows
+        let headerIdx = -1;
+        let colPeriod = -1;
+        let colDate = -1;
+        let colKwh = -1;
+        let colReadT1 = -1;
+        let colReadT2 = -1;
+        let colAccrued = -1;
+        let colPaid = -1;
+        let colBalance = -1;
+
+        for (let rIdx = 0; rIdx < Math.min(2, rows.length); rIdx++) {
+          const rowLower = rows[rIdx].map((c) => c.toLowerCase());
+          const looksLikeHeader = rowLower.some(
+            (c) =>
+              c.includes('період') ||
+              c.includes('місяць') ||
+              c.includes('дата') ||
+              c.includes('квт') ||
+              c.includes('спожи') ||
+              c.includes('нарахов') ||
+              c.includes('сплач') ||
+              c.includes('оплат') ||
+              c.includes('сальдо')
+          );
+          if (looksLikeHeader) {
+            headerIdx = rIdx;
+            rowLower.forEach((cell, cIdx) => {
+              if (colPeriod === -1 && (cell.includes('період') || cell.includes('місяць') || cell.includes('рік'))) {
+                colPeriod = cIdx;
+              } else if (colDate === -1 && cell.includes('дата')) {
+                colDate = cIdx;
+              } else if (
+                colKwh === -1 &&
+                (cell.includes('квт') || cell.includes('спожит') || cell.includes('обсяг') || cell.includes('кількість') || cell.includes('різниця'))
+              ) {
+                colKwh = cIdx;
+              } else if (
+                colAccrued === -1 &&
+                (cell.includes('нарахов') || cell.includes('рахунок') || cell.includes('сума нарахув'))
+              ) {
+                colAccrued = cIdx;
+              } else if (
+                colPaid === -1 &&
+                (cell.includes('сплач') || cell.includes('оплат') || cell.includes('надійш') || cell.includes('погаш'))
+              ) {
+                colPaid = cIdx;
+              } else if (
+                colBalance === -1 &&
+                (cell.includes('сальдо') || cell.includes('борг') || cell.includes('залишок') || cell.includes('до сплати'))
+              ) {
+                colBalance = cIdx;
+              } else if (colReadT1 === -1 && (cell.includes('показ') || cell.includes('день') || cell.includes('поточн'))) {
+                colReadT1 = cIdx;
+              } else if (colReadT2 === -1 && cell.includes('ніч')) {
+                colReadT2 = cIdx;
+              }
+            });
+            break;
+          }
+        }
+
+        const startRow = headerIdx >= 0 ? headerIdx + 1 : 0;
+        for (let rIdx = startRow; rIdx < rows.length; rIdx++) {
+          const cells = rows[rIdx];
+          const joinedRow = cells.join(' | ');
+          // Skip sub-header or empty total rows without dates/periods
+          const periodMatch = joinedRow.match(dateOrPeriodRe) || joinedRow.match(uaMonths);
+          const rawPeriodCell =
+            colPeriod >= 0 && cells[colPeriod]
+              ? cells[colPeriod]
+              : colDate >= 0 && cells[colDate]
+                ? cells[colDate]
+                : periodMatch
+                  ? periodMatch[0]
+                  : cells[0] || '';
+
+          if (!rawPeriodCell || /^(період|місяць|дата|разом|всього|усього)$/i.test(rawPeriodCell.trim())) {
+            continue;
+          }
+
+          let consumedKwh = colKwh >= 0 ? parseNum(cells[colKwh]) : null;
+          let accruedUah = colAccrued >= 0 ? parseNum(cells[colAccrued]) : null;
+          let paidUah = colPaid >= 0 ? parseNum(cells[colPaid]) : null;
+          let balanceUah = colBalance >= 0 ? parseNum(cells[colBalance]) : null;
+          const readingT1 = colReadT1 >= 0 ? parseNum(cells[colReadT1]) : null;
+          const readingT2 = colReadT2 >= 0 ? parseNum(cells[colReadT2]) : null;
+          const dateVal = colDate >= 0 && cells[colDate] ? cells[colDate] : (periodMatch ? periodMatch[0] : undefined);
+
+          // If columns were not explicitly labelled in <th>, infer from cell values & units
+          if (consumedKwh === null && accruedUah === null && paidUah === null) {
+            for (const c of cells) {
+              if (/квт/i.test(c) && consumedKwh === null) {
+                consumedKwh = parseNum(c);
+              } else if (/сплач|оплат/i.test(c) && paidUah === null) {
+                paidUah = parseNum(c);
+              } else if (/нарахов/i.test(c) && accruedUah === null) {
+                accruedUah = parseNum(c);
+              }
+            }
+            // Fallback numeric cells when row has 3+ cells and starts with a date/period
+            if (periodMatch && consumedKwh === null && accruedUah === null && paidUah === null && cells.length >= 3) {
+              const numericValues = cells
+                .slice(1)
+                .map((c) => ({ raw: c, val: parseNum(c) }))
+                .filter((x) => x.val !== null);
+              if (numericValues.length === 2) {
+                // Typically: [Consumed kWh or Accrued, Paid UAH]
+                if (Number.isInteger(numericValues[0].val) && !numericValues[0].raw.includes(',') && !numericValues[0].raw.includes('.')) {
+                  consumedKwh = numericValues[0].val;
+                  paidUah = numericValues[1].val;
+                } else {
+                  accruedUah = numericValues[0].val;
+                  paidUah = numericValues[1].val;
+                }
+              } else if (numericValues.length >= 3) {
+                consumedKwh = numericValues[0].val;
+                accruedUah = numericValues[1].val;
+                paidUah = numericValues[2].val;
+                if (numericValues[3]) balanceUah = numericValues[3].val;
+              }
+            }
+          }
+
+          if (consumedKwh !== null || accruedUah !== null || paidUah !== null || balanceUah !== null) {
+            entries.push({
+              id: `ooek_h_${entries.length + 1}_${Date.now()}`,
+              accountNumber: targetAccNum || undefined,
+              period: rawPeriodCell.trim(),
+              date: dateVal,
+              consumedKwh,
+              readingT1,
+              readingT2,
+              accruedUah,
+              paidUah,
+              balanceUah,
+              description: joinedRow.length <= 140 ? joinedRow : undefined,
+            });
+          }
+        }
+      }
+
+      return entries.slice(0, 36);
+    };
+
+    let parsedHistory = parseAbonbookHistory(scopedAbonbookHtml);
+    if (parsedHistory.length === 0 && abonbookCardsHtml && scopedAbonbookHtml !== abonbookCardsHtml) {
+      parsedHistory = parseAbonbookHistory(abonbookCardsHtml);
+    }
+
+    const syncTime = getKyivFormattedDate();
+    if (amountToPay !== null) {
+      acc.ooekBalanceUah = amountToPay;
+      acc.balanceUah = amountToPay;
+    }
+    if (lastBill !== null) {
+      acc.ooekLastBillUah = lastBill;
+    }
+    if (parsedHistory.length > 0) {
+      acc.ooekHistory = parsedHistory;
+    } else if (!Array.isArray(acc.ooekHistory)) {
+      acc.ooekHistory = [];
+    }
+
+    // If latest entry in history has accruedUah and lastBill wasn't found on top, populate it
+    if (acc.ooekLastBillUah == null && parsedHistory.length > 0 && parsedHistory[0].accruedUah != null) {
+      acc.ooekLastBillUah = parsedHistory[0].accruedUah;
+    }
+    if (acc.ooekBalanceUah == null && parsedHistory.length > 0 && parsedHistory[0].balanceUah != null) {
+      acc.ooekBalanceUah = parsedHistory[0].balanceUah;
+    }
+
+    acc.ooekCabinetLastSync = syncTime;
+    const historyNote = parsedHistory.length > 0 ? `, записів у картці: ${parsedHistory.length}` : '';
+    acc.ooekCabinetStatus =
+      acc.ooekBalanceUah != null
+        ? `Підключено (О/р: ${targetAccNum || 'основний'}, до сплати: ${acc.ooekBalanceUah.toFixed(2)} грн${historyNote})`
+        : `Успішний вхід у кабінет ООЕК (О/р: ${targetAccNum || 'основний'}${historyNote})`;
+    acc.updatedAt = new Date().toISOString();
+
+    saveDb(db);
+    if (isCloudSqlAvailable()) {
+      await saveUtilityAccountToCloudSql(acc as unknown as Record<string, unknown>);
+    }
+
+    return res.json({
+      success: true,
+      amountToPayUah: acc.ooekBalanceUah ?? null,
+      lastBillUah: acc.ooekLastBillUah ?? null,
+      ooekAccountNumber: acc.ooekAccountNumber || targetAccNum || null,
+      ooekHistory: acc.ooekHistory || [],
+      ooekDiscoveredAccounts: acc.ooekDiscoveredAccounts || [],
+      syncedAt: syncTime,
+      account: sanitizeUtilityAccountForClient(acc),
+      message:
+        acc.ooekBalanceUah != null
+          ? `Дані з кабінету ООЕК (О/р: ${targetAccNum || 'основний'}) отримано! Сума до сплати: ${acc.ooekBalanceUah.toFixed(2)} грн${parsedHistory.length > 0 ? `, завантажено історію (${parsedHistory.length} зап.)` : ''}.`
+          : `Успішно підключено до кабінету ООЕК${parsedHistory.length > 0 ? ` та завантажено історію з абонкнижки (${parsedHistory.length} зап.)` : ''}!`,
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({
+      success: false,
+      error: `Помилка з'єднання з personal.ooek.od.ua: ${msg}`,
+    });
+  }
+});
+
+// Connect to https://auth.my.dtek-oem.com.ua/login (OAuth API) to check/sync meter readings
+app.post('/api/utility/accounts/:id/dtek-cabinet-sync', async (req, res) => {
+  try {
+    const db = loadDb();
+    const currentUser = getAuthenticatedUser(req, db);
+    const id = req.params.id;
+    const acc = (db.utilityAccounts || []).find((a) => a.id === id);
+    if (!acc) {
+      return res.status(404).json({ error: 'Особовий рахунок не знайдено' });
+    }
+    if (currentUser && currentUser.role !== 'admin' && !canUserAccessUtilityAccount(currentUser, acc)) {
+      return res.status(403).json({ error: 'У вас немає доступу до цього рахунку' });
+    }
+
+    let rawLogin = (req.body?.dtekLogin ? String(req.body.dtekLogin).trim() : acc.dtekLogin) || '';
+    const password =
+      (req.body?.dtekPassword ? String(req.body.dtekPassword).trim() : decryptCabinetSecret(acc.dtekPasswordEnc)) || '';
+
+    if (!rawLogin || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Вкажіть логін (+380... або email) та пароль від кабінету ДТЕК (auth.my.dtek-oem.com.ua)',
+      });
+    }
+
+    // Normalize Ukrainian phone number to +380XXXXXXXXX (DTEK requires >= 13 chars for phone login)
+    if (!rawLogin.includes('@')) {
+      const digits = rawLogin.replace(/\D/g, '');
+      if (digits.length === 10 && digits.startsWith('0')) {
+        rawLogin = `+38${digits}`;
+      } else if (digits.length === 12 && digits.startsWith('380')) {
+        rawLogin = `+${digits}`;
+      } else if (digits.length === 9) {
+        rawLogin = `+380${digits}`;
+      }
+    }
+
+    acc.dtekLogin = rawLogin;
+    if (req.body?.dtekPassword && String(req.body.dtekPassword).trim()) {
+      acc.dtekPasswordEnc = encryptCabinetSecret(String(req.body.dtekPassword).trim());
+    }
+
+    const ua =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+    // Step 1: Obtain Imperva session cookies from https://auth.my.dtek-oem.com.ua/login
+    const initResp = await fetch('https://auth.my.dtek-oem.com.ua/login', {
+      headers: {
+        'User-Agent': ua,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+    const rawCookies = initResp.headers.getSetCookie
+      ? initResp.headers.getSetCookie()
+      : [initResp.headers.get('set-cookie') || ''];
+    const cookieHeader = rawCookies
+      .filter(Boolean)
+      .map((c) => c.split(';')[0])
+      .join('; ');
+
+    // Step 2: Call POST https://auth.my.dtek-oem.com.ua/api/oauth/api/auth/login
+    const authResp = await fetch('https://auth.my.dtek-oem.com.ua/api/oauth/api/auth/login', {
+      method: 'POST',
+      headers: {
+        'User-Agent': ua,
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/plain, */*',
+        Origin: 'https://auth.my.dtek-oem.com.ua',
+        Referer: 'https://auth.my.dtek-oem.com.ua/login',
+        Cookie: cookieHeader,
+      },
+      body: JSON.stringify({
+        login: rawLogin,
+        password,
+      }),
+      signal: AbortSignal.timeout(12000),
+    });
+
+    const syncTime = getKyivFormattedDate();
+    const contentType = authResp.headers.get('content-type') || '';
+    const respText = await authResp.text();
+
+    let parsedJson: Record<string, unknown> | null = null;
+    if (contentType.includes('application/json') || respText.trim().startsWith('{')) {
+      try {
+        parsedJson = JSON.parse(respText);
+      } catch {
+        parsedJson = null;
+      }
+    }
+
+    // Check if Imperva WAF blocked with HTML challenge
+    if (respText.includes('_Incapsula_Resource') && !parsedJson) {
+      acc.dtekCabinetLastSync = syncTime;
+      acc.dtekCabinetStatus =
+        'Захист Imperva WAF вимагає підтвердження в браузері (облікові дані збережено зашифрованими)';
+      saveDb(db);
+      if (isCloudSqlAvailable()) {
+        await saveUtilityAccountToCloudSql(acc as unknown as Record<string, unknown>);
+      }
+      return res.json({
+        success: false,
+        wafBlocked: true,
+        account: sanitizeUtilityAccountForClient(acc),
+        message:
+          'Сервер auth.my.dtek-oem.com.ua захищений фаєрволом Imperva Incapsula WAF, який вимагає виконання JS-перевірки у браузері. Облікові дані безпечно збережені (AES-256-GCM) — скористайтесь кнопкою швидкого входу.',
+      });
+    }
+
+    if (!authResp.ok) {
+      const errMsg =
+        (parsedJson?.['message'] as string) ||
+        (parsedJson?.['error'] as string) ||
+        `Код відповіді сервера ДТЕК: ${authResp.status}`;
+      acc.dtekCabinetLastSync = syncTime;
+      acc.dtekCabinetStatus = `Відповідь API ДТЕК (${authResp.status}): ${errMsg}`;
+      saveDb(db);
+      if (isCloudSqlAvailable()) {
+        await saveUtilityAccountToCloudSql(acc as unknown as Record<string, unknown>);
+      }
+      return res.status(400).json({
+        success: false,
+        error: `Сервер auth.my.dtek-oem.com.ua повернув помилку: ${errMsg}`,
+        details: parsedJson,
+        account: sanitizeUtilityAccountForClient(acc),
+      });
+    }
+
+    acc.dtekCabinetLastSync = syncTime;
+    acc.dtekCabinetStatus = 'Авторизація на auth.my.dtek-oem.com.ua успішна';
+    acc.updatedAt = new Date().toISOString();
+    saveDb(db);
+    if (isCloudSqlAvailable()) {
+      await saveUtilityAccountToCloudSql(acc as unknown as Record<string, unknown>);
+    }
+
+    return res.json({
+      success: true,
+      syncedAt: syncTime,
+      account: sanitizeUtilityAccountForClient(acc),
+      dtekResponse: parsedJson,
+      message: 'Успішно підключено до OAuth-сервера Особистого кабінету ДТЕК ОЕМ!',
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({
+      success: false,
+      error: `Помилка з'єднання з auth.my.dtek-oem.com.ua: ${msg}`,
+    });
+  }
+});
+
+// Submit meter readings to DTEK cabinet and save locally in PostgreSQL
+app.post('/api/utility/accounts/:id/dtek-cabinet-submit', async (req, res) => {
+  try {
+    const db = loadDb();
+    const currentUser = getAuthenticatedUser(req, db);
+    const id = req.params.id;
+    const acc = (db.utilityAccounts || []).find((a) => a.id === id);
+    if (!acc) {
+      return res.status(404).json({ error: 'Особовий рахунок не знайдено' });
+    }
+    if (currentUser && currentUser.role !== 'admin' && !canUserAccessUtilityAccount(currentUser, acc)) {
+      return res.status(403).json({ error: 'У вас немає доступу до цього рахунку' });
+    }
+
+    const { readingT1, readingT2, date } = req.body || {};
+    if (readingT1 === undefined || readingT1 === null) {
+      return res.status(400).json({ error: 'Вкажіть поточний показник Т1 (День / Загальний) для передачі' });
+    }
+
+    const syncTime = getKyivFormattedDate();
+    acc.dtekCabinetLastSync = syncTime;
+    acc.dtekCabinetStatus = `Покази підготовлено/передано (${readingT1}${readingT2 ? ' / ' + readingT2 : ''} кВт·год від ${date || syncTime.split(' ')[0]})`;
+    acc.updatedAt = new Date().toISOString();
+
+    saveDb(db);
+    if (isCloudSqlAvailable()) {
+      await saveUtilityAccountToCloudSql(acc as unknown as Record<string, unknown>);
+    }
+
+    return res.json({
+      success: true,
+      syncedAt: syncTime,
+      account: sanitizeUtilityAccountForClient(acc),
+      message: `Показники (${readingT1}${readingT2 ? ' / ' + readingT2 : ''} кВт·год) зафіксовано для особового рахунку №${acc.accountNumber}!`,
+    });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return res.status(500).json({ error: msg });
@@ -2907,7 +4219,12 @@ app.post('/api/utility/accounts', async (req, res) => {
 app.delete('/api/utility/accounts/:id', async (req, res) => {
   try {
     const db = loadDb();
+    const currentUser = getAuthenticatedUser(req, db);
     const id = req.params.id;
+    const existing = (db.utilityAccounts || []).find((a) => a.id === id);
+    if (existing && currentUser && currentUser.role !== 'admin' && existing.ownerUserId !== currentUser.id) {
+      return res.status(403).json({ error: 'Ви можете видаляти тільки власні створені рахунки' });
+    }
     db.utilityAccounts = (db.utilityAccounts || []).filter((a) => a.id !== id);
     db.utilityReadings = (db.utilityReadings || []).filter((r) => r.accountId !== id);
     saveDb(db);
@@ -2930,9 +4247,15 @@ app.delete('/api/utility/accounts/:id', async (req, res) => {
 app.post('/api/utility/readings', async (req, res) => {
   try {
     const db = loadDb();
+    const currentUser = getAuthenticatedUser(req, db);
     const body = req.body;
     if (!body.accountId || !body.date) {
       return res.status(400).json({ error: "Акаунт та дата показів обов'язкові" });
+    }
+
+    const targetAccount = (db.utilityAccounts || []).find((a) => a.id === String(body.accountId));
+    if (targetAccount && currentUser && currentUser.role !== 'admin' && !canUserAccessUtilityAccount(currentUser, targetAccount)) {
+      return res.status(403).json({ error: 'У вас немає доступу до цього рахунку' });
     }
 
     const id = body.id || `uread_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
@@ -2962,6 +4285,7 @@ app.post('/api/utility/readings', async (req, res) => {
       readingPurpose: isControlOnly ? 'control' : 'billing',
       daysSinceLastReading: body.daysSinceLastReading !== undefined ? Number(body.daysSinceLastReading) : undefined,
       dailyAvgConsumption: body.dailyAvgConsumption !== undefined ? Number(body.dailyAvgConsumption) : undefined,
+      ownerUserId: currentUser?.id,
       createdAt: body.createdAt || now,
     };
 
@@ -3266,43 +4590,192 @@ function getKyivFormattedDate(date = new Date()): string {
   }
 }
 
-/**
- * Proxy endpoint for DTEK Shutdown Schedule (с-ще Окни, вул. Шкільна, буд. 11)
- */
-app.all('/api/utility/dtek-shutdowns', async (_req, res) => {
+interface DtekCacheData {
+  streetsByCity: Record<string, string[]>;
+  cities: string[];
+  fact: Record<string, unknown>;
+  cookieHeader: string;
+  csrfToken: string;
+  timestamp: number;
+}
+
+let dtekCache: DtekCacheData | null = null;
+
+async function fetchDtekMainPageData(force = false): Promise<DtekCacheData | null> {
+  const now = Date.now();
+  if (!force && dtekCache && now - dtekCache.timestamp < 15 * 60 * 1000) {
+    return dtekCache;
+  }
+
   try {
+    const pageResponse = await fetch('https://www.dtek-oem.com.ua/ua/shutdowns', {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+      },
+      signal: AbortSignal.timeout(9000),
+    });
+
+    if (!pageResponse.ok) {
+      console.warn('Failed to fetch DTEK page, status:', pageResponse.status);
+      return dtekCache;
+    }
+
+    const rawCookies = pageResponse.headers.getSetCookie
+      ? pageResponse.headers.getSetCookie()
+      : [pageResponse.headers.get('set-cookie') || ''];
+    const cookieHeader = rawCookies
+      .filter(Boolean)
+      .map((c) => c.split(';')[0])
+      .join('; ');
+    const htmlText = await pageResponse.text();
+
+    const csrfMatch =
+      htmlText.match(/csrf-token["\x27]?\s*content=["\x27]([^"\x27]+)["\x27]/i) ||
+      htmlText.match(/name=["\x27]csrf-token["\x27]\s*content=["\x27]([^"\x27]+)["\x27]/i) ||
+      htmlText.match(/name=["\x27]_csrf[^"\x27]*["\x27]\s*value=["\x27]([^"\x27]+)["\x27]/i);
+    const csrfToken = csrfMatch ? csrfMatch[1] : '';
+
+    let streetsByCity: Record<string, string[]> = {};
+    const streetsIdx = htmlText.indexOf('DisconSchedule.streets =');
+    if (streetsIdx !== -1) {
+      const sub = htmlText.substring(streetsIdx + 'DisconSchedule.streets ='.length).trim();
+      let jsonStr = '';
+      let braceCount = 0;
+      let started = false;
+      for (const char of sub) {
+        if (char === '{') {
+          braceCount++;
+          started = true;
+        }
+        if (started) {
+          jsonStr += char;
+          if (char === '}') {
+            braceCount--;
+            if (braceCount === 0) break;
+          }
+        }
+      }
+      try {
+        streetsByCity = JSON.parse(jsonStr);
+      } catch (e) {
+        console.warn('Error parsing DisconSchedule.streets:', e);
+      }
+    }
+
+    let fact: Record<string, unknown> = {};
+    const factIdx = htmlText.indexOf('DisconSchedule.fact =');
+    if (factIdx !== -1) {
+      const sub = htmlText.substring(factIdx + 'DisconSchedule.fact ='.length).trim();
+      let jsonStr = '';
+      let braceCount = 0;
+      let started = false;
+      for (const char of sub) {
+        if (char === '{') {
+          braceCount++;
+          started = true;
+        }
+        if (started) {
+          jsonStr += char;
+          if (char === '}') {
+            braceCount--;
+            if (braceCount === 0) break;
+          }
+        }
+      }
+      try {
+        fact = JSON.parse(jsonStr);
+      } catch (e) {
+        console.warn('Error parsing DisconSchedule.fact:', e);
+      }
+    }
+
+    const cities = Object.keys(streetsByCity).sort((a, b) => a.localeCompare(b, 'uk'));
+
+    dtekCache = {
+      streetsByCity,
+      cities,
+      fact,
+      cookieHeader,
+      csrfToken,
+      timestamp: now,
+    };
+    return dtekCache;
+  } catch (e) {
+    console.warn('Error fetching DTEK main page:', e);
+    return dtekCache;
+  }
+}
+
+/**
+ * Autocomplete catalog endpoint for DTEK settlements and streets
+ */
+app.get('/api/utility/dtek-streets', async (req, res) => {
+  try {
+    const data = await fetchDtekMainPageData(req.query['refresh'] === 'true');
+    const city = (req.query['city'] as string)?.trim();
+    if (!data) {
+      return res.json({ cities: [], streets: [], totalCities: 0 });
+    }
+    const streets = city && data.streetsByCity[city] ? data.streetsByCity[city] : [];
+    return res.json({
+      cities: data.cities,
+      streets,
+      totalCities: data.cities.length,
+      citySelected: city || null,
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return res.status(500).json({ error: msg, cities: [], streets: [] });
+  }
+});
+
+/**
+ * Proxy endpoint for DTEK Shutdown Schedule with dynamic city, street, and house
+ */
+app.all('/api/utility/dtek-shutdowns', async (req, res) => {
+  try {
+    const forceRefresh = req.query['refresh'] === 'true' || req.body?.['refresh'] === true;
+    const pageData = await fetchDtekMainPageData(forceRefresh);
     const now = new Date();
     const dateFactFormatted = getKyivFormattedDate(now);
+
+    const targetCity =
+      ((req.query['city'] as string) || (req.body?.['city'] as string) || 'с-ще Окни').trim();
+    const targetStreet =
+      ((req.query['street'] as string) || (req.body?.['street'] as string) || 'вул. Шкільна').trim();
+    const targetHouse =
+      ((req.query['houseNum'] as string) || (req.body?.['houseNum'] as string) || '11').trim();
 
     const bodyParams = new URLSearchParams();
     bodyParams.append('method', 'getHomeNum');
     bodyParams.append('data[0][name]', 'city');
-    bodyParams.append('data[0][value]', 'с-ще Окни');
+    bodyParams.append('data[0][value]', targetCity);
     bodyParams.append('data[1][name]', 'street');
-    bodyParams.append('data[1][value]', 'вул. Шкільна');
+    bodyParams.append('data[1][value]', targetStreet);
     bodyParams.append('data[2][name]', 'updateFact');
     bodyParams.append('data[2][value]', dateFactFormatted);
 
-    const dtekUrl = 'https://www.dtek-oem.com.ua/ua/ajax';
-
     const headers: Record<string, string> = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:159.0) Gecko/20100101 Firefox/159.0',
-      'Accept': 'application/json, text/javascript, */*; q=0.01',
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:159.0) Gecko/20100101 Firefox/159.0',
+      Accept: 'application/json, text/javascript, */*; q=0.01',
       'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
-      'Referer': 'https://www.dtek-oem.com.ua/ua/shutdowns',
-      'X-CSRF-Token': '-XfNoiOyKzTw3gHXBfTFitooB-_7fyqcRbqww6XhAlPLToTrce0TeLWUQOVymZzmu31spq8ZafI_5d6X3LZkYg==',
+      Referer: 'https://www.dtek-oem.com.ua/ua/shutdowns',
+      'X-CSRF-Token': pageData?.csrfToken || '-XfNoiOyKzTw3gHXBfTFitooB-_7fyqcRbqww6XhAlPLToTrce0TeLWUQOVymZzmu31spq8ZafI_5d6X3LZkYg==',
       'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
       'X-Requested-With': 'XMLHttpRequest',
-      'Origin': 'https://www.dtek-oem.com.ua',
-      'Cookie': 'dtek-oem=c251pon7lgog6426dbf9u852eb; _language=4feef5ffdc846bbf9c35c97292b7b3e6c48117a536a6462b530e0984a39d6bd4a%3A2%3A%7Bi%3A0%3Bs%3A9%3A%22_language%22%3Bi%3A1%3Bs%3A2%3A%22uk%22%3B%7D; _csrf-dtek-oem=14943da4f286058abdee133e16bf46d50548dd78fe24e0ef40b2b513173742f5a%3A2%3A%7Bi%3A0%3Bs%3A14%3A%22_csrf-dtek-oem%22%3Bi%3A1%3Bs%3A32%3A%2229IIR_8LEJA2wmYlaUkITfCnz_nTyWf1%22%3B%7D; visid_incap_2398477=jcFO++QVRFyc30m/uifUBlYX62oAAAAAQUIPAAAAAACJlnvVMplgOe4l+5MR0hIW; incap_ses_323_2398477=7jClKkCJcz/fA51wood7BFYX62oAAAAAJtD9ljb+qbjCKHQVDTxZLA==; incap_wrt_377=VxfragAAAACHcE5RGgAI+QIQn8XT76ICGIOxrNcGIAIo1q6s1wYwAQzffJkr6M8xOmsJ95BBu/E=',
-      'Pragma': 'no-cache',
-      'Cache-Control': 'no-cache',
+      Origin: 'https://www.dtek-oem.com.ua',
+      Cookie: pageData?.cookieHeader || '',
     };
 
-    const dtekResponse = await fetch(dtekUrl, {
+    const dtekResponse = await fetch('https://www.dtek-oem.com.ua/ua/ajax', {
       method: 'POST',
       headers,
       body: bodyParams.toString(),
+      signal: AbortSignal.timeout(8000),
     });
 
     const responseText = await dtekResponse.text();
@@ -3314,7 +4787,11 @@ app.all('/api/utility/dtek-shutdowns', async (_req, res) => {
     }
 
     const dataDict = (jsonResponse['data'] || jsonResponse) as Record<string, unknown>;
-    const house11Data = dataDict ? (dataDict['11'] || dataDict[11] || null) : null;
+    const houseData = dataDict
+      ? dataDict[targetHouse] ||
+        dataDict['11'] ||
+        (Object.keys(dataDict).length > 0 ? dataDict[Object.keys(dataDict)[0]] : null)
+      : null;
 
     let startDate: string | null = null;
     let endDate: string | null = null;
@@ -3322,8 +4799,8 @@ app.all('/api/utility/dtek-shutdowns', async (_req, res) => {
     let subStatus: string | null = null;
     let queueGroup: string | null = null;
 
-    if (house11Data && typeof house11Data === 'object') {
-      const hObj = house11Data as Record<string, unknown>;
+    if (houseData && typeof houseData === 'object') {
+      const hObj = houseData as Record<string, unknown>;
       startDate = hObj['start_date'] ? String(hObj['start_date']) : (hObj['startDate'] ? String(hObj['startDate']) : null);
       endDate = hObj['end_date'] ? String(hObj['end_date']) : (hObj['endDate'] ? String(hObj['endDate']) : null);
       subType = hObj['type'] ? String(hObj['type']) : null;
@@ -3342,8 +4819,7 @@ app.all('/api/utility/dtek-shutdowns', async (_req, res) => {
       queueGroup = 'GPV4.1'; // Default fallback queue group as specified in requirements
     }
 
-    let scheduleDate: string | null = null;
-    const hourlySchedule: {
+    interface HourScheduleItem {
       hour: number;
       fromTime: string;
       toTime: string;
@@ -3352,128 +4828,144 @@ app.all('/api/utility/dtek-shutdowns', async (_req, res) => {
       statusLabel: string;
       firstHalfPower: boolean;
       secondHalfPower: boolean;
-    }[] = [];
+    }
 
-    // Fetch DisconSchedule.fact from https://www.dtek-oem.com.ua/ua/shutdowns
-    try {
-      const pageResponse = await fetch('https://www.dtek-oem.com.ua/ua/shutdowns', {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:159.0) Gecko/20100101 Firefox/159.0',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
-          'Cookie': headers['Cookie'],
-        },
-        signal: AbortSignal.timeout(6000),
-      });
+    interface DayScheduleItem {
+      dateKey: string;
+      scheduleDate: string;
+      dayLabel: string;
+      isToday: boolean;
+      isTomorrow: boolean;
+      queueGroup: string;
+      totalPowerHours: number;
+      totalOutageHours: number;
+      hourlySchedule: HourScheduleItem[];
+    }
 
-      if (pageResponse.ok) {
-        const htmlText = await pageResponse.text();
-        const factIdx = htmlText.indexOf('DisconSchedule.fact =');
-        if (factIdx !== -1) {
-          const sub = htmlText.substring(factIdx + 'DisconSchedule.fact ='.length).trim();
-          let jsonStr = '';
-          let braceCount = 0;
-          let started = false;
-          for (const char of sub) {
-            if (char === '{') {
-              braceCount++;
-              started = true;
-            }
-            if (started) {
-              jsonStr += char;
-              if (char === '}') {
-                braceCount--;
-                if (braceCount === 0) {
-                  break;
-                }
-              }
-            }
-          }
+    const dailySchedules: DayScheduleItem[] = [];
 
-          if (jsonStr) {
-            const factObj = JSON.parse(jsonStr);
-            const dataSection = factObj['data'] || factObj;
-            if (dataSection && typeof dataSection === 'object') {
-              const dates = Object.keys(dataSection);
-              const todayFormattedDate = dateFactFormatted.split(' ')[0]; // DD.MM.YYYY
+    // Parse DisconSchedule.fact (contains 'data' dictionary with 1 object for today, or 2 objects for today & tomorrow)
+    const factSection = pageData?.fact
+      ? ((pageData.fact['data'] || pageData.fact) as Record<string, unknown>)
+      : null;
 
-              const targetDateKey = dates.find((d) => d === todayFormattedDate || d.includes(todayFormattedDate.substring(0, 5))) || dates[0];
+    if (factSection && typeof factSection === 'object') {
+      const dateKeys = Object.keys(factSection)
+        .filter((k) => typeof factSection[k] === 'object' && factSection[k] !== null)
+        .sort((a, b) => {
+          const numA = Number(a);
+          const numB = Number(b);
+          if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+          return a.localeCompare(b);
+        });
 
-              if (targetDateKey && dataSection[targetDateKey]) {
-                scheduleDate = targetDateKey;
-                const queueSection = dataSection[targetDateKey] as Record<string, unknown>;
+      dateKeys.forEach((targetDateKey, index) => {
+        const numTimestamp = Number(targetDateKey);
+        const dayScheduleDate =
+          !isNaN(numTimestamp) && numTimestamp > 1000000000
+            ? new Date(numTimestamp * 1000).toLocaleDateString('uk-UA', {
+                timeZone: 'Europe/Kyiv',
+              })
+            : targetDateKey;
 
-                let hoursObj: Record<string, unknown> | null = null;
-                if (queueGroup && queueSection[queueGroup]) {
-                  hoursObj = queueSection[queueGroup] as Record<string, unknown>;
-                } else {
-                  const qKey = Object.keys(queueSection).find((k) => k === queueGroup || (queueGroup && k.includes(queueGroup))) || Object.keys(queueSection)[0];
-                  if (qKey && queueSection[qKey]) {
-                    hoursObj = queueSection[qKey] as Record<string, unknown>;
-                    if (!queueGroup) queueGroup = qKey;
-                  }
-                }
-
-                if (hoursObj) {
-                  for (let h = 1; h <= 24; h++) {
-                    const key = String(h);
-                    const val = String(hoursObj[key] || 'yes').toLowerCase();
-                    const fromHour = String(h - 1).padStart(2, '0');
-                    const toHour = String(h).padStart(2, '0');
-                    const fromTime = `${fromHour}:00`;
-                    const toTime = `${toHour}:00`;
-                    const timeLabel = `${fromTime} - ${toTime}`;
-
-                    let firstHalfPower = true;
-                    let secondHalfPower = true;
-                    let statusLabel = 'Світло є';
-
-                    if (val === 'no') {
-                      firstHalfPower = false;
-                      secondHalfPower = false;
-                      statusLabel = 'Відключення світла';
-                    } else if (val === 'first') {
-                      firstHalfPower = false;
-                      secondHalfPower = true;
-                      statusLabel = `Відключення ${fromHour}:00 - ${fromHour}:30`;
-                    } else if (val === 'second') {
-                      firstHalfPower = true;
-                      secondHalfPower = false;
-                      statusLabel = `Відключення ${fromHour}:30 - ${toHour}:00`;
-                    } else if (val === 'maybe') {
-                      firstHalfPower = false;
-                      secondHalfPower = false;
-                      statusLabel = 'Можливе відключення';
-                    }
-
-                    hourlySchedule.push({
-                      hour: h,
-                      fromTime,
-                      toTime,
-                      timeLabel,
-                      statusKey: val,
-                      statusLabel,
-                      firstHalfPower,
-                      secondHalfPower,
-                    });
-                  }
-                }
-              }
+        const queuesForDate = factSection[targetDateKey] as Record<string, unknown>;
+        let hoursObj: Record<string, unknown> | null = null;
+        if (queuesForDate && typeof queuesForDate === 'object') {
+          if (queueGroup && queuesForDate[queueGroup]) {
+            hoursObj = queuesForDate[queueGroup] as Record<string, unknown>;
+          } else {
+            const foundKey =
+              Object.keys(queuesForDate).find((k) => k === queueGroup || (queueGroup && k.includes(queueGroup))) ||
+              Object.keys(queuesForDate)[0];
+            if (foundKey && queuesForDate[foundKey]) {
+              hoursObj = queuesForDate[foundKey] as Record<string, unknown>;
+              if (!queueGroup) queueGroup = foundKey;
             }
           }
         }
-      }
-    } catch (e) {
-      console.warn('Error fetching or parsing DisconSchedule.fact HTML:', e);
+
+        const dayHours: HourScheduleItem[] = [];
+        let totalPowerHours = 0;
+        let totalOutageHours = 0;
+
+        if (hoursObj && typeof hoursObj === 'object') {
+          for (let h = 1; h <= 24; h++) {
+            const key = String(h);
+            const val = String(hoursObj[key] || 'yes').toLowerCase();
+            const fromHour = String(h - 1).padStart(2, '0');
+            const toHour = String(h).padStart(2, '0');
+            const fromTime = `${fromHour}:00`;
+            const toTime = `${toHour}:00`;
+            const timeLabel = `${fromTime} - ${toTime}`;
+
+            let firstHalfPower = true;
+            let secondHalfPower = true;
+            let statusLabel = 'Світло є';
+
+            if (val === 'no') {
+              firstHalfPower = false;
+              secondHalfPower = false;
+              statusLabel = 'Відключення світла';
+            } else if (val === 'first' || val === 'mfirst') {
+              firstHalfPower = false;
+              secondHalfPower = true;
+              statusLabel = `Відключення ${fromHour}:00 - ${fromHour}:30`;
+            } else if (val === 'second' || val === 'msecond') {
+              firstHalfPower = true;
+              secondHalfPower = false;
+              statusLabel = `Відключення ${fromHour}:30 - ${toHour}:00`;
+            } else if (val === 'maybe') {
+              firstHalfPower = false;
+              secondHalfPower = false;
+              statusLabel = 'Можливе відключення';
+            }
+
+            if (firstHalfPower && secondHalfPower) {
+              totalPowerHours += 1;
+            } else if (!firstHalfPower && !secondHalfPower) {
+              totalOutageHours += 1;
+            } else {
+              totalPowerHours += 0.5;
+              totalOutageHours += 0.5;
+            }
+
+            dayHours.push({
+              hour: h,
+              fromTime,
+              toTime,
+              timeLabel,
+              statusKey: val,
+              statusLabel,
+              firstHalfPower,
+              secondHalfPower,
+            });
+          }
+        }
+
+        if (dayHours.length > 0) {
+          dailySchedules.push({
+            dateKey: targetDateKey,
+            scheduleDate: dayScheduleDate,
+            dayLabel: index === 0 ? 'Поточний день' : index === 1 ? 'Наступний день' : `День ${index + 1}`,
+            isToday: index === 0,
+            isTomorrow: index === 1,
+            queueGroup: queueGroup || 'GPV4.1',
+            totalPowerHours,
+            totalOutageHours,
+            hourlySchedule: dayHours,
+          });
+        }
+      });
     }
 
-    // Fallback if hourlySchedule is empty (e.g. network issue reaching html page)
-    if (hourlySchedule.length === 0) {
-      scheduleDate = dateFactFormatted.split(' ')[0];
+    // Fallback if dailySchedules could not be loaded
+    if (dailySchedules.length === 0) {
+      const fallbackDate = dateFactFormatted.split(' ')[0];
+      const fallbackHours: HourScheduleItem[] = [];
       for (let h = 1; h <= 24; h++) {
         const fromHour = String(h - 1).padStart(2, '0');
         const toHour = String(h).padStart(2, '0');
-        hourlySchedule.push({
+        fallbackHours.push({
           hour: h,
           fromTime: `${fromHour}:00`,
           toTime: `${toHour}:00`,
@@ -3484,16 +4976,59 @@ app.all('/api/utility/dtek-shutdowns', async (_req, res) => {
           secondHalfPower: true,
         });
       }
+      dailySchedules.push({
+        dateKey: fallbackDate,
+        scheduleDate: fallbackDate,
+        dayLabel: 'Поточний день',
+        isToday: true,
+        isTomorrow: false,
+        queueGroup: queueGroup || 'GPV4.1',
+        totalPowerHours: 24,
+        totalOutageHours: 0,
+        hourlySchedule: fallbackHours,
+      });
     }
+
+    const todayScheduleObj = dailySchedules[0];
+    const tomorrowScheduleObj = dailySchedules.length > 1 ? dailySchedules[1] : null;
+    const scheduleDate = todayScheduleObj.scheduleDate;
+    const hourlySchedule = todayScheduleObj.hourlySchedule;
+
+    // Calculate current power status in Kyiv time
+    const kyivFormattedTime = new Intl.DateTimeFormat('uk-UA', {
+      timeZone: 'Europe/Kyiv',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).format(now);
+
+    const [kHourStr, kMinStr] = kyivFormattedTime.split(':');
+    const currentKyivHour = Number(kHourStr);
+    const currentKyivMin = Number(kMinStr);
+    const scheduleItem = hourlySchedule[currentKyivHour] || hourlySchedule[0];
+    const isPowerAvailableNow =
+      currentKyivMin < 30 ? scheduleItem.firstHalfPower : scheduleItem.secondHalfPower;
+
+    const fetchedAtKyiv = new Intl.DateTimeFormat('uk-UA', {
+      timeZone: 'Europe/Kyiv',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).format(now);
 
     return res.json({
       success: true,
-      city: 'с-ще Окни',
-      street: 'вул. Шкільна',
-      houseNum: '11',
+      city: targetCity,
+      street: targetStreet,
+      houseNum: targetHouse,
       updateFact: dateFactFormatted,
-      fetchedAt: new Date().toISOString(),
-      houseData: house11Data,
+      fetchedAt: fetchedAtKyiv,
+      houseData,
       startDate,
       endDate,
       subType,
@@ -3501,18 +5036,35 @@ app.all('/api/utility/dtek-shutdowns', async (_req, res) => {
       queueGroup,
       scheduleDate,
       hourlySchedule,
+      dailySchedules,
+      tomorrowSchedule: tomorrowScheduleObj,
+      isPowerAvailableNow,
+      currentKyivHour: currentKyivHour + 1,
+      kyivTime: kyivFormattedTime,
       raw: jsonResponse,
     });
   } catch (err: unknown) {
     console.error('Error fetching DTEK shutdown data:', err);
     const msg = err instanceof Error ? err.message : String(err);
+    const now = new Date();
+    const fetchedAtKyiv = new Intl.DateTimeFormat('uk-UA', {
+      timeZone: 'Europe/Kyiv',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).format(now);
+
     return res.json({
       success: false,
       error: msg,
-      city: 'с-ще Окни',
-      street: 'вул. Шкільна',
-      houseNum: '11',
-      fetchedAt: new Date().toISOString(),
+      city: (req.query['city'] as string) || 'с-ще Окни',
+      street: (req.query['street'] as string) || 'вул. Шкільна',
+      houseNum: (req.query['houseNum'] as string) || '11',
+      fetchedAt: fetchedAtKyiv,
     });
   }
 });

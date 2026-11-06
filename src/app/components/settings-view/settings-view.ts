@@ -804,79 +804,322 @@ import {
         </div>
       </form>
 
-      <!-- Cloud Database & Cloud SQL Synchronization -->
-      <div class="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-4">
-        <div class="flex items-center justify-between pb-3 border-b border-slate-200">
+      <!-- Cloud Database Selection & Cross-Database Copy -->
+      <div class="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-5">
+        <div class="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-200">
           <div class="flex items-center gap-3">
-            <div class="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+            <div class="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center border border-amber-200/60">
               <mat-icon>storage</mat-icon>
             </div>
             <div>
-              <div class="flex items-center gap-2">
-                <h3 class="text-base font-bold text-slate-900">Хмарна база даних {{ dbStatus()?.provider || 'Google Cloud SQL (PostgreSQL)' }}</h3>
-                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-2xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse"></span>
-                  {{ dbStatus()?.connected !== false ? 'Підключено' : 'Помилка підключення' }}
-                </span>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-base font-bold text-slate-900">Керування базами даних: Cloud SQL та Зовнішня PostgreSQL</h3>
+                @if (dbStatus()?.connected !== false) {
+                  <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-2xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse"></span>
+                    Підключено ({{ dbStatus()?.activeMode === 'cloudsql' ? 'Cloud SQL' : 'Зовнішня PostgreSQL' }})
+                  </span>
+                } @else {
+                  <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-2xs font-bold bg-red-100 text-red-800 border border-red-300">
+                    <span class="w-1.5 h-1.5 rounded-full bg-red-600"></span>
+                    Помилка підключення
+                  </span>
+                }
               </div>
-              <p class="text-xs text-slate-500">Автоматичне збереження та синхронізація клієнтів, оплат і білінгу в хмарі PostgreSQL</p>
+              <p class="text-xs text-slate-500">Виберіть активну базу даних для роботи застосунку або скопіюйте всі таблиці з однієї бази в іншу</p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            (click)="refreshDbStatus()"
+            [disabled]="isSyncingCloud() || isSwitchingDb() || isCopyingDb()"
+            class="px-3 py-2 bg-slate-100 hover:bg-slate-200 disabled:opacity-50 text-slate-700 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <mat-icon class="text-base leading-none">refresh</mat-icon>
+            <span>Оновити стан баз</span>
+          </button>
+        </div>
+
+        <!-- Database Selector Cards (Cloud SQL vs External PostgreSQL) -->
+        <div class="space-y-2.5">
+          <div class="flex items-center justify-between">
+            <h4 class="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+              <mat-icon class="text-base text-purple-600">dns</mat-icon>
+              <span>1. Вибір активної бази даних</span>
+            </h4>
+            <span class="text-2xs text-slate-500">Вибір зберігається автоматично</span>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <!-- Option 1: External PostgreSQL (Aiven Cloud) -->
+            <div
+              class="p-4 rounded-xl border-2 transition-all space-y-3 flex flex-col justify-between"
+              [class.border-emerald-600]="activeDbMode() === 'external'"
+              [class.bg-emerald-50/30]="activeDbMode() === 'external'"
+              [class.border-slate-200]="activeDbMode() !== 'external'"
+              [class.bg-slate-50/60]="activeDbMode() !== 'external'"
+            >
+              <div class="space-y-2.5">
+                <div class="flex items-start justify-between gap-2">
+                  <div class="flex items-center gap-2">
+                    <mat-icon class="text-emerald-600">public</mat-icon>
+                    <div>
+                      <div class="text-xs sm:text-sm font-bold text-slate-900">Зовнішня PostgreSQL (Aiven Cloud)</div>
+                      <div class="text-2xs text-slate-500 font-mono break-all">
+                        {{ dbStatus()?.instances?.external?.host || 'internet-shop-4-alex-kondr.e.aivencloud.com:13316' }}
+                      </div>
+                    </div>
+                  </div>
+                  @if (activeDbMode() === 'external') {
+                    <span class="px-2.5 py-0.5 rounded-md text-2xs font-bold uppercase bg-emerald-600 text-white shrink-0">
+                      Активна
+                    </span>
+                  } @else {
+                    <span class="px-2 py-0.5 rounded-md text-2xs font-semibold bg-slate-200 text-slate-700 shrink-0">
+                      Резервна
+                    </span>
+                  }
+                </div>
+
+                <div class="grid grid-cols-2 gap-2 pt-1">
+                  <div class="p-2 rounded-lg bg-white border border-slate-200/80">
+                    <span class="text-3xs font-bold uppercase text-slate-400 block">База / Стан</span>
+                    <span class="text-xs font-mono font-bold text-slate-800">
+                      {{ dbStatus()?.instances?.external?.database || 'iptv' }}
+                      <span
+                        class="ml-1 text-2xs font-sans"
+                        [class.text-emerald-600]="dbStatus()?.instances?.external?.connected !== false"
+                        [class.text-red-600]="dbStatus()?.instances?.external?.connected === false"
+                      >
+                        ({{ dbStatus()?.instances?.external?.connected !== false ? 'онлайн' : 'офлайн' }})
+                      </span>
+                    </span>
+                  </div>
+                  <div class="p-2 rounded-lg bg-white border border-slate-200/80">
+                    <span class="text-3xs font-bold uppercase text-slate-400 block">Записів у БД</span>
+                    <span class="text-xs font-bold text-slate-800">
+                      {{ dbStatus()?.instances?.external?.counts?.clients ?? clients().length }} кл. /
+                      {{ dbStatus()?.instances?.external?.counts?.payments ?? payments().length }} опл. /
+                      {{ dbStatus()?.instances?.external?.counts?.utilityReadings ?? 0 }} пок.
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="pt-2">
+                <button
+                  id="btn-select-external-db"
+                  type="button"
+                  (click)="selectDatabaseMode('external')"
+                  [disabled]="activeDbMode() === 'external' || isSwitchingDb() || isCopyingDb() || !canEdit()"
+                  class="w-full px-3.5 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                  [class.bg-emerald-600]="activeDbMode() === 'external'"
+                  [class.text-white]="activeDbMode() === 'external'"
+                  [class.bg-slate-900]="activeDbMode() !== 'external'"
+                  [class.hover:bg-slate-800]="activeDbMode() !== 'external'"
+                  [class.text-white]="activeDbMode() !== 'external'"
+                  [class.disabled:opacity-60]="true"
+                >
+                  <mat-icon class="text-base leading-none">
+                    {{ activeDbMode() === 'external' ? 'check_circle' : 'swap_horiz' }}
+                  </mat-icon>
+                  <span>
+                    {{
+                      activeDbMode() === 'external'
+                        ? 'Використовується зовнішня PostgreSQL'
+                        : isSwitchingDb()
+                          ? 'Перемикання...'
+                          : 'Перемкнути на Зовнішню PostgreSQL'
+                    }}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Option 2: Google Cloud SQL -->
+            <div
+              class="p-4 rounded-xl border-2 transition-all space-y-3 flex flex-col justify-between"
+              [class.border-emerald-600]="activeDbMode() === 'cloudsql'"
+              [class.bg-emerald-50/30]="activeDbMode() === 'cloudsql'"
+              [class.border-slate-200]="activeDbMode() !== 'cloudsql'"
+              [class.bg-slate-50/60]="activeDbMode() !== 'cloudsql'"
+            >
+              <div class="space-y-2.5">
+                <div class="flex items-start justify-between gap-2">
+                  <div class="flex items-center gap-2">
+                    <mat-icon class="text-blue-600">cloud_queue</mat-icon>
+                    <div>
+                      <div class="text-xs sm:text-sm font-bold text-slate-900">Google Cloud SQL (PostgreSQL)</div>
+                      <div class="text-2xs text-slate-500 font-mono break-all">
+                        {{ dbStatus()?.instances?.cloudsql?.host || 'Cloud SQL Instance' }}
+                      </div>
+                    </div>
+                  </div>
+                  @if (activeDbMode() === 'cloudsql') {
+                    <span class="px-2.5 py-0.5 rounded-md text-2xs font-bold uppercase bg-emerald-600 text-white shrink-0">
+                      Активна
+                    </span>
+                  } @else {
+                    <span class="px-2 py-0.5 rounded-md text-2xs font-semibold bg-slate-200 text-slate-700 shrink-0">
+                      Резервна
+                    </span>
+                  }
+                </div>
+
+                <div class="grid grid-cols-2 gap-2 pt-1">
+                  <div class="p-2 rounded-lg bg-white border border-slate-200/80">
+                    <span class="text-3xs font-bold uppercase text-slate-400 block">База / Стан</span>
+                    <span class="text-xs font-mono font-bold text-slate-800">
+                      {{ dbStatus()?.instances?.cloudsql?.database || 'cloud_sql_development_database' }}
+                      <span
+                        class="ml-1 text-2xs font-sans"
+                        [class.text-emerald-600]="dbStatus()?.instances?.cloudsql?.connected"
+                        [class.text-red-600]="!dbStatus()?.instances?.cloudsql?.connected"
+                      >
+                        ({{ dbStatus()?.instances?.cloudsql?.connected ? 'онлайн' : 'офлайн' }})
+                      </span>
+                    </span>
+                  </div>
+                  <div class="p-2 rounded-lg bg-white border border-slate-200/80">
+                    <span class="text-3xs font-bold uppercase text-slate-400 block">Записів у БД</span>
+                    <span class="text-xs font-bold text-slate-800">
+                      {{ dbStatus()?.instances?.cloudsql?.counts?.clients ?? 0 }} кл. /
+                      {{ dbStatus()?.instances?.cloudsql?.counts?.payments ?? 0 }} опл. /
+                      {{ dbStatus()?.instances?.cloudsql?.counts?.utilityReadings ?? 0 }} пок.
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="pt-2">
+                <button
+                  id="btn-select-cloudsql-db"
+                  type="button"
+                  (click)="selectDatabaseMode('cloudsql')"
+                  [disabled]="activeDbMode() === 'cloudsql' || isSwitchingDb() || isCopyingDb() || !canEdit()"
+                  class="w-full px-3.5 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                  [class.bg-emerald-600]="activeDbMode() === 'cloudsql'"
+                  [class.text-white]="activeDbMode() === 'cloudsql'"
+                  [class.bg-slate-900]="activeDbMode() !== 'cloudsql'"
+                  [class.hover:bg-slate-800]="activeDbMode() !== 'cloudsql'"
+                  [class.text-white]="activeDbMode() !== 'cloudsql'"
+                  [class.disabled:opacity-60]="true"
+                >
+                  <mat-icon class="text-base leading-none">
+                    {{ activeDbMode() === 'cloudsql' ? 'check_circle' : 'swap_horiz' }}
+                  </mat-icon>
+                  <span>
+                    {{
+                      activeDbMode() === 'cloudsql'
+                        ? 'Використовується Google Cloud SQL'
+                        : isSwitchingDb()
+                          ? 'Перемикання...'
+                          : 'Перемкнути на Google Cloud SQL'
+                    }}
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
 
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <div class="p-3 bg-slate-50 border border-slate-200 rounded-xl">
-            <span class="text-2xs font-bold text-slate-400 uppercase tracking-wider block">Тип / Провайдер БД</span>
-            <span class="text-xs font-mono font-semibold text-slate-800 break-all">{{ dbStatus()?.provider || 'Google Cloud SQL (PostgreSQL)' }}</span>
+        <!-- Cross-Database Full Copy Section -->
+        <div class="p-4 rounded-xl bg-amber-50/60 border border-amber-200/90 space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h4 class="text-xs font-bold uppercase tracking-wider text-amber-900 flex items-center gap-1.5">
+                <mat-icon class="text-base text-amber-700">content_copy</mat-icon>
+                <span>2. Повне копіювання всіх таблиць між базами даних</span>
+              </h4>
+              <p class="text-2xs text-amber-800/90 mt-0.5">
+                Копіює всі 11 таблиць (клієнтів, оплати, провайдерів, комунальні рахунки, показники, бюджет, тарифи та налаштування) з однієї бази в іншу зі створенням таблиць.
+              </p>
+            </div>
           </div>
-          <div class="p-3 bg-slate-50 border border-slate-200 rounded-xl">
-            <span class="text-2xs font-bold text-slate-400 uppercase tracking-wider block">Database Name / ID</span>
-            <span class="text-xs font-mono font-semibold text-slate-800 truncate block" [title]="dbStatus()?.databaseId || 'postgres'">
-              {{ dbStatus()?.databaseId || 'postgres' }}
-            </span>
+
+          <div class="flex flex-wrap items-center gap-2.5">
+            <button
+              id="btn-copy-active-to-other"
+              type="button"
+              (click)="copyActiveToOtherDb()"
+              [disabled]="isCopyingDb() || isSwitchingDb() || !canEdit()"
+              class="px-4 py-2.5 bg-purple-700 hover:bg-purple-800 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer shadow-xs"
+            >
+              <mat-icon [class.animate-spin]="isCopyingDb()" class="text-base leading-none">sync_alt</mat-icon>
+              <span>
+                {{
+                  isCopyingDb()
+                    ? 'Копіювання всіх таблиць...'
+                    : activeDbMode() === 'external'
+                      ? 'Скопіювати все з активної бази (Зовнішня PostgreSQL ➔ Cloud SQL)'
+                      : 'Скопіювати все з активної бази (Cloud SQL ➔ Зовнішня PostgreSQL)'
+                }}
+              </span>
+            </button>
+
+            <button
+              id="btn-copy-cloudsql-to-external"
+              type="button"
+              (click)="copyDirection('cloudsql', 'external')"
+              [disabled]="isCopyingDb() || isSwitchingDb() || !canEdit()"
+              class="px-3.5 py-2 bg-white hover:bg-amber-100/70 disabled:opacity-50 text-slate-800 border border-amber-300 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <mat-icon class="text-base text-blue-600 leading-none">east</mat-icon>
+              <span>Cloud SQL ➔ Зовнішня PostgreSQL</span>
+            </button>
+
+            <button
+              id="btn-copy-external-to-cloudsql"
+              type="button"
+              (click)="copyDirection('external', 'cloudsql')"
+              [disabled]="isCopyingDb() || isSwitchingDb() || !canEdit()"
+              class="px-3.5 py-2 bg-white hover:bg-amber-100/70 disabled:opacity-50 text-slate-800 border border-amber-300 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <mat-icon class="text-base text-emerald-600 leading-none">west</mat-icon>
+              <span>Зовнішня PostgreSQL ➔ Cloud SQL</span>
+            </button>
           </div>
-          <div class="p-3 bg-slate-50 border border-slate-200 rounded-xl">
-            <span class="text-2xs font-bold text-slate-400 uppercase tracking-wider block">Остання синхронізація</span>
-            <span class="text-xs font-semibold text-emerald-700">
-              {{ dbStatus()?.lastSync ? (dbStatus()?.lastSync | slice:0:19) : 'В режимі реального часу' }}
-            </span>
-          </div>
-          <div class="p-3 bg-slate-50 border border-slate-200 rounded-xl">
-            <span class="text-2xs font-bold text-slate-400 uppercase tracking-wider block">Записів у базі</span>
-            <span class="text-xs font-bold text-slate-900">
-              {{ clients().length }} клієнтів, {{ payments().length }} оплат
-            </span>
-          </div>
+
+          @if (lastCopyResult(); as copyRes) {
+            <div class="p-3 rounded-lg bg-white border border-emerald-200 text-xs text-slate-700 space-y-1">
+              <div class="font-bold text-emerald-800 flex items-center gap-1.5">
+                <mat-icon class="text-base text-emerald-600">task_alt</mat-icon>
+                <span>Скопійовано з «{{ copyRes.sourceProvider }}» у «{{ copyRes.targetProvider }}» (всього: {{ copyRes.totalCopied }} записів)</span>
+              </div>
+              <div class="text-2xs text-slate-600 flex flex-wrap gap-x-3 gap-y-1">
+                <span>Клієнтів: <b>{{ copyRes.counts.clients }}</b></span>
+                <span>Оплат: <b>{{ copyRes.counts.payments }}</b></span>
+                <span>Провайдерів: <b>{{ copyRes.counts.providerAccounts }}</b></span>
+                <span>Депозитів: <b>{{ copyRes.counts.providerDeposits }}</b></span>
+                <span>Комун. рахунків: <b>{{ copyRes.counts.utilityAccounts }}</b></span>
+                <span>Показників: <b>{{ copyRes.counts.utilityReadings }}</b></span>
+                <span>Бюджетних записів: <b>{{ copyRes.counts.customLedgerEntries }}</b></span>
+                <span>Налаштувань: <b>{{ copyRes.counts.settings }}</b></span>
+              </div>
+            </div>
+          }
         </div>
 
-        <div class="flex flex-wrap items-center gap-3 pt-2">
+        <div class="flex flex-wrap items-center gap-3 pt-1">
           <button
             type="button"
             (click)="syncWithCloud()"
-            [disabled]="isSyncingCloud()"
+            [disabled]="isSyncingCloud() || isSwitchingDb() || isCopyingDb()"
             class="px-4 py-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer shadow-xs"
           >
             <mat-icon [class.animate-spin]="isSyncingCloud()" class="text-base leading-none">sync</mat-icon>
-            <span>{{ isSyncingCloud() ? 'Синхронізація...' : 'Синхронізувати з хмарною БД' }}</span>
+            <span>{{ isSyncingCloud() ? 'Синхронізація...' : 'Перечитати дані з активної БД' }}</span>
           </button>
 
           <button
             type="button"
             (click)="pushAllToCloud()"
-            [disabled]="isSyncingCloud()"
+            [disabled]="isSyncingCloud() || isSwitchingDb() || isCopyingDb()"
             class="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer shadow-xs"
           >
             <mat-icon class="text-base leading-none">cloud_upload</mat-icon>
-            <span>Зберегти всю поточну базу у хмару</span>
-          </button>
-
-          <button
-            type="button"
-            (click)="refreshDbStatus()"
-            class="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
-          >
-            <mat-icon class="text-base leading-none">refresh</mat-icon>
-            <span>Оновити статус</span>
+            <span>Зберегти поточний стан в активну БД</span>
           </button>
         </div>
       </div>
@@ -935,7 +1178,13 @@ export class SettingsView implements OnInit {
   readonly isSaving = signal(false);
   readonly canEdit = this.dataService.canEdit;
   readonly isSyncingCloud = this.dataService.isSyncingCloud;
+  readonly isSwitchingDb = this.dataService.isSwitchingDb;
+  readonly isCopyingDb = this.dataService.isCopyingDb;
+  readonly lastCopyResult = this.dataService.lastCopyResult;
   readonly dbStatus = this.dataService.dbStatus;
+  readonly activeDbMode = computed<'cloudsql' | 'external'>(
+    () => this.dbStatus()?.activeMode || 'external'
+  );
   readonly clients = this.dataService.clients;
   readonly payments = this.dataService.payments;
   readonly electricityAccounts = this.dataService.electricityAccounts;
@@ -1165,21 +1414,32 @@ export class SettingsView implements OnInit {
       const waterValidFrom = val.waterValidFrom || currentTariffs?.water?.validFrom || '2026-01-01';
       const waterValidTo = val.waterValidTo || '';
 
-      const waterHist = [...(currentTariffs?.water?.history || [])];
-      const matchWater = waterHist.find((h) => h.validFrom === waterValidFrom);
-      if (matchWater) {
-        matchWater.price = waterPrice;
-        matchWater.monthlyFee = waterMonthlyFee;
-        matchWater.validTo = waterValidTo;
-      } else {
-        waterHist.push({
-          id: `wh_${Date.now()}`,
+      let waterHist = [...(currentTariffs?.water?.history || [])];
+      if (waterHist.length === 0 || (waterHist.length === 1 && waterHist[0].id === 'wh_1')) {
+        waterHist = [{
+          id: 'wh_1',
           price: waterPrice,
           monthlyFee: waterMonthlyFee,
           validFrom: waterValidFrom,
           validTo: waterValidTo,
           note: 'Тариф на воду',
-        });
+        }];
+      } else {
+        const matchWater = waterHist.find((h) => h.validFrom === waterValidFrom);
+        if (matchWater) {
+          matchWater.price = waterPrice;
+          matchWater.monthlyFee = waterMonthlyFee;
+          matchWater.validTo = waterValidTo;
+        } else {
+          waterHist.push({
+            id: `wh_${Date.now()}`,
+            price: waterPrice,
+            monthlyFee: waterMonthlyFee,
+            validFrom: waterValidFrom,
+            validTo: waterValidTo,
+            note: 'Тариф на воду',
+          });
+        }
       }
       waterHist.sort((a, b) => b.validFrom.localeCompare(a.validFrom));
 
@@ -1315,6 +1575,7 @@ export class SettingsView implements OnInit {
         telegramSenderName: val.telegramSenderName?.trim() || 'IPTV Підтримка',
         utilityTariffsSettings: tariffs,
       });
+      this.patchFormValues(this.dataService.settings());
       this.form.markAsPristine();
     } finally {
       this.isSaving.set(false);
@@ -1342,6 +1603,21 @@ export class SettingsView implements OnInit {
 
   async refreshDbStatus(): Promise<void> {
     await this.dataService.fetchDbStatus();
+  }
+
+  async selectDatabaseMode(mode: 'cloudsql' | 'external'): Promise<void> {
+    if (this.activeDbMode() === mode) return;
+    await this.dataService.switchDatabaseMode(mode);
+  }
+
+  async copyActiveToOtherDb(): Promise<void> {
+    const source = this.activeDbMode();
+    const target = source === 'cloudsql' ? 'external' : 'cloudsql';
+    await this.dataService.copyBetweenDatabases(source, target);
+  }
+
+  async copyDirection(source: 'cloudsql' | 'external', target: 'cloudsql' | 'external'): Promise<void> {
+    await this.dataService.copyBetweenDatabases(source, target);
   }
 
   importData(event: Event): void {

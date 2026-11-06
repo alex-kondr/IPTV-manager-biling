@@ -2,8 +2,10 @@ import {
   ChangeDetectionStrategy,
   Component,
   computed,
+  effect,
   inject,
   signal,
+  untracked,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
@@ -99,10 +101,10 @@ import {
       <!-- DTEK Shutdown Schedule Card -->
       <div class="p-5 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-4">
         <!-- Top header row -->
-        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+        <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-100">
           <div class="flex items-center gap-3">
             <div
-              class="w-10 h-10 rounded-xl flex items-center justify-center font-bold text-white shadow-2xs transition-colors"
+              class="w-10 h-10 rounded-xl flex items-center justify-center font-bold text-white shadow-2xs transition-colors shrink-0"
               [class.bg-emerald-600]="dtekStatus()?.isPowerAvailableNow"
               [class.bg-rose-600]="!dtekStatus()?.isPowerAvailableNow"
             >
@@ -111,34 +113,224 @@ import {
             <div>
               <div class="flex items-center gap-2 flex-wrap">
                 <h3 class="text-sm sm:text-base font-bold text-slate-900">Графік відключень світла ДТЕК</h3>
-                <span class="px-2 py-0.5 rounded-full text-3xs font-semibold bg-amber-50 text-amber-900 border border-amber-200 flex items-center gap-1">
-                  <mat-icon class="text-3xs text-amber-600">location_on</mat-icon>
-                  <span>с-ще Окни, вул. Шкільна, буд. 11</span>
+                <span class="px-2.5 py-1 rounded-full text-3xs font-semibold bg-amber-50 text-amber-900 border border-amber-200 flex items-center gap-1 shadow-2xs">
+                  <mat-icon class="text-3xs text-amber-600 leading-none">location_on</mat-icon>
+                  <span class="font-medium">{{ activeDtekCity() }}, {{ activeDtekStreet() }}, буд. {{ activeDtekHouse() }}</span>
                 </span>
                 @if (dtekStatus()?.queueGroup; as qGroup) {
                   <span class="px-2.5 py-0.5 rounded-full text-3xs font-bold uppercase tracking-wider bg-indigo-100 text-indigo-800 border border-indigo-200 flex items-center gap-1">
-                    <mat-icon class="text-3xs">view_comfy</mat-icon>
+                    <mat-icon class="text-3xs leading-none">view_comfy</mat-icon>
                     <span>Черга {{ qGroup }}</span>
                   </span>
                 }
               </div>
-              <p class="text-xs text-slate-500 mt-0.5">
-                Автоматична перевірка фактичних та планових відключень ДТЕК Одеські електромережі
-              </p>
+              <div class="flex items-center gap-2 flex-wrap text-xs text-slate-500 mt-0.5">
+                <span>ДТЕК Одеські електромережі</span>
+                <span>•</span>
+                <span class="text-indigo-600 font-medium">Час за Києвом: {{ dtekInfo()?.kyivTime || '—' }}</span>
+                @if (dtekInfo()?.fetchedAt; as fTime) {
+                  <span>•</span>
+                  <span class="text-slate-400">Оновлено: {{ fTime }}</span>
+                }
+              </div>
             </div>
           </div>
 
-          <button
-            type="button"
-            (click)="refreshDtekSchedule()"
-            [disabled]="isDtekLoading()"
-            class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800 transition-colors flex items-center gap-1.5 shadow-2xs disabled:opacity-50 cursor-pointer shrink-0 self-start sm:self-auto"
-            title="Оновити графік з сайту ДТЕК"
-          >
-            <mat-icon class="text-base" [class.animate-spin]="isDtekLoading()">sync</mat-icon>
-            <span>{{ isDtekLoading() ? 'Оновлення...' : 'Оновити графік' }}</span>
-          </button>
+          <div class="flex items-center gap-2 shrink-0 self-start lg:self-auto flex-wrap">
+            <button
+              type="button"
+              (click)="toggleCardAddress()"
+              class="px-3 py-2 rounded-xl text-xs font-semibold border transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
+              [class.bg-amber-100]="isCardAddressOpen()"
+              [class.border-amber-300]="isCardAddressOpen()"
+              [class.text-amber-950]="isCardAddressOpen()"
+              [class.bg-slate-50]="!isCardAddressOpen()"
+              [class.border-slate-200]="!isCardAddressOpen()"
+              [class.text-slate-700]="!isCardAddressOpen()"
+              [class.hover:bg-slate-100]="!isCardAddressOpen()"
+              title="Змінити або уточнити населений пункт, вулицю та будинок"
+            >
+              <mat-icon class="text-base text-amber-600 leading-none">edit_location_alt</mat-icon>
+              <span>{{ isCardAddressOpen() ? 'Згорнути пошук' : 'Змінити адресу' }}</span>
+            </button>
+
+            <button
+              type="button"
+              (click)="refreshDtekSchedule()"
+              [disabled]="isDtekLoading()"
+              class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white transition-colors flex items-center gap-1.5 shadow-2xs disabled:opacity-50 cursor-pointer"
+              title="Оновити графік з сайту ДТЕК"
+            >
+              <mat-icon class="text-base leading-none" [class.animate-spin]="isDtekLoading()">sync</mat-icon>
+              <span>{{ isDtekLoading() ? 'Оновлення...' : 'Оновити графік' }}</span>
+            </button>
+          </div>
         </div>
+
+        <!-- Address Search & Autocomplete Bar -->
+        @if (isCardAddressOpen()) {
+          <div class="p-4 rounded-xl bg-slate-50/90 border border-slate-200 space-y-3">
+            <div class="flex items-center justify-between flex-wrap gap-2">
+              <span class="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                <mat-icon class="text-amber-600 text-sm leading-none">search</mat-icon>
+                <span>Підказки адрес ДТЕК (почніть вводити перші літери)</span>
+              </span>
+              @if (isDtekCatalogLoading()) {
+                <span class="text-3xs text-amber-700 flex items-center gap-1">
+                  <span class="w-2.5 h-2.5 border border-amber-600 border-t-transparent rounded-full animate-spin"></span>
+                  Завантаження каталогу...
+                </span>
+              }
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-12 gap-2.5">
+              <!-- Settlement Input with Autocomplete -->
+              <div class="md:col-span-5 relative">
+                <label for="card-city-input" class="block text-3xs font-semibold text-slate-600 mb-1">
+                  Населений пункт (Одеська обл.) *
+                </label>
+                <div class="relative">
+                  <input
+                    id="card-city-input"
+                    type="text"
+                    [value]="cardCityQuery()"
+                    (input)="onCardCityInput($any($event.target).value)"
+                    (focus)="showCardCitySuggestions.set(true)"
+                    placeholder="напр. Окни або Одеса"
+                    autocomplete="off"
+                    class="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-medium text-slate-900 focus:outline-none focus:border-amber-500"
+                  />
+                  @if (cardCityQuery()) {
+                    <button
+                      type="button"
+                      (click)="onCardCityInput(''); showCardCitySuggestions.set(true)"
+                      class="absolute right-2 top-2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      <mat-icon class="text-xs leading-none">close</mat-icon>
+                    </button>
+                  }
+                </div>
+
+                <!-- Suggestions Dropdown -->
+                @if (showCardCitySuggestions() && filteredCardCities().length > 0) {
+                  <button
+                    type="button"
+                    aria-label="Закрити список міст"
+                    class="fixed inset-0 z-20 cursor-default bg-transparent border-0"
+                    (click)="showCardCitySuggestions.set(false)"
+                  ></button>
+                  <div class="absolute z-30 left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-56 overflow-y-auto divide-y divide-slate-100">
+                    @for (c of filteredCardCities(); track c) {
+                      <button
+                        type="button"
+                        (click)="selectCardCity(c)"
+                        class="w-full px-3 py-2 text-left text-xs text-slate-800 hover:bg-amber-50 flex items-center justify-between cursor-pointer transition-colors"
+                      >
+                        <span class="font-medium">{{ c }}</span>
+                        <mat-icon class="text-3xs text-slate-400 leading-none">chevron_right</mat-icon>
+                      </button>
+                    }
+                  </div>
+                }
+              </div>
+
+              <!-- Street Input with Autocomplete -->
+              <div class="md:col-span-4 relative">
+                <label for="card-street-input" class="block text-3xs font-semibold text-slate-600 mb-1">
+                  Вулиця (підказка за першими літерами) *
+                </label>
+                <div class="relative">
+                  <input
+                    id="card-street-input"
+                    type="text"
+                    [value]="cardStreetQuery()"
+                    (input)="onCardStreetInput($any($event.target).value)"
+                    (focus)="showCardStreetSuggestions.set(true)"
+                    placeholder="Почніть вводити вулицю..."
+                    autocomplete="off"
+                    class="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-medium text-slate-900 focus:outline-none focus:border-amber-500"
+                  />
+                  @if (cardStreetQuery()) {
+                    <button
+                      type="button"
+                      (click)="onCardStreetInput(''); showCardStreetSuggestions.set(true)"
+                      class="absolute right-2 top-2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      <mat-icon class="text-xs leading-none">close</mat-icon>
+                    </button>
+                  }
+                </div>
+
+                <!-- Suggestions Dropdown -->
+                @if (showCardStreetSuggestions() && filteredCardStreets().length > 0) {
+                  <button
+                    type="button"
+                    aria-label="Закрити список вулиць"
+                    class="fixed inset-0 z-20 cursor-default bg-transparent border-0"
+                    (click)="showCardStreetSuggestions.set(false)"
+                  ></button>
+                  <div class="absolute z-30 left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-56 overflow-y-auto divide-y divide-slate-100">
+                    @for (s of filteredCardStreets(); track s) {
+                      <button
+                        type="button"
+                        (click)="selectCardStreet(s)"
+                        class="w-full px-3 py-2 text-left text-xs text-slate-800 hover:bg-amber-50 flex items-center justify-between cursor-pointer transition-colors"
+                      >
+                        <span class="font-medium">{{ s }}</span>
+                        <mat-icon class="text-3xs text-slate-400 leading-none">chevron_right</mat-icon>
+                      </button>
+                    }
+                  </div>
+                }
+              </div>
+
+              <!-- House Number Input & Button -->
+              <div class="md:col-span-3">
+                <label for="card-house-input" class="block text-3xs font-semibold text-slate-600 mb-1">
+                  Номер будинку *
+                </label>
+                <div class="flex items-center gap-1.5">
+                  <input
+                    id="card-house-input"
+                    type="text"
+                    [value]="cardHouseInput()"
+                    (input)="cardHouseInput.set($any($event.target).value)"
+                    placeholder="11"
+                    class="w-full px-3 py-2 bg-white border border-slate-300 rounded-lg text-xs font-mono font-medium text-slate-900 focus:outline-none focus:border-amber-500"
+                  />
+                  <button
+                    type="button"
+                    (click)="applyCardAddress()"
+                    [disabled]="isDtekLoading()"
+                    class="px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer shrink-0 disabled:opacity-50 shadow-2xs"
+                    title="Завантажити графік для цієї адреси"
+                  >
+                    Перевірити
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Actions footer row inside search bar -->
+            <div class="flex items-center justify-between pt-2 border-t border-slate-200 text-3xs text-slate-500 flex-wrap gap-2">
+              <span class="flex items-center gap-1">
+                <mat-icon class="text-xs text-slate-400 leading-none">info</mat-icon>
+                Запит формується з поточною датою та часом за Києвом
+              </span>
+              @if (currentAccount(); as acc) {
+                <button
+                  type="button"
+                  (click)="saveCardAddressToCurrentAccount()"
+                  class="text-indigo-600 hover:text-indigo-800 font-bold flex items-center gap-1 cursor-pointer"
+                  title="Зберегти обрану адресу в поточний особовий рахунок електроенергії"
+                >
+                  <mat-icon class="text-xs leading-none">save</mat-icon>
+                  <span>Зберегти цю адресу для кабінету «{{ acc.name }}»</span>
+                </button>
+              }
+            </div>
+          </div>
+        }
 
         @if (isDtekLoading() && !dtekInfo()) {
           <div class="py-6 text-center text-xs text-slate-500 flex items-center justify-center gap-2">
@@ -225,32 +417,55 @@ import {
 
             <!-- 24h Schedule Summary Stats -->
             <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
-              <div class="flex items-center justify-between gap-1">
-                <span class="text-3xs font-semibold uppercase tracking-wider text-slate-500 block">Баланс доби (24 год)</span>
+              <div class="flex items-center justify-between gap-1 flex-wrap">
+                <span class="text-3xs font-semibold uppercase tracking-wider text-slate-500 block">
+                  {{ status.tomorrowSchedule ? 'Баланс (Поточний + Наступний день)' : 'Баланс доби (Поточний день)' }}
+                </span>
                 <span class="text-3xs font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-200/60">
                   {{ status.scheduleDate || 'Сьогодні' }} • {{ status.updateFactKyiv }}
                 </span>
               </div>
               <div class="grid grid-cols-2 gap-2 mt-1">
                 <div class="p-1.5 rounded-lg bg-emerald-100/70 border border-emerald-200 text-center">
-                  <span class="text-3xs text-emerald-800 font-medium block">Зі світлом</span>
+                  <span class="text-3xs text-emerald-800 font-medium block">Сьогодні зі світлом</span>
                   <span class="text-xs font-extrabold text-emerald-950 font-mono">{{ status.totalPowerHours }} год</span>
                 </div>
                 <div class="p-1.5 rounded-lg bg-rose-100/70 border border-rose-200 text-center">
-                  <span class="text-3xs text-rose-800 font-medium block">Відключення</span>
+                  <span class="text-3xs text-rose-800 font-medium block">Сьогодні без світла</span>
                   <span class="text-xs font-extrabold text-rose-950 font-mono">{{ status.totalOutageHours }} год</span>
                 </div>
               </div>
+              @if (status.tomorrowSchedule; as tom) {
+                <div class="mt-1.5 pt-1.5 border-t border-slate-200/80 flex items-center justify-between text-3xs">
+                  <span class="font-bold text-slate-700">Завтра ({{ tom.scheduleDate }}):</span>
+                  <div class="flex items-center gap-2 font-mono font-bold">
+                    <span class="text-emerald-700">+{{ tom.totalPowerHours }} год світла</span>
+                    <span class="text-slate-300">•</span>
+                    <span class="text-rose-700">-{{ tom.totalOutageHours }} год відкл.</span>
+                  </div>
+                </div>
+              }
             </div>
           </div>
 
-          <!-- 24-Hour Schedule Timeline Grid -->
+          <!-- 24-Hour Schedule Timeline Grid: Current Day -->
           @if (status.hourlySchedule.length > 0) {
-            <div class="space-y-2 pt-2 border-t border-slate-100">
+            <div class="space-y-2.5 pt-3 border-t border-slate-100">
               <div class="flex items-center justify-between flex-wrap gap-2">
-                <div class="flex items-center gap-2">
-                  <h4 class="text-xs font-bold text-slate-900">Погодинний графік відключень на добу (24 години)</h4>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="px-2 py-0.5 rounded-md bg-indigo-600 text-white text-3xs font-bold uppercase tracking-wide">
+                    Поточний день
+                  </span>
+                  <h4 class="text-xs sm:text-sm font-bold text-slate-900">
+                    Графік на {{ status.scheduleDate || 'сьогодні' }} (24 години)
+                  </h4>
                   <span class="text-3xs text-slate-500 font-mono">Черга {{ status.queueGroup }}</span>
+                  <span class="text-3xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    Світло: {{ status.totalPowerHours }} год
+                  </span>
+                  <span class="text-3xs font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
+                    Відключення: {{ status.totalOutageHours }} год
+                  </span>
                 </div>
 
                 <!-- Legend -->
@@ -267,10 +482,12 @@ import {
                 </div>
               </div>
 
-              <!-- 24 Hour Slots Grid -->
+              <!-- 24 Hour Slots Grid (Current Day) -->
               <div class="grid grid-cols-6 sm:grid-cols-12 lg:grid-cols-24 gap-1 pt-1">
                 @for (hItem of status.hourlySchedule; track hItem.hour) {
                   @let isCurrentHour = hItem.hour === status.currentHourNumber;
+                  @let isFirstHalfNow = isCurrentHour && status.currentMinute < 30;
+                  @let isSecondHalfNow = isCurrentHour && status.currentMinute >= 30;
                   <div
                     class="p-1 rounded-lg border flex flex-col items-center justify-between text-center transition-all relative group"
                     [class.bg-white]="!isCurrentHour"
@@ -278,15 +495,94 @@ import {
                     [class.ring-2]="isCurrentHour"
                     [class.ring-indigo-500]="isCurrentHour"
                     [class.border-indigo-500]="isCurrentHour"
-                    [class.bg-indigo-50/30]="isCurrentHour"
-                    [title]="'Година ' + hItem.timeLabel + ': ' + hItem.statusLabel"
+                    [class.bg-indigo-50/40]="isCurrentHour"
+                    [title]="'Сьогодні ' + hItem.timeLabel + ': ' + hItem.statusLabel + (isCurrentHour ? ' (Поточна година)' : '')"
                   >
                     <!-- Hour label -->
                     <span
                       class="text-3xs font-mono font-bold leading-none mb-1"
-                      [class.text-indigo-600]="isCurrentHour"
+                      [class.text-indigo-700]="isCurrentHour"
                       [class.text-slate-600]="!isCurrentHour"
                     >
+                      {{ hItem.fromTime.substring(0, 2) }}
+                    </span>
+
+                    <!-- Visual split bar for 30m / 30m -->
+                    <div class="w-full h-5 rounded flex overflow-visible gap-0.5 p-0.5 bg-slate-100">
+                      <!-- First half hour (00-30 min) -->
+                      <div
+                        class="h-full flex-1 rounded-xs transition-all"
+                        [class.bg-emerald-500]="hItem.firstHalfPower"
+                        [class.bg-rose-500]="!hItem.firstHalfPower"
+                        [class.animate-pulse]="isFirstHalfNow"
+                        [class.ring-2]="isFirstHalfNow"
+                        [class.ring-slate-900]="isFirstHalfNow"
+                        [class.scale-110]="isFirstHalfNow"
+                        [class.z-10]="isFirstHalfNow"
+                        [title]="'00-30 хв: ' + (hItem.firstHalfPower ? 'Є світло' : 'Відключено') + (isFirstHalfNow ? ' • ЗАРАЗ' : '')"
+                      ></div>
+                      <!-- Second half hour (30-60 min) -->
+                      <div
+                        class="h-full flex-1 rounded-xs transition-all"
+                        [class.bg-emerald-500]="hItem.secondHalfPower"
+                        [class.bg-rose-500]="!hItem.secondHalfPower"
+                        [class.animate-pulse]="isSecondHalfNow"
+                        [class.ring-2]="isSecondHalfNow"
+                        [class.ring-slate-900]="isSecondHalfNow"
+                        [class.scale-110]="isSecondHalfNow"
+                        [class.z-10]="isSecondHalfNow"
+                        [title]="'30-60 хв: ' + (hItem.secondHalfPower ? 'Є світло' : 'Відключено') + (isSecondHalfNow ? ' • ЗАРАЗ' : '')"
+                      ></div>
+                    </div>
+
+                    <!-- Status indicator text -->
+                    <span
+                      class="text-4xs font-semibold leading-tight mt-1 truncate w-full"
+                      [class.text-emerald-700]="hItem.firstHalfPower && hItem.secondHalfPower"
+                      [class.text-rose-700]="!hItem.firstHalfPower && !hItem.secondHalfPower"
+                      [class.text-amber-700]="hItem.firstHalfPower !== hItem.secondHalfPower"
+                    >
+                      {{ hItem.statusKey === 'yes' ? 'Є' : (hItem.statusKey === 'no' ? 'Ні' : '0.5h') }}
+                    </span>
+                  </div>
+                }
+              </div>
+            </div>
+          }
+
+          <!-- 24-Hour Schedule Timeline Grid: Next Day (if 2nd object exists in DisconSchedule.fact.data) -->
+          @if (status.tomorrowSchedule; as tomorrow) {
+            <div class="space-y-2.5 pt-3 border-t border-slate-200/80">
+              <div class="flex items-center justify-between flex-wrap gap-2">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="px-2 py-0.5 rounded-md bg-amber-500 text-white text-3xs font-bold uppercase tracking-wide">
+                    Наступний день
+                  </span>
+                  <h4 class="text-xs sm:text-sm font-bold text-slate-900">
+                    Графік на завтра, {{ tomorrow.scheduleDate }} (24 години)
+                  </h4>
+                  <span class="text-3xs text-slate-500 font-mono">Черга {{ tomorrow.queueGroup || status.queueGroup }}</span>
+                  <span class="text-3xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    Світло: {{ tomorrow.totalPowerHours }} год
+                  </span>
+                  <span class="text-3xs font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
+                    Відключення: {{ tomorrow.totalOutageHours }} год
+                  </span>
+                </div>
+                <span class="text-3xs text-slate-500 font-medium">
+                  Плановий графік на наступну добу за даними ДТЕК
+                </span>
+              </div>
+
+              <!-- 24 Hour Slots Grid (Next Day) -->
+              <div class="grid grid-cols-6 sm:grid-cols-12 lg:grid-cols-24 gap-1 pt-1">
+                @for (hItem of tomorrow.hourlySchedule; track hItem.hour) {
+                  <div
+                    class="p-1 rounded-lg border border-slate-200 bg-slate-50/50 flex flex-col items-center justify-between text-center transition-all relative group"
+                    [title]="'Завтра (' + tomorrow.scheduleDate + ') ' + hItem.timeLabel + ': ' + hItem.statusLabel"
+                  >
+                    <!-- Hour label -->
+                    <span class="text-3xs font-mono font-bold leading-none mb-1 text-slate-600">
                       {{ hItem.fromTime.substring(0, 2) }}
                     </span>
 
@@ -317,12 +613,6 @@ import {
                     >
                       {{ hItem.statusKey === 'yes' ? 'Є' : (hItem.statusKey === 'no' ? 'Ні' : '0.5h') }}
                     </span>
-
-                    @if (isCurrentHour) {
-                      <span class="absolute -top-2 px-1 rounded bg-indigo-600 text-white text-4xs font-extrabold uppercase shadow-2xs animate-pulse">
-                        Зараз
-                      </span>
-                    }
                   </div>
                 }
               </div>
@@ -541,6 +831,503 @@ import {
                 }
               </div>
             </div>
+          </div>
+
+          <!-- Personal Cabinets Integration: DTEK OEM & OOEK (Encrypted Credentials) -->
+          <div class="pt-3 border-t border-slate-100 space-y-3">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-slate-50/90 p-3.5 rounded-xl border border-slate-200/90">
+              <div class="flex items-start sm:items-center gap-3">
+                <div class="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
+                  <mat-icon class="text-lg">vpn_key</mat-icon>
+                </div>
+                <div>
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <h4 class="text-xs sm:text-sm font-bold text-slate-900">
+                      Особисті кабінети будинку: ДТЕК ОЕМ та ТОВ «ООЕК»
+                    </h4>
+                    <span class="px-2 py-0.5 rounded-full text-3xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 inline-flex items-center gap-1">
+                      <mat-icon class="text-3xs leading-none">enhanced_encryption</mat-icon>
+                      <span>AES-256-GCM шифрування</span>
+                    </span>
+                    @if (acc.ooekBalanceUah !== undefined && acc.ooekBalanceUah !== null) {
+                      <span class="px-2.5 py-0.5 rounded-full text-2xs font-extrabold bg-amber-100 text-amber-900 border border-amber-300">
+                        ООЕК до сплати: {{ acc.ooekBalanceUah.toFixed(2) }} грн
+                      </span>
+                    }
+                  </div>
+                  <p class="text-2xs text-slate-500 mt-0.5">
+                    Безпечне збереження облікових даних для <span class="font-mono text-slate-700">auth.my.dtek-oem.com.ua</span> (показники) та <span class="font-mono text-slate-700">personal.ooek.od.ua</span> (нарахована сума до сплати)
+                  </p>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-2 shrink-0 flex-wrap">
+                <button
+                  type="button"
+                  (click)="syncOoekForCurrentAccount()"
+                  [disabled]="isSyncingOoek()"
+                  class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-2xs"
+                  title="Підключитися до personal.ooek.od.ua/home/abonbook/cards та оновити нараховану суму, історію оплат і споживання по особовому рахунку"
+                >
+                  <mat-icon class="text-sm leading-none" [class.animate-spin]="isSyncingOoek()">receipt_long</mat-icon>
+                  <span>{{ isSyncingOoek() ? 'Запит ООЕК...' : 'Оновити з ООЕК' }}</span>
+                </button>
+
+                <button
+                  type="button"
+                  (click)="toggleCabinetPanel()"
+                  class="px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors flex items-center gap-1.5 cursor-pointer"
+                  [class.bg-slate-900]="isCabinetPanelOpen()"
+                  [class.text-white]="isCabinetPanelOpen()"
+                  [class.border-slate-900]="isCabinetPanelOpen()"
+                  [class.bg-white]="!isCabinetPanelOpen()"
+                  [class.text-slate-700]="!isCabinetPanelOpen()"
+                  [class.border-slate-300]="!isCabinetPanelOpen()"
+                >
+                  <mat-icon class="text-sm leading-none">{{ isCabinetPanelOpen() ? 'expand_less' : 'settings_suggest' }}</mat-icon>
+                  <span>{{ isCabinetPanelOpen() ? 'Згорнути кабінети' : 'Логіни та синхронізація' }}</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Collapsible OOEK Payment & Electricity Consumption History (from https://personal.ooek.od.ua/home/abonbook/cards by Personal Account) -->
+            <div class="rounded-xl border border-emerald-200/90 bg-emerald-50/40 overflow-hidden transition-all">
+              <div
+                class="px-3.5 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-emerald-50/80 transition-colors"
+              >
+                <div class="flex items-center gap-2.5 flex-wrap">
+                  <div class="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                    <mat-icon class="text-sm leading-none">history_edu</mat-icon>
+                  </div>
+                  <div>
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <span class="text-xs font-bold text-slate-900">
+                        Абонкнижка ООЕК: історія оплат та спожитої електроенергії
+                      </span>
+                      <span class="px-2 py-0.5 rounded-md bg-white border border-emerald-300 text-emerald-900 text-3xs font-mono font-bold">
+                        О/р: {{ acc.ooekAccountNumber || acc.accountNumber }}
+                      </span>
+                      <span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-3xs font-bold">
+                        {{ (acc.ooekHistory || []).length }} зап.
+                      </span>
+                    </div>
+                    <p class="text-3xs text-slate-500">
+                      Дані зі сторінки <span class="font-mono text-slate-700">personal.ooek.od.ua/home/abonbook/cards</span> для обраної домівки по особовому рахунку
+                    </p>
+                  </div>
+                </div>
+
+                <div class="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                  @if ((acc.ooekHistory || []).length > 0) {
+                    @let latestH = (acc.ooekHistory || [])[0];
+                    <div class="hidden md:flex items-center gap-2 text-2xs font-mono">
+                      @if (latestH.consumedKwh !== undefined && latestH.consumedKwh !== null) {
+                        <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-900 font-bold">
+                          {{ latestH.consumedKwh }} кВт·год
+                        </span>
+                      }
+                      @if (latestH.paidUah !== undefined && latestH.paidUah !== null) {
+                        <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-900 font-bold">
+                          Оплата: {{ latestH.paidUah.toFixed(2) }} грн
+                        </span>
+                      }
+                    </div>
+                  }
+                  <button
+                    type="button"
+                    (click)="toggleOoekHistoryExpanded()"
+                    class="px-2.5 py-1 rounded-lg bg-white hover:bg-emerald-100/70 text-emerald-900 border border-emerald-300 text-2xs font-bold inline-flex items-center gap-1 cursor-pointer transition-colors"
+                  >
+                    <span>{{ isOoekHistoryExpanded() ? 'Згорнути список' : 'Розгорнути список' }}</span>
+                    <mat-icon class="text-sm leading-none transition-transform duration-200" [class.rotate-180]="isOoekHistoryExpanded()">
+                      expand_more
+                    </mat-icon>
+                  </button>
+                </div>
+              </div>
+
+              @if (isOoekHistoryExpanded()) {
+                <div class="border-t border-emerald-200/80 bg-white p-3.5 space-y-3">
+                  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div class="flex items-center gap-2 flex-wrap text-2xs text-slate-600">
+                      <span>Особовий рахунок для вибірки з <code class="font-mono text-emerald-800">abonbook/cards</code>:</span>
+                      <span class="font-mono font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                        {{ acc.ooekAccountNumber || acc.accountNumber }}
+                      </span>
+                      @if (acc.ooekCabinetLastSync) {
+                        <span class="text-3xs text-slate-400">• Синхр.: {{ formatDate(acc.ooekCabinetLastSync) }}</span>
+                      }
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <a
+                        href="https://personal.ooek.od.ua/home/abonbook/cards"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-2xs font-semibold inline-flex items-center gap-1"
+                      >
+                        <span>Відкрити abonbook/cards</span>
+                        <mat-icon class="text-3xs leading-none">open_in_new</mat-icon>
+                      </a>
+                      <button
+                        type="button"
+                        (click)="syncOoekForCurrentAccount()"
+                        [disabled]="isSyncingOoek()"
+                        class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-2xs font-bold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                      >
+                        <mat-icon class="text-xs leading-none" [class.animate-spin]="isSyncingOoek()">sync</mat-icon>
+                        <span>{{ isSyncingOoek() ? 'Оновлення...' : 'Завантажити з сайту' }}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  @if ((acc.ooekHistory || []).length > 0) {
+                    <div class="overflow-x-auto rounded-xl border border-slate-200">
+                      <table class="w-full text-left border-collapse">
+                        <thead>
+                          <tr class="bg-slate-50 text-slate-500 text-3xs font-extrabold uppercase tracking-wider border-b border-slate-200">
+                            <th class="py-2 px-3">Період / Дата</th>
+                            <th class="py-2 px-3 text-right">Спожито (кВт·год)</th>
+                            <th class="py-2 px-3 text-right">Нараховано (грн)</th>
+                            <th class="py-2 px-3 text-right">Оплачено (грн)</th>
+                            <th class="py-2 px-3 text-right">Сальдо / Борг (грн)</th>
+                          </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100 text-xs">
+                          @for (item of (acc.ooekHistory || []); track item.id) {
+                            <tr class="hover:bg-slate-50/90 transition-colors">
+                              <td class="py-2 px-3 font-semibold text-slate-900 whitespace-nowrap">
+                                <div>{{ item.period }}</div>
+                                @if (item.date && item.date !== item.period) {
+                                  <div class="text-3xs text-slate-400 font-mono">{{ item.date }}</div>
+                                }
+                              </td>
+                              <td class="py-2 px-3 text-right font-mono">
+                                @if (item.consumedKwh !== undefined && item.consumedKwh !== null) {
+                                  <span class="px-2 py-0.5 rounded bg-amber-50 text-amber-900 font-bold border border-amber-200/80">
+                                    {{ item.consumedKwh }} кВт·г
+                                  </span>
+                                } @else {
+                                  <span class="text-slate-300">—</span>
+                                }
+                              </td>
+                              <td class="py-2 px-3 text-right font-mono font-semibold text-slate-700">
+                                @if (item.accruedUah !== undefined && item.accruedUah !== null) {
+                                  {{ item.accruedUah.toFixed(2) }} грн
+                                } @else {
+                                  <span class="text-slate-300">—</span>
+                                }
+                              </td>
+                              <td class="py-2 px-3 text-right font-mono font-bold text-emerald-700">
+                                @if (item.paidUah !== undefined && item.paidUah !== null) {
+                                  +{{ item.paidUah.toFixed(2) }} грн
+                                } @else {
+                                  <span class="text-slate-300">—</span>
+                                }
+                              </td>
+                              <td class="py-2 px-3 text-right font-mono font-semibold">
+                                @if (item.balanceUah !== undefined && item.balanceUah !== null) {
+                                  <span [class.text-rose-700]="item.balanceUah > 0" [class.text-emerald-700]="item.balanceUah <= 0">
+                                    {{ item.balanceUah.toFixed(2) }} грн
+                                  </span>
+                                } @else {
+                                  <span class="text-slate-300">—</span>
+                                }
+                              </td>
+                            </tr>
+                          }
+                        </tbody>
+                      </table>
+                    </div>
+                  } @else {
+                    <div class="p-4 rounded-xl bg-slate-50 border border-slate-200/80 text-center space-y-2">
+                      <p class="text-xs font-semibold text-slate-700">
+                        Історія оплат та споживання з абонкнижки ООЕК для особового рахунку <span class="font-mono font-bold">{{ acc.ooekAccountNumber || acc.accountNumber }}</span> ще не завантажена.
+                      </p>
+                      <p class="text-2xs text-slate-500">
+                        Збережіть логін/пароль ООЕК та натисніть «Завантажити з сайту», щоб отримати інформацію з <span class="font-mono">personal.ooek.od.ua/home/abonbook/cards</span>.
+                      </p>
+                    </div>
+                  }
+                </div>
+              }
+            </div>
+
+            @if (isCabinetPanelOpen()) {
+              <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 p-4 rounded-2xl bg-slate-50/70 border border-slate-200">
+                <!-- Left Card: OOEK Personal Cabinet (https://personal.ooek.od.ua/home/) -->
+                <div class="p-4 rounded-xl bg-white border border-slate-200/90 shadow-2xs space-y-3 flex flex-col justify-between">
+                  <div class="space-y-3">
+                    <div class="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-100">
+                      <div>
+                        <div class="flex items-center gap-2 flex-wrap">
+                          <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-3xs font-bold uppercase">
+                            Пряма інтеграція працює
+                          </span>
+                          <h5 class="text-xs sm:text-sm font-bold text-slate-900">
+                            Кабінет ТОВ «ООЕК» (Сума + Абонкнижка)
+                          </h5>
+                        </div>
+                        <div class="flex items-center gap-3 flex-wrap mt-0.5">
+                          <a
+                            href="https://personal.ooek.od.ua/home/"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-2xs text-indigo-600 hover:underline font-mono inline-flex items-center gap-1"
+                          >
+                            <span>personal.ooek.od.ua/home</span>
+                            <mat-icon class="text-3xs">open_in_new</mat-icon>
+                          </a>
+                          <a
+                            href="https://personal.ooek.od.ua/home/abonbook/cards"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-2xs text-emerald-700 hover:underline font-mono inline-flex items-center gap-1"
+                          >
+                            <span>/home/abonbook/cards</span>
+                            <mat-icon class="text-3xs">open_in_new</mat-icon>
+                          </a>
+                        </div>
+                      </div>
+
+                      @if (acc.hasOoekPassword) {
+                        <span class="px-2 py-0.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 text-3xs font-bold flex items-center gap-1 shrink-0">
+                          <mat-icon class="text-xs leading-none">lock</mat-icon>
+                          <span>Пароль зашифровано</span>
+                        </span>
+                      }
+                    </div>
+
+                    <!-- Accrued Amount Display Box -->
+                    <div class="p-3 rounded-xl bg-emerald-50/80 border border-emerald-200 flex items-center justify-between">
+                      <div>
+                        <span class="text-3xs font-bold uppercase tracking-wider text-emerald-800 block">
+                          Нарахована сума до сплати (ООЕК)
+                        </span>
+                        @if (acc.ooekCabinetLastSync) {
+                          <span class="text-3xs text-emerald-700">
+                            Оновлено: {{ formatDate(acc.ooekCabinetLastSync) }}
+                          </span>
+                        } @else {
+                          <span class="text-3xs text-slate-500">Ще не синхронізовано</span>
+                        }
+                      </div>
+                      <div class="text-right">
+                        @if (acc.ooekBalanceUah !== undefined && acc.ooekBalanceUah !== null) {
+                          <span class="text-lg font-extrabold font-mono text-emerald-950">
+                            {{ acc.ooekBalanceUah.toFixed(2) }} грн
+                          </span>
+                        } @else {
+                          <span class="text-xs font-semibold text-slate-400 italic">— грн</span>
+                        }
+                      </div>
+                    </div>
+
+                    @if (acc.ooekCabinetStatus) {
+                      <div class="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-2xs text-slate-700 flex items-start gap-1.5">
+                        <mat-icon class="text-sm text-indigo-600 shrink-0 mt-0.5">info</mat-icon>
+                        <span>{{ acc.ooekCabinetStatus }}</span>
+                      </div>
+                    }
+
+                    <!-- OOEK Credentials & Personal Account Number Inputs -->
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <div>
+                        <label for="cabinet-ooek-acc-input" class="block text-3xs font-bold text-slate-600 uppercase mb-1">
+                          Особовий рахунок ООЕК (домівка)
+                        </label>
+                        <input
+                          id="cabinet-ooek-acc-input"
+                          type="text"
+                          [value]="cabinetOoekAccountNumber()"
+                          (input)="cabinetOoekAccountNumber.set($any($event.target).value)"
+                          [placeholder]="acc.accountNumber || '572000...'"
+                          autocomplete="off"
+                          class="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-300 text-xs text-slate-900 font-mono focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                      <div>
+                        <label for="cabinet-ooek-login-input" class="block text-3xs font-bold text-slate-600 uppercase mb-1">
+                          Логін (Email або телефон ООЕК)
+                        </label>
+                        <input
+                          id="cabinet-ooek-login-input"
+                          type="text"
+                          [value]="cabinetOoekLogin()"
+                          (input)="cabinetOoekLogin.set($any($event.target).value)"
+                          placeholder="user@email.com"
+                          autocomplete="off"
+                          class="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-300 text-xs text-slate-900 font-mono focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                      <div>
+                        <label for="cabinet-ooek-password-input" class="block text-3xs font-bold text-slate-600 uppercase mb-1">
+                          Пароль ООЕК {{ acc.hasOoekPassword ? '(збережено)' : '' }}
+                        </label>
+                        <input
+                          id="cabinet-ooek-password-input"
+                          type="password"
+                          [value]="cabinetOoekPassword()"
+                          (input)="cabinetOoekPassword.set($any($event.target).value)"
+                          [placeholder]="acc.hasOoekPassword ? '•••••••• (залиште порожнім без змін)' : 'Введіть пароль кабінету ООЕК'"
+                          autocomplete="new-password"
+                          class="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-300 text-xs text-slate-900 focus:outline-none focus:border-emerald-500"
+                        />
+                      </div>
+                    </div>
+
+                    @if ((acc.ooekDiscoveredAccounts || []).length > 1) {
+                      <div class="p-2 rounded-lg bg-emerald-50/70 border border-emerald-200/80 flex items-center gap-1.5 flex-wrap">
+                        <span class="text-3xs font-bold text-emerald-900">Знайдені рахунки в кабінеті:</span>
+                        @for (discAcc of (acc.ooekDiscoveredAccounts || []); track discAcc) {
+                          <button
+                            type="button"
+                            (click)="cabinetOoekAccountNumber.set(discAcc)"
+                            [class.bg-emerald-600]="cabinetOoekAccountNumber() === discAcc"
+                            [class.text-white]="cabinetOoekAccountNumber() === discAcc"
+                            [class.bg-white]="cabinetOoekAccountNumber() !== discAcc"
+                            [class.text-emerald-900]="cabinetOoekAccountNumber() !== discAcc"
+                            class="px-2 py-0.5 rounded text-3xs font-mono font-bold border border-emerald-300 cursor-pointer transition-colors"
+                          >
+                            {{ discAcc }}
+                          </button>
+                        }
+                      </div>
+                    }
+                  </div>
+
+                  <div class="pt-3 border-t border-slate-100 flex items-center justify-between gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      (click)="saveCabinetCredentialsForCurrentAccount()"
+                      [disabled]="isSavingCabinet()"
+                      class="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <mat-icon class="text-sm leading-none">lock</mat-icon>
+                      <span>Зберегти зашифровано</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      (click)="syncOoekForCurrentAccount()"
+                      [disabled]="isSyncingOoek()"
+                      class="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-2xs"
+                    >
+                      <mat-icon class="text-sm leading-none" [class.animate-spin]="isSyncingOoek()">sync</mat-icon>
+                      <span>{{ isSyncingOoek() ? 'Підключення...' : 'Отримати суму та історію' }}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Right Card: DTEK OEM Personal Cabinet (https://auth.my.dtek-oem.com.ua/login) -->
+                <div class="p-4 rounded-xl bg-white border border-slate-200/90 shadow-2xs space-y-3 flex flex-col justify-between">
+                  <div class="space-y-3">
+                    <div class="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-100">
+                      <div>
+                        <div class="flex items-center gap-2 flex-wrap">
+                          <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-3xs font-bold uppercase">
+                            OAuth API + захист Imperva WAF
+                          </span>
+                          <h5 class="text-xs sm:text-sm font-bold text-slate-900">
+                            Кабінет ДТЕК ОЕМ (Показники)
+                          </h5>
+                        </div>
+                        <a
+                          href="https://auth.my.dtek-oem.com.ua/login"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          class="text-2xs text-indigo-600 hover:underline font-mono inline-flex items-center gap-1 mt-0.5"
+                        >
+                          <span>https://auth.my.dtek-oem.com.ua/login</span>
+                          <mat-icon class="text-3xs">open_in_new</mat-icon>
+                        </a>
+                      </div>
+
+                      @if (acc.hasDtekPassword) {
+                        <span class="px-2 py-0.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 text-3xs font-bold flex items-center gap-1 shrink-0">
+                          <mat-icon class="text-xs leading-none">lock</mat-icon>
+                          <span>Пароль зашифровано</span>
+                        </span>
+                      }
+                    </div>
+
+                    <!-- Technical Security & WAF Explanation Box -->
+                    <div class="p-2.5 rounded-xl bg-amber-50/80 border border-amber-200 text-2xs text-amber-950 space-y-1">
+                      <div class="font-bold flex items-center gap-1">
+                        <mat-icon class="text-xs text-amber-700 leading-none">security</mat-icon>
+                        <span>Як захищені паролі та особливість сайту ДТЕК:</span>
+                      </div>
+                      <p class="text-3xs text-amber-900 leading-relaxed">
+                        Паролі шифруються на сервері алгоритмом <strong>AES-256-GCM</strong> (ключ <span class="font-mono">CABINET_ENCRYPTION_KEY</span> у <span class="font-mono">.env</span>) і ніколи не повертаються у браузер у відкритому вигляді. Сайт <span class="font-mono">auth.my.dtek-oem.com.ua</span> використовує захист <strong>Imperva Incapsula WAF</strong> проти серверних запитів: сервер пробує прямий вхід через <span class="font-mono">/api/oauth/api/auth/login</span>, а якщо WAF вимагає браузерну перевірку — фіксує покази в базі та відкриває кабінет для підтвердження.
+                      </p>
+                    </div>
+
+                    @if (acc.dtekCabinetStatus) {
+                      <div class="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-2xs text-slate-700 flex items-start gap-1.5">
+                        <mat-icon class="text-sm text-amber-600 shrink-0 mt-0.5">info</mat-icon>
+                        <span>{{ acc.dtekCabinetStatus }}</span>
+                      </div>
+                    }
+
+                    <!-- DTEK Credentials Inputs -->
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div>
+                        <label for="cabinet-dtek-login-input" class="block text-3xs font-bold text-slate-600 uppercase mb-1">
+                          Логін ДТЕК (+380XXXXXXXXX або Email)
+                        </label>
+                        <input
+                          id="cabinet-dtek-login-input"
+                          type="text"
+                          [value]="cabinetDtekLogin()"
+                          (input)="cabinetDtekLogin.set($any($event.target).value)"
+                          placeholder="+380671234567"
+                          autocomplete="off"
+                          class="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-300 text-xs text-slate-900 font-mono focus:outline-none focus:border-amber-500"
+                        />
+                      </div>
+                      <div>
+                        <label for="cabinet-dtek-password-input" class="block text-3xs font-bold text-slate-600 uppercase mb-1">
+                          Пароль ДТЕК {{ acc.hasDtekPassword ? '(збережено)' : '' }}
+                        </label>
+                        <input
+                          id="cabinet-dtek-password-input"
+                          type="password"
+                          [value]="cabinetDtekPassword()"
+                          (input)="cabinetDtekPassword.set($any($event.target).value)"
+                          [placeholder]="acc.hasDtekPassword ? '•••••••• (залиште порожнім без змін)' : 'Введіть пароль кабінету ДТЕК'"
+                          autocomplete="new-password"
+                          class="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-300 text-xs text-slate-900 focus:outline-none focus:border-amber-500"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="pt-3 border-t border-slate-100 flex items-center justify-between gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      (click)="syncDtekCabinetForCurrentAccount()"
+                      [disabled]="isSyncingDtekCabinet()"
+                      class="px-3 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-2xs"
+                    >
+                      <mat-icon class="text-sm leading-none" [class.animate-spin]="isSyncingDtekCabinet()">sync</mat-icon>
+                      <span>{{ isSyncingDtekCabinet() ? 'Перевірка...' : 'Перевірити вхід ДТЕК' }}</span>
+                    </button>
+
+                    @if (latestAnyReading(); as lr) {
+                      <button
+                        type="button"
+                        (click)="submitLatestReadingToDtek(lr)"
+                        [disabled]="isSyncingDtekCabinet()"
+                        class="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-2xs"
+                        title="Передати останні внесені покази в кабінет ДТЕК"
+                      >
+                        <mat-icon class="text-sm leading-none">send</mat-icon>
+                        <span>Передати покази ({{ lr.readingT1 }}{{ acc.electricityTariffType === 'dual' ? '/' + lr.readingT2 : '' }})</span>
+                      </button>
+                    }
+                  </div>
+                </div>
+              </div>
+            }
           </div>
         </div>
 
@@ -965,18 +1752,145 @@ import {
                 </div>
               </div>
 
-              <!-- Address -->
-              <div>
-                <label for="acc-addr" class="block text-xs font-semibold text-slate-700 mb-1">
-                  Адреса об'єкта
-                </label>
-                <input
-                  id="acc-addr"
-                  type="text"
-                  formControlName="address"
-                  placeholder="м. Київ, вул. Хрещатик, буд. 1, кв. 10"
-                  class="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-amber-500"
-                />
+              <!-- Structured DTEK Address Section -->
+              <div class="space-y-3 p-3.5 bg-slate-50 border border-slate-200 rounded-xl">
+                <div class="flex items-center justify-between flex-wrap gap-1">
+                  <span class="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                    <mat-icon class="text-amber-600 text-sm leading-none">location_city</mat-icon>
+                    <span>Адреса об'єкта та прив'язка до графіка ДТЕК</span>
+                  </span>
+                  @if (isDtekCatalogLoading()) {
+                    <span class="text-3xs text-amber-700 flex items-center gap-1">
+                      <span class="w-2.5 h-2.5 border border-amber-600 border-t-transparent rounded-full animate-spin"></span>
+                      Оновлення каталогу...
+                    </span>
+                  }
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <!-- City Autocomplete -->
+                  <div class="relative">
+                    <label for="acc-city" class="block text-xs font-semibold text-slate-700 mb-1">
+                      Населений пункт (Одеська обл.) *
+                    </label>
+                    <input
+                      id="acc-city"
+                      type="text"
+                      [value]="formCityQuery()"
+                      (input)="onFormCityInput($any($event.target).value)"
+                      (focus)="showFormCitySuggestions.set(true)"
+                      placeholder="напр. с-ще Окни або м. Одеса"
+                      autocomplete="off"
+                      class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-900 focus:outline-none focus:border-amber-500"
+                    />
+
+                    <!-- Dropdown -->
+                    @if (showFormCitySuggestions() && filteredFormCities().length > 0) {
+                      <button
+                        type="button"
+                        aria-label="Закрити список міст"
+                        class="fixed inset-0 z-30 cursor-default bg-transparent border-0"
+                        (click)="showFormCitySuggestions.set(false)"
+                      ></button>
+                      <div class="absolute z-40 left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto divide-y divide-slate-100">
+                        @for (c of filteredFormCities(); track c) {
+                          <button
+                            type="button"
+                            (click)="selectFormCity(c)"
+                            class="w-full px-3 py-2 text-left text-xs text-slate-800 hover:bg-amber-50 flex items-center justify-between cursor-pointer transition-colors"
+                          >
+                            <span class="font-medium">{{ c }}</span>
+                            <mat-icon class="text-3xs text-slate-400 leading-none">chevron_right</mat-icon>
+                          </button>
+                        }
+                      </div>
+                    }
+                  </div>
+
+                  <!-- Street Autocomplete -->
+                  <div class="relative">
+                    <label for="acc-street" class="block text-xs font-semibold text-slate-700 mb-1">
+                      Вулиця (підказка за першими літерами) *
+                    </label>
+                    <input
+                      id="acc-street"
+                      type="text"
+                      [value]="formStreetQuery()"
+                      (input)="onFormStreetInput($any($event.target).value)"
+                      (focus)="showFormStreetSuggestions.set(true)"
+                      placeholder="Почніть вводити назву вулиці..."
+                      autocomplete="off"
+                      class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-900 focus:outline-none focus:border-amber-500"
+                    />
+
+                    <!-- Dropdown -->
+                    @if (showFormStreetSuggestions() && filteredFormStreets().length > 0) {
+                      <button
+                        type="button"
+                        aria-label="Закрити список вулиць"
+                        class="fixed inset-0 z-30 cursor-default bg-transparent border-0"
+                        (click)="showFormStreetSuggestions.set(false)"
+                      ></button>
+                      <div class="absolute z-40 left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-xl shadow-xl max-h-48 overflow-y-auto divide-y divide-slate-100">
+                        @for (s of filteredFormStreets(); track s) {
+                          <button
+                            type="button"
+                            (click)="selectFormStreet(s)"
+                            class="w-full px-3 py-2 text-left text-xs text-slate-800 hover:bg-amber-50 flex items-center justify-between cursor-pointer transition-colors"
+                          >
+                            <span class="font-medium">{{ s }}</span>
+                            <mat-icon class="text-3xs text-slate-400 leading-none">chevron_right</mat-icon>
+                          </button>
+                        }
+                      </div>
+                    }
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <!-- House Number -->
+                  <div>
+                    <label for="acc-housenum" class="block text-xs font-semibold text-slate-700 mb-1">
+                      Номер будинку
+                    </label>
+                    <input
+                      id="acc-housenum"
+                      type="text"
+                      formControlName="houseNum"
+                      (input)="onFormHouseInput($any($event.target).value)"
+                      placeholder="11 або 24/А"
+                      class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-xs font-mono font-medium text-slate-900 focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+
+                  <!-- DTEK Queue Group -->
+                  <div>
+                    <label for="acc-queue" class="block text-xs font-semibold text-slate-700 mb-1">
+                      Черга відключення ДТЕК
+                    </label>
+                    <input
+                      id="acc-queue"
+                      type="text"
+                      formControlName="dtekQueueGroup"
+                      placeholder="напр. GPV4.1 (автопідстановка)"
+                      class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-xs font-mono font-medium text-slate-900 focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                </div>
+
+                <!-- Full Address (auto-assembled, editable) -->
+                <div>
+                  <label for="acc-addr" class="block text-xs font-semibold text-slate-700 mb-1">
+                    Повна адреса (для звітів та квитанцій)
+                  </label>
+                  <input
+                    id="acc-addr"
+                    type="text"
+                    formControlName="address"
+                    placeholder="с-ще Окни, вул. Шкільна, буд. 11"
+                    class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
               </div>
 
               <!-- Tariff Type Selection -->
@@ -1612,7 +2526,7 @@ export class ElectricityView {
     if (!info) return null;
 
     const now = new Date();
-    const currentHourNumber = now.getHours() + 1; // 1..24
+    const currentHourNumber = info.currentKyivHour || (now.getHours() + 1); // 1..24 in Kyiv time
     const currentMinute = now.getMinutes();
 
     let isFactOutageNow = false;
@@ -1650,6 +2564,10 @@ export class ElectricityView {
       }
     }
 
+    const dailySchedules = info.dailySchedules || [];
+    const tomorrowSchedule =
+      info.tomorrowSchedule || (dailySchedules.length > 1 ? dailySchedules[1] : null);
+
     return {
       info,
       now,
@@ -1670,11 +2588,199 @@ export class ElectricityView {
       updateFact: info.updateFact || '',
       updateFactKyiv: info.updateFact ? (info.updateFact.includes('Києв') ? info.updateFact : `${info.updateFact} (за Києвом)`) : '',
       hourlySchedule: scheduleList,
+      dailySchedules,
+      tomorrowSchedule,
     };
   });
 
+  readonly dtekCities = this.dataService.dtekCities;
+  readonly dtekStreets = this.dataService.dtekStreets;
+  readonly isDtekCatalogLoading = this.dataService.isDtekCatalogLoading;
+
+  // Card search bar signals
+  readonly isCardAddressOpen = signal<boolean>(false);
+  readonly cardCity = signal<string>('с-ще Окни');
+  readonly cardStreet = signal<string>('вул. Шкільна');
+  readonly cardHouse = signal<string>('11');
+  readonly cardCityQuery = signal<string>('с-ще Окни');
+  readonly cardStreetQuery = signal<string>('вул. Шкільна');
+  readonly cardHouseInput = signal<string>('11');
+  readonly showCardCitySuggestions = signal<boolean>(false);
+  readonly showCardStreetSuggestions = signal<boolean>(false);
+
+  readonly activeDtekCity = computed(() => this.cardCity() || 'с-ще Окни');
+  readonly activeDtekStreet = computed(() => this.cardStreet() || 'вул. Шкільна');
+  readonly activeDtekHouse = computed(() => this.cardHouse() || '11');
+
+  // Form autocomplete signals
+  readonly formCityQuery = signal<string>('');
+  readonly formStreetQuery = signal<string>('');
+  readonly showFormCitySuggestions = signal<boolean>(false);
+  readonly showFormStreetSuggestions = signal<boolean>(false);
+
+  readonly filteredCardCities = computed(() => {
+    const q = this.cardCityQuery().trim().toLowerCase();
+    const all = this.dtekCities();
+    if (!q) return all.slice(0, 15);
+    return all
+      .filter((c) => c.toLowerCase().includes(q))
+      .sort((a, b) => {
+        const aStarts = a.toLowerCase().startsWith(q) ? 0 : 1;
+        const bStarts = b.toLowerCase().startsWith(q) ? 0 : 1;
+        return aStarts - bStarts || a.localeCompare(b, 'uk');
+      })
+      .slice(0, 15);
+  });
+
+  readonly filteredCardStreets = computed(() => {
+    const q = this.cardStreetQuery().trim().toLowerCase();
+    const all = this.dtekStreets();
+    if (!q) return all.slice(0, 20);
+    return all
+      .filter((s) => s.toLowerCase().includes(q))
+      .sort((a, b) => {
+        const aStarts = a.toLowerCase().startsWith(q) ? 0 : 1;
+        const bStarts = b.toLowerCase().startsWith(q) ? 0 : 1;
+        return aStarts - bStarts || a.localeCompare(b, 'uk');
+      })
+      .slice(0, 20);
+  });
+
+  readonly filteredFormCities = computed(() => {
+    const q = this.formCityQuery().trim().toLowerCase();
+    const all = this.dtekCities();
+    if (!q) return all.slice(0, 15);
+    return all
+      .filter((c) => c.toLowerCase().includes(q))
+      .sort((a, b) => {
+        const aStarts = a.toLowerCase().startsWith(q) ? 0 : 1;
+        const bStarts = b.toLowerCase().startsWith(q) ? 0 : 1;
+        return aStarts - bStarts || a.localeCompare(b, 'uk');
+      })
+      .slice(0, 15);
+  });
+
+  readonly filteredFormStreets = computed(() => {
+    const q = this.formStreetQuery().trim().toLowerCase();
+    const all = this.dtekStreets();
+    if (!q) return all.slice(0, 20);
+    return all
+      .filter((s) => s.toLowerCase().includes(q))
+      .sort((a, b) => {
+        const aStarts = a.toLowerCase().startsWith(q) ? 0 : 1;
+        const bStarts = b.toLowerCase().startsWith(q) ? 0 : 1;
+        return aStarts - bStarts || a.localeCompare(b, 'uk');
+      })
+      .slice(0, 20);
+  });
+
   refreshDtekSchedule(): void {
-    this.dataService.fetchDtekShutdowns();
+    const city = this.activeDtekCity();
+    const street = this.activeDtekStreet();
+    const house = this.activeDtekHouse();
+    this.dataService.fetchDtekShutdowns(city, street, house, true);
+  }
+
+  toggleCardAddress(): void {
+    this.isCardAddressOpen.update((v) => !v);
+  }
+
+  onCardCityInput(val: string): void {
+    this.cardCityQuery.set(val);
+    this.showCardCitySuggestions.set(true);
+  }
+
+  selectCardCity(city: string): void {
+    this.cardCityQuery.set(city);
+    this.cardCity.set(city);
+    this.showCardCitySuggestions.set(false);
+    this.cardStreetQuery.set('');
+    this.dataService.fetchDtekCatalog(city);
+  }
+
+  onCardStreetInput(val: string): void {
+    this.cardStreetQuery.set(val);
+    this.showCardStreetSuggestions.set(true);
+  }
+
+  selectCardStreet(street: string): void {
+    this.cardStreetQuery.set(street);
+    this.cardStreet.set(street);
+    this.showCardStreetSuggestions.set(false);
+  }
+
+  applyCardAddress(): void {
+    const city = this.cardCityQuery().trim() || this.cardCity();
+    const street = this.cardStreetQuery().trim() || this.cardStreet();
+    const house = this.cardHouseInput().trim() || this.cardHouse();
+    this.cardCity.set(city);
+    this.cardStreet.set(street);
+    this.cardHouse.set(house);
+    this.showCardCitySuggestions.set(false);
+    this.showCardStreetSuggestions.set(false);
+    this.dataService.fetchDtekShutdowns(city, street, house, true);
+  }
+
+  async saveCardAddressToCurrentAccount(): Promise<void> {
+    const acc = this.currentAccount();
+    if (!acc) return;
+    const city = this.cardCityQuery().trim() || this.cardCity();
+    const street = this.cardStreetQuery().trim() || this.cardStreet();
+    const house = this.cardHouseInput().trim() || this.cardHouse();
+    const formattedAddr = [city, street, house ? `буд. ${house}` : ''].filter(Boolean).join(', ');
+
+    await this.dataService.saveUtilityAccount({
+      id: acc.id,
+      type: 'electricity',
+      city,
+      street,
+      houseNum: house,
+      address: formattedAddr,
+    });
+    this.applyCardAddress();
+  }
+
+  onFormCityInput(val: string): void {
+    this.formCityQuery.set(val);
+    this.accountForm.patchValue({ city: val });
+    this.showFormCitySuggestions.set(true);
+    this.updateFormFullAddress();
+  }
+
+  selectFormCity(city: string): void {
+    this.formCityQuery.set(city);
+    this.accountForm.patchValue({ city, street: '' });
+    this.formStreetQuery.set('');
+    this.showFormCitySuggestions.set(false);
+    this.dataService.fetchDtekCatalog(city);
+    this.updateFormFullAddress();
+  }
+
+  onFormStreetInput(val: string): void {
+    this.formStreetQuery.set(val);
+    this.accountForm.patchValue({ street: val });
+    this.showFormStreetSuggestions.set(true);
+    this.updateFormFullAddress();
+  }
+
+  selectFormStreet(street: string): void {
+    this.formStreetQuery.set(street);
+    this.accountForm.patchValue({ street });
+    this.showFormStreetSuggestions.set(false);
+    this.updateFormFullAddress();
+  }
+
+  onFormHouseInput(val: string): void {
+    this.accountForm.patchValue({ houseNum: val });
+    this.updateFormFullAddress();
+  }
+
+  updateFormFullAddress(): void {
+    const city = this.accountForm.get('city')?.value || '';
+    const street = this.accountForm.get('street')?.value || '';
+    const house = this.accountForm.get('houseNum')?.value || '';
+    const full = [city, street, house ? `буд. ${house}` : ''].filter(Boolean).join(', ');
+    this.accountForm.patchValue({ address: full }, { emitEvent: false });
   }
 
   readonly selectedAccountId = signal<string>('');
@@ -1690,6 +2796,18 @@ export class ElectricityView {
   readonly isCameraModalOpen = signal<boolean>(false);
   readonly isSubmitting = signal<boolean>(false);
 
+  // DTEK OEM & OOEK Personal Cabinets state
+  readonly isCabinetPanelOpen = signal<boolean>(false);
+  readonly isOoekHistoryExpanded = signal<boolean>(false);
+  readonly cabinetDtekLogin = signal<string>('');
+  readonly cabinetDtekPassword = signal<string>('');
+  readonly cabinetOoekLogin = signal<string>('');
+  readonly cabinetOoekPassword = signal<string>('');
+  readonly cabinetOoekAccountNumber = signal<string>('');
+  readonly isSavingCabinet = signal<boolean>(false);
+  readonly isSyncingOoek = signal<boolean>(false);
+  readonly isSyncingDtekCabinet = signal<boolean>(false);
+
   // Form calculated cost
   readonly formTotalCost = signal<number>(0);
   readonly calculatedSeason = signal<'summer' | 'winter'>('summer');
@@ -1699,6 +2817,10 @@ export class ElectricityView {
   readonly accountForm = new FormGroup({
     name: new FormControl('', [Validators.required]),
     accountNumber: new FormControl('', [Validators.required]),
+    city: new FormControl(''),
+    street: new FormControl(''),
+    houseNum: new FormControl(''),
+    dtekQueueGroup: new FormControl(''),
     address: new FormControl(''),
     meterNumber: new FormControl(''),
     electricityTariffType: new FormControl<'single' | 'dual'>('single', [Validators.required]),
@@ -1717,10 +2839,119 @@ export class ElectricityView {
   });
 
   constructor() {
+    // Pre-fetch DTEK catalog
+    this.dataService.fetchDtekCatalog();
+
     // Select first account if none selected
     const accounts = this.electricityAccounts();
     if (accounts.length > 0 && !this.selectedAccountId()) {
       this.selectedAccountId.set(accounts[0].id);
+    }
+
+    // Synchronize card address with selected account or defaults
+    effect(() => {
+      const acc = this.currentAccount();
+      const city = acc?.city || 'с-ще Окни';
+      const street = acc?.street || 'вул. Шкільна';
+      const house = acc?.houseNum || '11';
+
+      untracked(() => {
+        this.cardCity.set(city);
+        this.cardStreet.set(street);
+        this.cardHouse.set(house);
+        this.cardCityQuery.set(city);
+        this.cardStreetQuery.set(street);
+        this.cardHouseInput.set(house);
+        this.cabinetDtekLogin.set(acc?.dtekLogin || '');
+        this.cabinetDtekPassword.set('');
+        this.cabinetOoekLogin.set(acc?.ooekLogin || '');
+        this.cabinetOoekPassword.set('');
+        this.cabinetOoekAccountNumber.set(acc?.ooekAccountNumber || acc?.accountNumber || '');
+        this.dataService.fetchDtekCatalog(city);
+        this.dataService.fetchDtekShutdowns(city, street, house);
+      });
+    });
+  }
+
+  toggleCabinetPanel(): void {
+    this.isCabinetPanelOpen.update((v) => !v);
+  }
+
+  toggleOoekHistoryExpanded(): void {
+    this.isOoekHistoryExpanded.update((v) => !v);
+  }
+
+  async saveCabinetCredentialsForCurrentAccount(): Promise<void> {
+    const acc = this.currentAccount();
+    if (!acc) return;
+    this.isSavingCabinet.set(true);
+    try {
+      await this.dataService.saveCabinetCredentials(acc.id, {
+        dtekLogin: this.cabinetDtekLogin().trim(),
+        ...(this.cabinetDtekPassword() ? { dtekPassword: this.cabinetDtekPassword() } : {}),
+        ooekLogin: this.cabinetOoekLogin().trim(),
+        ...(this.cabinetOoekPassword() ? { ooekPassword: this.cabinetOoekPassword() } : {}),
+        ooekAccountNumber: this.cabinetOoekAccountNumber().trim() || acc.ooekAccountNumber || acc.accountNumber,
+      });
+      this.cabinetDtekPassword.set('');
+      this.cabinetOoekPassword.set('');
+    } finally {
+      this.isSavingCabinet.set(false);
+    }
+  }
+
+  async syncOoekForCurrentAccount(): Promise<void> {
+    const acc = this.currentAccount();
+    if (!acc) return;
+    this.isSyncingOoek.set(true);
+    try {
+      const payload: { ooekLogin?: string; ooekPassword?: string; ooekAccountNumber?: string } = {
+        ooekAccountNumber: this.cabinetOoekAccountNumber().trim() || acc.ooekAccountNumber || acc.accountNumber,
+      };
+      if (this.cabinetOoekLogin().trim()) {
+        payload.ooekLogin = this.cabinetOoekLogin().trim();
+      }
+      if (this.cabinetOoekPassword()) {
+        payload.ooekPassword = this.cabinetOoekPassword();
+      }
+      await this.dataService.syncOoekCabinet(acc.id, payload);
+      this.cabinetOoekPassword.set('');
+    } finally {
+      this.isSyncingOoek.set(false);
+    }
+  }
+
+  async syncDtekCabinetForCurrentAccount(): Promise<void> {
+    const acc = this.currentAccount();
+    if (!acc) return;
+    this.isSyncingDtekCabinet.set(true);
+    try {
+      const payload: { dtekLogin?: string; dtekPassword?: string } = {};
+      if (this.cabinetDtekLogin().trim()) {
+        payload.dtekLogin = this.cabinetDtekLogin().trim();
+      }
+      if (this.cabinetDtekPassword()) {
+        payload.dtekPassword = this.cabinetDtekPassword();
+      }
+      await this.dataService.syncDtekCabinet(acc.id, payload);
+      this.cabinetDtekPassword.set('');
+    } finally {
+      this.isSyncingDtekCabinet.set(false);
+    }
+  }
+
+  async submitLatestReadingToDtek(reading: UtilityReading): Promise<void> {
+    const acc = this.currentAccount();
+    if (!acc || reading.readingT1 === undefined) return;
+    this.isSyncingDtekCabinet.set(true);
+    try {
+      await this.dataService.submitReadingToDtekCabinet(acc.id, {
+        readingT1: reading.readingT1,
+        readingT2: reading.readingT2,
+        date: reading.date,
+      });
+    } finally {
+      this.isSyncingDtekCabinet.set(false);
     }
   }
 
@@ -2161,6 +3392,10 @@ export class ElectricityView {
       this.accountForm.patchValue({
         name: acc.name,
         accountNumber: acc.accountNumber,
+        city: acc.city || '',
+        street: acc.street || '',
+        houseNum: acc.houseNum || '',
+        dtekQueueGroup: acc.dtekQueueGroup || '',
         address: acc.address || '',
         meterNumber: acc.meterNumber || '',
         electricityTariffType: acc.electricityTariffType || 'single',
@@ -2168,24 +3403,40 @@ export class ElectricityView {
         initialReadingT2: acc.initialReadingT2 || 0,
         notes: acc.notes || '',
       });
+      this.formCityQuery.set(acc.city || '');
+      this.formStreetQuery.set(acc.street || '');
+      if (acc.city) {
+        this.dataService.fetchDtekCatalog(acc.city);
+      }
     } else {
       this.accountForm.reset({
         name: '',
         accountNumber: '',
-        address: '',
+        city: 'с-ще Окни',
+        street: 'вул. Шкільна',
+        houseNum: '11',
+        dtekQueueGroup: '',
+        address: 'с-ще Окни, вул. Шкільна, буд. 11',
         meterNumber: '',
         electricityTariffType: 'single',
         initialReadingT1: 0,
         initialReadingT2: 0,
         notes: '',
       });
+      this.formCityQuery.set('с-ще Окни');
+      this.formStreetQuery.set('вул. Шкільна');
+      this.dataService.fetchDtekCatalog('с-ще Окни');
     }
+    this.showFormCitySuggestions.set(false);
+    this.showFormStreetSuggestions.set(false);
     this.isAccountModalOpen.set(true);
   }
 
   closeAccountModal(): void {
     this.isAccountModalOpen.set(false);
     this.editingAccount.set(null);
+    this.showFormCitySuggestions.set(false);
+    this.showFormStreetSuggestions.set(false);
   }
 
   async saveAccount(): Promise<void> {
@@ -2194,12 +3445,24 @@ export class ElectricityView {
     try {
       const formVal = this.accountForm.getRawValue();
       const existing = this.editingAccount();
+      const city = formVal.city?.trim() || '';
+      const street = formVal.street?.trim() || '';
+      const houseNum = formVal.houseNum?.trim() || '';
+      let address = formVal.address?.trim() || '';
+      if (!address && (city || street)) {
+        address = [city, street, houseNum ? `буд. ${houseNum}` : ''].filter(Boolean).join(', ');
+      }
+
       const payload: Partial<UtilityAccount> = {
         ...(existing ? { id: existing.id } : {}),
         type: 'electricity',
         name: formVal.name?.trim() || '',
         accountNumber: formVal.accountNumber?.trim() || '',
-        address: formVal.address?.trim() || '',
+        city,
+        street,
+        houseNum,
+        dtekQueueGroup: formVal.dtekQueueGroup?.trim() || '',
+        address,
         meterNumber: formVal.meterNumber?.trim() || '',
         electricityTariffType: formVal.electricityTariffType || 'single',
         initialReadingT1: Number(formVal.initialReadingT1) || 0,
@@ -2209,6 +3472,9 @@ export class ElectricityView {
 
       const saved = await this.dataService.saveUtilityAccount(payload);
       this.selectedAccountId.set(saved.id);
+      if (city) this.cardCity.set(city);
+      if (street) this.cardStreet.set(street);
+      if (houseNum) this.cardHouse.set(houseNum);
       this.closeAccountModal();
     } finally {
       this.isSubmitting.set(false);
