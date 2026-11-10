@@ -1,8 +1,7 @@
 {
-  "name": "IPTV Менеджер & Білінг",
-  "description": "Система обліку абонентів інтернет-ТБ, управління підписками число-в-число, автоматичний білінг внесків, нагадування через Telegram та статистика доходів.",
-  "requestFramePermissions": [
-    "camera"
-  ],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "name": "HomeHub — Комунальні послуги та IPTV Білінг",
+  "description": "Управління показами лічильників електроенергії та води, графіками відключень ДТЕК, мобільним додатком клієнта та IPTV білінгом",
+  "request_frame_permissions": [],
+  "prompt": "",
+  "major_capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

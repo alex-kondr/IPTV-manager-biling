@@ -243,16 +243,16 @@ import { RechartsYearlyIncomeComponent } from './recharts-yearly-income.componen
                     }
                   </td>
                   <td class="px-4 py-3.5 text-right font-bold text-emerald-700">
-                    +{{ row.totalIncome.toLocaleString('uk-UA') }} ₴
+                    +{{ (row.totalIncome || 0).toLocaleString('uk-UA') }} ₴
                   </td>
                   <td class="px-4 py-3.5 text-right font-semibold text-rose-600">
-                    {{ row.totalExpenses > 0 ? '-' + row.totalExpenses.toLocaleString('uk-UA') + ' ₴' : '0 ₴' }}
+                    {{ (row.totalExpenses || 0) > 0 ? '-' + (row.totalExpenses || 0).toLocaleString('uk-UA') + ' ₴' : '0 ₴' }}
                   </td>
-                  <td class="px-4 py-3.5 text-right font-bold" [class.text-emerald-800]="row.netProfit >= 0" [class.text-rose-700]="row.netProfit < 0">
-                    {{ row.netProfit.toLocaleString('uk-UA') }} ₴
+                  <td class="px-4 py-3.5 text-right font-bold" [class.text-emerald-800]="(row.netProfit || 0) >= 0" [class.text-rose-700]="(row.netProfit || 0) < 0">
+                    {{ (row.netProfit || 0).toLocaleString('uk-UA') }} ₴
                   </td>
                   <td class="px-4 py-3.5 text-center text-slate-600 font-medium">
-                    {{ row.paymentsCount }}
+                    {{ row.paymentsCount || 0 }}
                   </td>
                   <td class="px-4 py-3.5 text-right text-slate-700 font-medium">
                     \${{ row.usdDeposits || 0 }} USD
@@ -284,10 +284,27 @@ export class AnalyticsView {
     const now = new Date();
     const curKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
-    return raw.map((item) => ({
-      ...item,
-      isCurrent: item.monthKey === curKey,
-    }));
+    return raw.map((item) => {
+      const rec = item as unknown as Record<string, unknown>;
+      const mKey = String(item.monthKey || rec['month'] || '');
+      const totalIncome = Number(item.totalIncome ?? rec['totalAmount']) || 0;
+      const totalExpenses = Number(item.totalExpenses) || 0;
+      const netProfit = Number(item.netProfit ?? totalIncome - totalExpenses) || 0;
+      const paymentsCount = Number(item.paymentsCount ?? rec['count']) || 0;
+      return {
+        ...item,
+        monthKey: mKey,
+        monthName: item.monthName || mKey,
+        totalIncome,
+        totalExpenses,
+        netProfit,
+        paymentsCount,
+        depositsCount: Number(item.depositsCount) || 0,
+        usdDeposits: Number(item.usdDeposits) || 0,
+        usdExpenses: Number(item.usdExpenses) || 0,
+        isCurrent: mKey === curKey,
+      };
+    });
   });
 }
 

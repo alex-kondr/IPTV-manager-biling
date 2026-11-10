@@ -28,9 +28,10 @@ let isConnectedToCloudSql = false;
 let lastSyncTimestamp: string | null = null;
 let connectionError: string | null = null;
 
-export function isCloudSqlAvailable(): boolean {
-  const mode = getActiveDbMode();
-  return mode === 'cloudsql' ? isCloudSqlEnvConfigured() : isExternalDbConfigured();
+export function isCloudSqlAvailable(mode?: DatabaseMode): boolean {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  return targetMode === 'cloudsql' ? isCloudSqlEnvConfigured() : isExternalDbConfigured();
 }
 
 export async function checkCloudSqlConnection(mode?: DatabaseMode): Promise<boolean> {
@@ -60,6 +61,16 @@ export function getModeMetadata(mode: DatabaseMode): {
   database: string;
   configured: boolean;
 } {
+  if (mode === 'sqlite_local') {
+    return {
+      mode: 'sqlite_local',
+      provider: 'SQLite / In-Memory Local Cache',
+      host: 'localhost',
+      database: 'iptv_local_cache.sqlite',
+      configured: true,
+    };
+  }
+
   if (mode === 'cloudsql') {
     const rawHost = process.env['SQL_HOST'] || 'Cloud SQL Socket';
     const shortHost = rawHost.startsWith('/app/cloudsql/')
@@ -104,7 +115,7 @@ export function getCloudSqlDbStatus() {
     provider: meta.provider,
     host: meta.host,
     database: meta.database,
-    connected: isConnectedToCloudSql,
+    connected: isConnectedToCloudSql || activeMode === 'sqlite_local',
     lastSync: lastSyncTimestamp,
     error: connectionError,
   };
@@ -147,6 +158,8 @@ CREATE TABLE IF NOT EXISTS clients (
   telegram_username TEXT,
   viber_id TEXT,
   notes TEXT,
+  group_name TEXT,
+  group_balance REAL DEFAULT 0,
   last_reminder_date TEXT,
   last_reminder_status TEXT,
   owner_user_id TEXT,
@@ -254,6 +267,7 @@ CREATE TABLE IF NOT EXISTS utility_accounts (
   ooek_history JSONB DEFAULT '[]'::jsonb,
   ooek_cabinet_status TEXT,
   ooek_cabinet_last_sync TEXT,
+  devices JSONB DEFAULT '[]'::jsonb,
   created_at TEXT NOT NULL,
   updated_at TEXT
 );
@@ -335,6 +349,7 @@ CREATE TABLE IF NOT EXISTS users (
   allowed_tabs JSONB,
   assigned_utility_account_ids JSONB,
   assigned_client_ids JSONB,
+  default_utility_account_id TEXT,
   can_manage_own_data BOOLEAN DEFAULT true,
   created_at TEXT NOT NULL,
   last_login_at TEXT
@@ -344,6 +359,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS sub TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_tabs JSONB;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_utility_account_ids JSONB;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_client_ids JSONB;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS default_utility_account_id TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS can_manage_own_data BOOLEAN DEFAULT true;
 
 ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS owner_user_id TEXT;
@@ -360,9 +376,12 @@ ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS ooek_last_bill_uah REAL;
 ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS ooek_history JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS ooek_cabinet_status TEXT;
 ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS ooek_cabinet_last_sync TEXT;
+ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS devices JSONB DEFAULT '[]'::jsonb;
 
 ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS owner_user_id TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS owner_user_id TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS group_name TEXT;
+ALTER TABLE clients ADD COLUMN IF NOT EXISTS group_balance REAL DEFAULT 0;
 ALTER TABLE provider_accounts ADD COLUMN IF NOT EXISTS owner_user_id TEXT;
 `;
     await targetPool.query(ddl);
@@ -457,17 +476,60 @@ export async function loadAllFromCloudSql(): Promise<CloudSqlLoadResult | null> 
       }
     }
 
+    const mappedUtilityAccounts = (utilityAccountsRes.ok ? utilityAccountsRes.rows : []).map((row) => {
+      const rawAssigned = Array.isArray(row.assignedUserIds) ? row.assignedUserIds : [];
+      const hiddenUtilityTabs = rawAssigned
+        .filter((x) => typeof x === 'string' && x.startsWith('__hidden_tab__:'))
+        .map((x) => x.slice('__hidden_tab__:'.length));
+      const cleanAssignedUserIds = rawAssigned.filter(
+        (x) => typeof x === 'string' && !x.startsWith('__hidden_tab__:')
+      );
+      return {
+        ...row,
+        assignedUserIds: cleanAssignedUserIds,
+        hiddenUtilityTabs,
+      } as Record<string, unknown>;
+    });
+
+    const mappedUsers = (usersRes.ok ? usersRes.rows : []).map((row) => {
+      const rawTabs = Array.isArray(row.allowedTabs) ? row.allowedTabs : null;
+      const allowedSettings = rawTabs
+        ? rawTabs
+            .filter((x) => typeof x === 'string' && x.startsWith('settings:'))
+            .map((x) => x.slice('settings:'.length))
+        : [];
+      const userVariant = rawTabs
+        ? rawTabs
+            .filter((x) => typeof x === 'string' && x.startsWith('variant:'))
+            .map((x) => x.slice('variant:'.length))[0]
+        : null;
+      const cleanTabs = rawTabs
+        ? rawTabs.filter(
+            (x) => typeof x === 'string' && !x.startsWith('settings:') && !x.startsWith('variant:')
+          )
+        : null;
+      const tariffs = (settingsObj?.['utilityTariffsSettings'] as Record<string, unknown>) || {};
+      const userVariantsMap = (tariffs['userOutageVariants'] as Record<string, string>) || {};
+      const resolvedVariant = userVariant || userVariantsMap[String(row.id)] || 'v10_minimal_pills';
+      return {
+        ...row,
+        allowedTabs: cleanTabs,
+        allowedSettings,
+        outageScheduleViewVariant: resolvedVariant,
+      } as Record<string, unknown>;
+    });
+
     return {
       clients: (clientsRes.ok ? clientsRes.rows : []) as Record<string, unknown>[],
       payments: (paymentsRes.ok ? paymentsRes.rows : []) as Record<string, unknown>[],
       providerAccounts: (accountsRes.ok ? accountsRes.rows : []) as Record<string, unknown>[],
       providerDeposits: (depositsRes.ok ? depositsRes.rows : []) as Record<string, unknown>[],
-      utilityAccounts: (utilityAccountsRes.ok ? utilityAccountsRes.rows : []) as Record<string, unknown>[],
+      utilityAccounts: mappedUtilityAccounts,
       utilityReadings: (utilityReadingsRes.ok ? utilityReadingsRes.rows : []) as Record<string, unknown>[],
       customLedgerEntries: (ledgerEntriesRes.ok ? ledgerEntriesRes.rows : []) as Record<string, unknown>[],
       providerBalanceAdjustments: (adjustmentsRes.ok ? adjustmentsRes.rows : []) as Record<string, unknown>[],
       accountDeductionOverrides: (overridesRes.ok ? overridesRes.rows : []) as Record<string, unknown>[],
-      users: (usersRes.ok ? usersRes.rows : []) as Record<string, unknown>[],
+      users: mappedUsers,
       settings: settingsObj,
       settingsReadSuccess: settingsRes.ok,
     };
@@ -480,9 +542,12 @@ export async function loadAllFromCloudSql(): Promise<CloudSqlLoadResult | null> 
   }
 }
 
-export async function saveClientToCloudSql(client: Record<string, unknown>): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function saveClientToCloudSql(client: Record<string, unknown>, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
+    const targetDb = getDbForMode(targetMode);
     const data = {
       id: String(client['id']),
       fullName: String(client['fullName'] || ''),
@@ -501,6 +566,8 @@ export async function saveClientToCloudSql(client: Record<string, unknown>): Pro
       telegramUsername: client['telegramUsername'] ? String(client['telegramUsername']) : null,
       viberId: client['viberId'] ? String(client['viberId']) : null,
       notes: client['notes'] ? String(client['notes']) : null,
+      groupName: client['groupName'] ? String(client['groupName']) : null,
+      groupBalance: client['groupBalance'] != null ? Number(client['groupBalance']) : 0,
       lastReminderDate: client['lastReminderDate'] ? String(client['lastReminderDate']) : null,
       lastReminderStatus: client['lastReminderStatus'] ? String(client['lastReminderStatus']) : null,
       ownerUserId: client['ownerUserId'] ? String(client['ownerUserId']) : null,
@@ -508,7 +575,7 @@ export async function saveClientToCloudSql(client: Record<string, unknown>): Pro
       updatedAt: String(client['updatedAt'] || new Date().toISOString()),
     };
 
-    await db.insert(clients)
+    await targetDb.insert(clients)
       .values(data)
       .onConflictDoUpdate({
         target: clients.id,
@@ -518,27 +585,33 @@ export async function saveClientToCloudSql(client: Record<string, unknown>): Pro
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] saveClient error:', err);
+    console.error(`[PostgreSQL:${targetMode}] saveClient error:`, err);
     return false;
   }
 }
 
-export async function deleteClientFromCloudSql(clientId: string): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function deleteClientFromCloudSql(clientId: string, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
-    await db.delete(clients).where(eq(clients.id, clientId));
-    await db.delete(payments).where(eq(payments.clientId, clientId));
+    const targetDb = getDbForMode(targetMode);
+    await targetDb.delete(clients).where(eq(clients.id, clientId));
+    await targetDb.delete(payments).where(eq(payments.clientId, clientId));
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] deleteClient error:', err);
+    console.error(`[PostgreSQL:${targetMode}] deleteClient error:`, err);
     return false;
   }
 }
 
-export async function savePaymentToCloudSql(payment: Record<string, unknown>): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function savePaymentToCloudSql(payment: Record<string, unknown>, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
+    const targetDb = getDbForMode(targetMode);
     const data = {
       id: String(payment['id']),
       clientId: String(payment['clientId']),
@@ -556,7 +629,7 @@ export async function savePaymentToCloudSql(payment: Record<string, unknown>): P
       note: payment['note'] ? String(payment['note']) : null,
     };
 
-    await db.insert(payments)
+    await targetDb.insert(payments)
       .values(data)
       .onConflictDoUpdate({
         target: payments.id,
@@ -566,26 +639,32 @@ export async function savePaymentToCloudSql(payment: Record<string, unknown>): P
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] savePayment error:', err);
+    console.error(`[PostgreSQL:${targetMode}] savePayment error:`, err);
     return false;
   }
 }
 
-export async function deletePaymentFromCloudSql(paymentId: string): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function deletePaymentFromCloudSql(paymentId: string, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
-    await db.delete(payments).where(eq(payments.id, paymentId));
+    const targetDb = getDbForMode(targetMode);
+    await targetDb.delete(payments).where(eq(payments.id, paymentId));
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] deletePayment error:', err);
+    console.error(`[PostgreSQL:${targetMode}] deletePayment error:`, err);
     return false;
   }
 }
 
-export async function saveProviderAccountToCloudSql(account: Record<string, unknown>): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function saveProviderAccountToCloudSql(account: Record<string, unknown>, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
+    const targetDb = getDbForMode(targetMode);
     const data = {
       id: String(account['id']),
       name: String(account['name'] || ''),
@@ -607,7 +686,7 @@ export async function saveProviderAccountToCloudSql(account: Record<string, unkn
       updatedAt: account['updatedAt'] ? String(account['updatedAt']) : null,
     };
 
-    await db.insert(providerAccounts)
+    await targetDb.insert(providerAccounts)
       .values(data)
       .onConflictDoUpdate({
         target: providerAccounts.id,
@@ -617,26 +696,32 @@ export async function saveProviderAccountToCloudSql(account: Record<string, unkn
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] saveProviderAccount error:', err);
+    console.error(`[PostgreSQL:${targetMode}] saveProviderAccount error:`, err);
     return false;
   }
 }
 
-export async function deleteProviderAccountFromCloudSql(accountId: string): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function deleteProviderAccountFromCloudSql(accountId: string, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
-    await db.delete(providerAccounts).where(eq(providerAccounts.id, accountId));
+    const targetDb = getDbForMode(targetMode);
+    await targetDb.delete(providerAccounts).where(eq(providerAccounts.id, accountId));
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] deleteProviderAccount error:', err);
+    console.error(`[PostgreSQL:${targetMode}] deleteProviderAccount error:`, err);
     return false;
   }
 }
 
-export async function saveProviderDepositToCloudSql(deposit: Record<string, unknown>): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function saveProviderDepositToCloudSql(deposit: Record<string, unknown>, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
+    const targetDb = getDbForMode(targetMode);
     const data = {
       id: String(deposit['id']),
       date: String(deposit['date'] || new Date().toISOString().split('T')[0]),
@@ -648,7 +733,7 @@ export async function saveProviderDepositToCloudSql(deposit: Record<string, unkn
       createdAt: String(deposit['createdAt'] || new Date().toISOString()),
     };
 
-    await db.insert(providerDeposits)
+    await targetDb.insert(providerDeposits)
       .values(data)
       .onConflictDoUpdate({
         target: providerDeposits.id,
@@ -658,26 +743,43 @@ export async function saveProviderDepositToCloudSql(deposit: Record<string, unkn
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] saveProviderDeposit error:', err);
+    console.error(`[PostgreSQL:${targetMode}] saveProviderDeposit error:`, err);
     return false;
   }
 }
 
-export async function deleteProviderDepositFromCloudSql(depositId: string): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function deleteProviderDepositFromCloudSql(depositId: string, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
-    await db.delete(providerDeposits).where(eq(providerDeposits.id, depositId));
+    const targetDb = getDbForMode(targetMode);
+    await targetDb.delete(providerDeposits).where(eq(providerDeposits.id, depositId));
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] deleteProviderDeposit error:', err);
+    console.error(`[PostgreSQL:${targetMode}] deleteProviderDeposit error:`, err);
     return false;
   }
 }
 
-export async function saveUtilityAccountToCloudSql(account: Record<string, unknown>): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function saveUtilityAccountToCloudSql(account: Record<string, unknown>, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
+    const targetDb = getDbForMode(targetMode);
+    const baseAssignedUsers = Array.isArray(account['assignedUserIds'])
+      ? (account['assignedUserIds'] as string[]).filter((x) => typeof x === 'string' && !x.startsWith('__hidden_tab__:'))
+      : [];
+    const hiddenTabs = Array.isArray(account['hiddenUtilityTabs'])
+      ? (account['hiddenUtilityTabs'] as string[]).filter(Boolean)
+      : [];
+    const serializedAssignedUserIds = [
+      ...baseAssignedUsers,
+      ...hiddenTabs.map((t) => `__hidden_tab__:${t}`),
+    ];
+
     const data = {
       id: String(account['id']),
       type: String(account['type'] || 'electricity'),
@@ -699,7 +801,7 @@ export async function saveUtilityAccountToCloudSql(account: Record<string, unkno
       balanceUah: Number(account['balanceUah']) || 0,
       notes: account['notes'] ? String(account['notes']) : null,
       ownerUserId: account['ownerUserId'] ? String(account['ownerUserId']) : null,
-      assignedUserIds: Array.isArray(account['assignedUserIds']) ? (account['assignedUserIds'] as string[]) : [],
+      assignedUserIds: serializedAssignedUserIds,
       dtekLogin: account['dtekLogin'] ? String(account['dtekLogin']) : null,
       dtekPasswordEnc: account['dtekPasswordEnc'] ? String(account['dtekPasswordEnc']) : null,
       dtekCabinetStatus: account['dtekCabinetStatus'] ? String(account['dtekCabinetStatus']) : null,
@@ -712,11 +814,12 @@ export async function saveUtilityAccountToCloudSql(account: Record<string, unkno
       ooekHistory: Array.isArray(account['ooekHistory']) ? (account['ooekHistory'] as Record<string, unknown>[]) : [],
       ooekCabinetStatus: account['ooekCabinetStatus'] ? String(account['ooekCabinetStatus']) : null,
       ooekCabinetLastSync: account['ooekCabinetLastSync'] ? String(account['ooekCabinetLastSync']) : null,
+      devices: Array.isArray(account['devices']) ? (account['devices'] as Record<string, unknown>[]) : [],
       createdAt: String(account['createdAt'] || new Date().toISOString()),
       updatedAt: account['updatedAt'] ? String(account['updatedAt']) : null,
     };
 
-    await db.insert(utilityAccounts)
+    await targetDb.insert(utilityAccounts)
       .values(data)
       .onConflictDoUpdate({
         target: utilityAccounts.id,
@@ -726,27 +829,33 @@ export async function saveUtilityAccountToCloudSql(account: Record<string, unkno
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] saveUtilityAccount error:', err);
+    console.error(`[PostgreSQL:${targetMode}] saveUtilityAccount error:`, err);
     return false;
   }
 }
 
-export async function deleteUtilityAccountFromCloudSql(accountId: string): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function deleteUtilityAccountFromCloudSql(accountId: string, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
-    await db.delete(utilityAccounts).where(eq(utilityAccounts.id, accountId));
-    await db.delete(utilityReadings).where(eq(utilityReadings.accountId, accountId));
+    const targetDb = getDbForMode(targetMode);
+    await targetDb.delete(utilityAccounts).where(eq(utilityAccounts.id, accountId));
+    await targetDb.delete(utilityReadings).where(eq(utilityReadings.accountId, accountId));
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] deleteUtilityAccount error:', err);
+    console.error(`[PostgreSQL:${targetMode}] deleteUtilityAccount error:`, err);
     return false;
   }
 }
 
-export async function saveUtilityReadingToCloudSql(reading: Record<string, unknown>): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function saveUtilityReadingToCloudSql(reading: Record<string, unknown>, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
+    const targetDb = getDbForMode(targetMode);
     const isControlOnly = reading['isControlOnly'] === true || String(reading['isControlOnly']) === 'true' || reading['readingPurpose'] === 'control';
     const data = {
       id: String(reading['id']),
@@ -774,7 +883,7 @@ export async function saveUtilityReadingToCloudSql(reading: Record<string, unkno
       createdAt: String(reading['createdAt'] || new Date().toISOString()),
     };
 
-    await db.insert(utilityReadings)
+    await targetDb.insert(utilityReadings)
       .values(data)
       .onConflictDoUpdate({
         target: utilityReadings.id,
@@ -784,26 +893,32 @@ export async function saveUtilityReadingToCloudSql(reading: Record<string, unkno
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] saveUtilityReading error:', err);
+    console.error(`[PostgreSQL:${targetMode}] saveUtilityReading error:`, err);
     return false;
   }
 }
 
-export async function deleteUtilityReadingFromCloudSql(readingId: string): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function deleteUtilityReadingFromCloudSql(readingId: string, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
-    await db.delete(utilityReadings).where(eq(utilityReadings.id, readingId));
+    const targetDb = getDbForMode(targetMode);
+    await targetDb.delete(utilityReadings).where(eq(utilityReadings.id, readingId));
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] deleteUtilityReading error:', err);
+    console.error(`[PostgreSQL:${targetMode}] deleteUtilityReading error:`, err);
     return false;
   }
 }
 
-export async function saveCustomLedgerEntryToCloudSql(entry: Record<string, unknown>): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function saveCustomLedgerEntryToCloudSql(entry: Record<string, unknown>, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
+    const targetDb = getDbForMode(targetMode);
     const data = {
       id: String(entry['id']),
       type: String(entry['type']),
@@ -824,7 +939,7 @@ export async function saveCustomLedgerEntryToCloudSql(entry: Record<string, unkn
       createdAt: String(entry['createdAt'] || new Date().toISOString()),
     };
 
-    await db.insert(customLedgerEntries)
+    await targetDb.insert(customLedgerEntries)
       .values(data)
       .onConflictDoUpdate({
         target: customLedgerEntries.id,
@@ -834,26 +949,32 @@ export async function saveCustomLedgerEntryToCloudSql(entry: Record<string, unkn
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] saveCustomLedgerEntry error:', err);
+    console.error(`[PostgreSQL:${targetMode}] saveCustomLedgerEntry error:`, err);
     return false;
   }
 }
 
-export async function deleteCustomLedgerEntryFromCloudSql(entryId: string): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function deleteCustomLedgerEntryFromCloudSql(entryId: string, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
-    await db.delete(customLedgerEntries).where(eq(customLedgerEntries.id, entryId));
+    const targetDb = getDbForMode(targetMode);
+    await targetDb.delete(customLedgerEntries).where(eq(customLedgerEntries.id, entryId));
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] deleteCustomLedgerEntry error:', err);
+    console.error(`[PostgreSQL:${targetMode}] deleteCustomLedgerEntry error:`, err);
     return false;
   }
 }
 
-export async function saveProviderBalanceAdjustmentToCloudSql(adj: Record<string, unknown>): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function saveProviderBalanceAdjustmentToCloudSql(adj: Record<string, unknown>, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
+    const targetDb = getDbForMode(targetMode);
     const data = {
       id: String(adj['id']),
       date: String(adj['date']),
@@ -862,7 +983,7 @@ export async function saveProviderBalanceAdjustmentToCloudSql(adj: Record<string
       createdAt: String(adj['createdAt'] || new Date().toISOString()),
     };
 
-    await db.insert(providerBalanceAdjustments)
+    await targetDb.insert(providerBalanceAdjustments)
       .values(data)
       .onConflictDoUpdate({
         target: providerBalanceAdjustments.id,
@@ -872,26 +993,32 @@ export async function saveProviderBalanceAdjustmentToCloudSql(adj: Record<string
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] saveProviderBalanceAdjustment error:', err);
+    console.error(`[PostgreSQL:${targetMode}] saveProviderBalanceAdjustment error:`, err);
     return false;
   }
 }
 
-export async function deleteProviderBalanceAdjustmentFromCloudSql(adjId: string): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function deleteProviderBalanceAdjustmentFromCloudSql(adjId: string, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
-    await db.delete(providerBalanceAdjustments).where(eq(providerBalanceAdjustments.id, adjId));
+    const targetDb = getDbForMode(targetMode);
+    await targetDb.delete(providerBalanceAdjustments).where(eq(providerBalanceAdjustments.id, adjId));
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] deleteProviderBalanceAdjustment error:', err);
+    console.error(`[PostgreSQL:${targetMode}] deleteProviderBalanceAdjustment error:`, err);
     return false;
   }
 }
 
-export async function saveAccountDeductionOverrideToCloudSql(override: Record<string, unknown>): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function saveAccountDeductionOverrideToCloudSql(override: Record<string, unknown>, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
+    const targetDb = getDbForMode(targetMode);
     const data = {
       id: String(override['id']),
       isExcluded: Boolean(override['isExcluded']),
@@ -904,7 +1031,7 @@ export async function saveAccountDeductionOverrideToCloudSql(override: Record<st
       createdAt: override['createdAt'] ? String(override['createdAt']) : null,
     };
 
-    await db.insert(accountDeductionOverrides)
+    await targetDb.insert(accountDeductionOverrides)
       .values(data)
       .onConflictDoUpdate({
         target: accountDeductionOverrides.id,
@@ -914,14 +1041,37 @@ export async function saveAccountDeductionOverrideToCloudSql(override: Record<st
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] saveAccountDeductionOverride error:', err);
+    console.error(`[PostgreSQL:${targetMode}] saveAccountDeductionOverride error:`, err);
     return false;
   }
 }
 
-export async function saveUserToCloudSql(user: Record<string, unknown>): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function saveUserToCloudSql(user: Record<string, unknown>, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
+    const targetDb = getDbForMode(targetMode);
+    const baseTabs = Array.isArray(user['allowedTabs'])
+      ? (user['allowedTabs'] as string[]).filter(
+          (x) => typeof x === 'string' && !x.startsWith('settings:') && !x.startsWith('variant:')
+        )
+      : null;
+    const allowedSettings = Array.isArray(user['allowedSettings'])
+      ? (user['allowedSettings'] as string[]).filter(Boolean)
+      : [];
+    const variantTag = user['outageScheduleViewVariant']
+      ? [`variant:${user['outageScheduleViewVariant']}`]
+      : [];
+    const serializedAllowedTabs =
+      baseTabs !== null || allowedSettings.length > 0 || variantTag.length > 0
+        ? [
+            ...(baseTabs || ['electricity', 'water', 'waste', 'water_waste']),
+            ...allowedSettings.map((s) => `settings:${s}`),
+            ...variantTag,
+          ]
+        : null;
+
     const data = {
       id: String(user['id']),
       email: String(user['email'] || ''),
@@ -930,17 +1080,18 @@ export async function saveUserToCloudSql(user: Record<string, unknown>): Promise
       role: String(user['role'] || 'admin'),
       status: String(user['status'] || 'active'),
       sub: user['sub'] ? String(user['sub']) : null,
-      allowedTabs: Array.isArray(user['allowedTabs']) ? (user['allowedTabs'] as string[]) : null,
+      allowedTabs: serializedAllowedTabs,
       assignedUtilityAccountIds: Array.isArray(user['assignedUtilityAccountIds'])
         ? (user['assignedUtilityAccountIds'] as string[])
         : [],
       assignedClientIds: Array.isArray(user['assignedClientIds']) ? (user['assignedClientIds'] as string[]) : [],
+      defaultUtilityAccountId: user['defaultUtilityAccountId'] ? String(user['defaultUtilityAccountId']) : null,
       canManageOwnData: user['canManageOwnData'] !== undefined ? Boolean(user['canManageOwnData']) : true,
       createdAt: String(user['createdAt'] || new Date().toISOString()),
       lastLoginAt: user['lastLoginAt'] ? String(user['lastLoginAt']) : null,
     };
 
-    await db.insert(users)
+    await targetDb.insert(users)
       .values(data)
       .onConflictDoUpdate({
         target: users.id,
@@ -950,26 +1101,32 @@ export async function saveUserToCloudSql(user: Record<string, unknown>): Promise
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] saveUser error:', err);
+    console.error(`[PostgreSQL:${targetMode}] saveUser error:`, err);
     return false;
   }
 }
 
-export async function deleteUserFromCloudSql(userId: string): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function deleteUserFromCloudSql(userId: string, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
-    await db.delete(users).where(eq(users.id, userId));
+    const targetDb = getDbForMode(targetMode);
+    await targetDb.delete(users).where(eq(users.id, userId));
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] deleteUser error:', err);
+    console.error(`[PostgreSQL:${targetMode}] deleteUser error:`, err);
     return false;
   }
 }
 
-export async function saveSettingsToCloudSql(settingsObj: Record<string, unknown>): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function saveSettingsToCloudSql(settingsObj: Record<string, unknown>, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
   try {
+    const targetDb = getDbForMode(targetMode);
     const data = {
       id: 'global',
       telegramBotToken: String(settingsObj['telegramBotToken'] || ''),
@@ -987,22 +1144,26 @@ export async function saveSettingsToCloudSql(settingsObj: Record<string, unknown
       utilityTariffsSettings: settingsObj['utilityTariffsSettings'] || null,
     };
 
-    await db.insert(settings)
+    await targetDb.insert(settings)
       .values(data)
       .onConflictDoUpdate({
         target: settings.id,
         set: data,
       });
 
-    isConnectedToCloudSql = true;
-    connectionError = null;
+    if (!mode || mode === getActiveDbMode()) {
+      isConnectedToCloudSql = true;
+      connectionError = null;
+    }
     lastSyncTimestamp = new Date().toISOString();
     return true;
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error('[PostgreSQL] saveSettings error:', msg);
-    isConnectedToCloudSql = false;
-    connectionError = msg;
+    console.error(`[PostgreSQL:${targetMode}] saveSettings error:`, msg);
+    if (!mode || mode === getActiveDbMode()) {
+      isConnectedToCloudSql = false;
+      connectionError = msg;
+    }
     return false;
   }
 }
@@ -1024,8 +1185,9 @@ export async function getSettingsFromCloudSql(): Promise<Record<string, unknown>
   }
 }
 
-export async function seedInitialDataToCloudSql(fullDb: Record<string, unknown>): Promise<boolean> {
-  if (!isCloudSqlAvailable()) return false;
+export async function seedInitialDataToCloudSql(fullDb: Record<string, unknown>, mode?: DatabaseMode): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
   try {
     if (fullDb['settings']) {
       await saveSettingsToCloudSql(fullDb['settings'] as Record<string, unknown>);
@@ -1060,10 +1222,10 @@ export async function seedInitialDataToCloudSql(fullDb: Record<string, unknown>)
     if (Array.isArray(fullDb['users'])) {
       for (const u of fullDb['users']) await saveUserToCloudSql(u as Record<string, unknown>);
     }
-    console.log('[PostgreSQL] Full database initialized in PostgreSQL');
+    console.log(`[PostgreSQL:${targetMode}] Full database initialized in PostgreSQL`);
     return true;
   } catch (err: unknown) {
-    console.error('[PostgreSQL] seedInitialData error:', err);
+    console.error(`[PostgreSQL:${targetMode}] seedInitialData error:`, err);
     return false;
   }
 }
@@ -1102,7 +1264,7 @@ export async function loadPersistedDbMode(): Promise<DatabaseMode> {
     await ensureDatabaseSchema(currentMode);
     const rows = await targetDb.select().from(settings).where(eq(settings.id, '__db_mode__'));
     if (rows.length > 0) {
-      const savedMode = rows[0].cardRequisites;
+      const savedMode = rows[0].cardRequisites as DatabaseMode;
       if (savedMode === 'cloudsql' || savedMode === 'external') {
         setActiveDbMode(savedMode);
         return savedMode;

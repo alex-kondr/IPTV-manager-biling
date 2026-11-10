@@ -16,6 +16,58 @@ export interface OoekAbonbookEntry {
   description?: string; // Додатковий опис операції
 }
 
+export type DeviceConsumptionEntryMode = 'cumulative_month' | 'single_day' | 'period_range' | 'delta';
+
+export interface ElectricityDeviceLogEntry {
+  id: string;
+  date: string; // YYYY-MM-DD (дата фіксації або дата початку відрізку)
+  endDate?: string; // YYYY-MM-DD (дата завершення відрізку часу, якщо охоплює декілька днів)
+  startTime?: string; // HH:mm (час початку відрізку, напр. "23:00" або "18:00")
+  endTime?: string; // HH:mm (час завершення відрізку, напр. "07:00" або "22:30")
+  durationHours?: number; // Тривалість роботи/споживання у годинах за цей відрізок
+  periodMonth: string; // YYYY-MM
+  consumedKwh: number; // Кількість спожитої електроенергії (кВт·год)
+  entryMode?: DeviceConsumptionEntryMode; // 'cumulative_month' | 'single_day' | 'period_range' | 'delta'
+  tariffSelection?: 'auto_time' | 'night_only' | 'day_only'; // Вибір тарифної зони: 'auto_time' (по часу) | 'night_only' (нічний Т2) | 'day_only' (денний Т1)
+  comment?: string; // Коментар користувача (пояснення до фото чи запису)
+  aiExplanation?: string; // Пояснення від AI-аналізу скріншоту
+  fromScreenshot?: boolean; // Чи додано через аналіз скріншоту
+  createdAt: string;
+}
+
+export interface ElectricityDevice {
+  id: string;
+  name: string; // Напр. "Кондиціонер (режим обігріву)", "Volkswagen E-Golf 2014 (24 кВт·год)", "Бойлер ванна"
+  category: string; // 'boiler' | 'climate' | 'heating_ac' | 'ev' | 'heating' | 'kitchen' | 'laundry' | 'pc' | 'power_station' | 'smart_plug' | 'other'
+  icon: string; // Material icon name, e.g. 'water_heater', 'ac_unit', 'electric_car', 'bolt'
+  color: string; // Hex or theme color e.g. '#f59e0b', '#06b6d4', '#10b981', '#2563eb'
+  powerWatts?: number; // Номінальна потужність приладу (Вт)
+  batteryCapacityKwh?: number; // Ємність батареї у кВт·год (напр. 24 для Volkswagen E-Golf 2014)
+  isNightFriendly?: boolean; // Чи можна перенести роботу на нічний тариф (23:00–07:00)
+  notes?: string;
+  logs: ElectricityDeviceLogEntry[];
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface ElectricityScreenshotAnalysisResult {
+  success: boolean;
+  consumedKwh: number;
+  valueType: DeviceConsumptionEntryMode;
+  detectedDate?: string;
+  detectedEndDate?: string;
+  detectedStartTime?: string;
+  detectedEndTime?: string;
+  detectedDurationHours?: number | null;
+  detectedDeviceName?: string;
+  powerWatts?: number | null;
+  explanation: string;
+  confidence?: string;
+  error?: string;
+}
+
+export type UtilityServiceTabId = 'outage_schedule' | 'electricity' | 'water' | 'waste';
+
 export interface UtilityAccount {
   id: string;
   type: 'electricity' | 'water_waste';
@@ -34,6 +86,7 @@ export interface UtilityAccount {
   initialReadingWater?: number; // Початковий показник лічильника води
   waterEnabled?: boolean;
   wasteEnabled?: boolean;
+  hiddenUtilityTabs?: UtilityServiceTabId[]; // Вкладки комунальних послуг, де цей будинок приховано
   balanceUah?: number; // Залишок коштів на рахунку (грн)
   notes?: string;
   ownerUserId?: string; // ID користувача, який створив рахунок
@@ -51,8 +104,43 @@ export interface UtilityAccount {
   ooekDiscoveredAccounts?: string[]; // Знайдені особові рахунки в кабінеті ООЕК
   ooekCabinetStatus?: string; // Статус підключення до ООЕК
   ooekCabinetLastSync?: string; // Час останнього оновлення суми з ООЕК
+  devices?: ElectricityDevice[]; // Пристрої моніторингу споживання електроенергії
   createdAt: string;
   updatedAt?: string;
+}
+
+export const HIDDEN_TAB_MARKER_PREFIX = '__hidden_tab__:';
+
+export function extractHiddenTabsFromAccount(acc?: Partial<UtilityAccount> | null): UtilityServiceTabId[] {
+  if (!acc) return [];
+  const isWaterWaste = acc.type === 'water_waste';
+  const validGroupTabs: UtilityServiceTabId[] = isWaterWaste
+    ? ['water', 'waste']
+    : ['outage_schedule', 'electricity'];
+  const tabs = new Set<UtilityServiceTabId>();
+  if (Array.isArray(acc.hiddenUtilityTabs)) {
+    for (const t of acc.hiddenUtilityTabs) {
+      if (validGroupTabs.includes(t)) {
+        tabs.add(t);
+      }
+    }
+  }
+  if (Array.isArray(acc.assignedUserIds)) {
+    for (const item of acc.assignedUserIds) {
+      if (typeof item === 'string' && item.startsWith(HIDDEN_TAB_MARKER_PREFIX)) {
+        const t = item.slice(HIDDEN_TAB_MARKER_PREFIX.length) as UtilityServiceTabId;
+        if (validGroupTabs.includes(t)) {
+          tabs.add(t);
+        }
+      }
+    }
+  }
+  return Array.from(tabs);
+}
+
+export function isAccountHiddenInTab(acc: Partial<UtilityAccount> | null | undefined, tab: UtilityServiceTabId): boolean {
+  if (!acc) return false;
+  return extractHiddenTabsFromAccount(acc).includes(tab);
 }
 
 
@@ -97,7 +185,124 @@ export interface TariffHistoryItem {
   note?: string;
 }
 
+export type OutageScheduleViewVariant =
+  | 'v1_classic_grid'
+  | 'v2_linear_ribbon'
+  | 'v3_circular_radar'
+  | 'v4_shift_quadrants'
+  | 'v5_interval_cards'
+  | 'v6_matrix_4x6'
+  | 'v7_compact_table'
+  | 'v8_cyber_scada'
+  | 'v9_dual_day_compare'
+  | 'v10_minimal_pills';
+
+export interface OutageScheduleVariantMeta {
+  id: OutageScheduleViewVariant;
+  number: number;
+  name: string;
+  shortName: string;
+  description: string;
+  icon: string;
+  accent: string;
+}
+
+export const OUTAGE_SCHEDULE_VARIANTS: OutageScheduleVariantMeta[] = [
+  {
+    id: 'v1_classic_grid',
+    number: 1,
+    name: 'Варіант 1: Класична 24-годинна сітка',
+    shortName: '1. Класична сітка 24г',
+    description: 'Наочні погодинні комірки (00–24) з поділом кожної години на дві половини по 30 хв та підсвіткою поточної години',
+    icon: 'grid_view',
+    accent: 'indigo',
+  },
+  {
+    id: 'v2_linear_ribbon',
+    number: 2,
+    name: 'Варіант 2: Горизонтальна стрічка-таймлайн',
+    shortName: '2. Стрічка-таймлайн',
+    description: 'Безперервна 48-сегментна шкала доби з маркером поточного часу «ЗАРАЗ» та списком вікон відключень',
+    icon: 'view_timeline',
+    accent: 'emerald',
+  },
+  {
+    id: 'v3_circular_radar',
+    number: 3,
+    name: 'Варіант 3: Круговий 24-годинний радар (Циферблат)',
+    shortName: '3. Круговий циферблат',
+    description: 'Інтерактивна кругова SVG-діаграма доби на 24 сектори зі стрілкою поточного часу та балансом у центрі',
+    icon: 'donut_large',
+    accent: 'amber',
+  },
+  {
+    id: 'v4_shift_quadrants',
+    number: 4,
+    name: 'Варіант 4: Чотири фази доби (Ніч / Ранок / День / Вечір)',
+    shortName: '4. Фази доби (4×6г)',
+    description: 'Розподіл доби на 4 життєві періоди по 6 годин (00–06, 06–12, 12–18, 18–24) із підсумком світла для кожної фази',
+    icon: 'wb_twilight',
+    accent: 'sky',
+  },
+  {
+    id: 'v5_interval_cards',
+    number: 5,
+    name: 'Варіант 5: Картки інтервалів (Зі світлом / Без світла)',
+    shortName: '5. Картки інтервалів',
+    description: 'Хронологічні блоки згрупованих періодів («00:00–08:00 — 8 год зі світлом», «08:00–12:00 — 4 год відключення»)',
+    icon: 'view_agenda',
+    accent: 'rose',
+  },
+  {
+    id: 'v6_matrix_4x6',
+    number: 6,
+    name: 'Варіант 6: Матриця 4×6 (Великі сенсорні плитки)',
+    shortName: '6. Матриця 4×6',
+    description: 'Великі контрастні плитки у форматі 4 рядки × 6 годин із детальним підписом кожної півгодини — зручно для смартфона',
+    icon: 'apps',
+    accent: 'violet',
+  },
+  {
+    id: 'v7_compact_table',
+    number: 7,
+    name: 'Варіант 7: Детальна таблиця-розклад (Погодинна відомість)',
+    shortName: '7. Таблиця-розклад',
+    description: 'Структурована таблиця з колонками «Година», «00–30 хв», «30–60 хв», «Статус» та індикатором тарифної зони День/Ніч',
+    icon: 'table_chart',
+    accent: 'teal',
+  },
+  {
+    id: 'v8_cyber_scada',
+    number: 8,
+    name: 'Варіант 8: Диспетчерський монітор SCADA (Темна панель)',
+    shortName: '8. SCADA Монітор',
+    description: 'Темна інженерна панель моніторингу мережі з неоновими індикаторами стану лінії та осцилограмою 48 півгодин',
+    icon: 'terminal',
+    accent: 'cyan',
+  },
+  {
+    id: 'v9_dual_day_compare',
+    number: 9,
+    name: 'Варіант 9: Порівняння «Сьогодні vs Завтра» (Дві доби поруч)',
+    shortName: '9. Сьогодні vs Завтра',
+    description: 'Синхронне дворядкове порівняння графіка сьогоднішньої та завтрашньої доби година-в-годину для планування',
+    icon: 'compare_arrows',
+    accent: 'orange',
+  },
+  {
+    id: 'v10_minimal_pills',
+    number: 10,
+    name: 'Варіант 10: Мінімалістичні капсули + Фокус на поточній годині',
+    shortName: '10. Мінімал-капсули',
+    description: 'Лаконічний огляд: акцент на поточному стані, скільки годин залишилось до зміни стану та компактна стрічка капсул',
+    icon: 'lens_blur',
+    accent: 'slate',
+  },
+];
+
 export interface UtilityTariffsSettings {
+  outageScheduleViewVariant?: OutageScheduleViewVariant;
+  userOutageVariants?: Record<string, string>;
   water: {
     price: number; // грн за 1 м³
     monthlyFee?: number; // грн на місяць (абоноплата)
@@ -130,6 +335,7 @@ export interface UtilityTariffsSettings {
 }
 
 export const DEFAULT_UTILITY_TARIFFS: UtilityTariffsSettings = {
+  outageScheduleViewVariant: 'v1_classic_grid',
   water: {
     price: 32,
     monthlyFee: 0,

@@ -1,41 +1,33 @@
 import { HttpInterceptorFn } from '@angular/common/http';
 
 export const authInterceptor: HttpInterceptorFn = (req, next) => {
-  // Only intercept /api/ requests
-  if (!req.url.startsWith('/api') && !req.url.includes('/api/')) {
-    return next(req);
-  }
+  if (typeof localStorage !== 'undefined') {
+    try {
+      // Purge legacy unauthenticated localStorage keys that previously auto-logged visitors as admin
+      localStorage.removeItem('iptv_auth_token');
+      localStorage.removeItem('iptv_auth_user');
 
-  let token: string | null = null;
-  let userId: string | null = null;
-  let userEmail: string | null = null;
+      const token =
+        localStorage.getItem('homehub_gauth3_token') ||
+        (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('homehub_gauth3_token') : null);
+      const impersonateUid =
+        typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('homehub_impersonate_uid') : null;
 
-  try {
-    if (typeof localStorage !== 'undefined') {
-      token = localStorage.getItem('iptv_auth_token');
-      const rawUser = localStorage.getItem('iptv_auth_user');
-      if (rawUser) {
-        const parsed = JSON.parse(rawUser);
-        userId = parsed?.id || null;
-        userEmail = parsed?.email || null;
+      const setHeaders: Record<string, string> = {};
+      if (token && token.startsWith('gauth3_') && !req.headers.has('Authorization')) {
+        setHeaders['Authorization'] = `Bearer ${token}`;
       }
+      if (impersonateUid && !req.headers.has('x-impersonate-user-id')) {
+        setHeaders['x-impersonate-user-id'] = impersonateUid;
+      }
+
+      if (Object.keys(setHeaders).length > 0) {
+        return next(req.clone({ setHeaders }));
+      }
+    } catch {
+      // Ignore storage errors
     }
-  } catch {
-    // Ignore localStorage parse errors
   }
-
-  let headers = req.headers;
-
-  if (token && !headers.has('Authorization')) {
-    headers = headers.set('Authorization', `Bearer ${token}`);
-  }
-  if (userId && !headers.has('x-auth-user-id')) {
-    headers = headers.set('x-auth-user-id', userId);
-  }
-  if (userEmail && !headers.has('x-auth-user-email')) {
-    headers = headers.set('x-auth-user-email', userEmail);
-  }
-
-  const clonedReq = req.clone({ headers });
-  return next(clonedReq);
+  return next(req);
 };
+

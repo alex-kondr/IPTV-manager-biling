@@ -368,7 +368,7 @@ type BalanceCalibTab = 'exact' | 'delta';
                         [class.text-rose-600]="item.amountUah < 0"
                         [class.text-slate-500]="item.amountUah === 0"
                       >
-                        {{ item.amountUah > 0 ? '+' : '' }}{{ item.amountUah !== 0 ? item.amountUah.toLocaleString('uk-UA') + ' ₴' : (item.amountUsd ? (item.amountUsd > 0 ? '+$' : '-$') + Math.abs(item.amountUsd) + ' USD' : '—') }}
+                        {{ (item.amountUah || 0) > 0 ? '+' : '' }}{{ (item.amountUah || 0) !== 0 ? (item.amountUah || 0).toLocaleString('uk-UA') + ' ₴' : (item.amountUsd ? (item.amountUsd > 0 ? '+$' : '-$') + Math.abs(item.amountUsd) + ' USD' : '—') }}
                       </td>
                       <td class="px-4 py-3 whitespace-nowrap text-center">
                         @if (item.balanceBeforeUsd !== undefined && item.balanceAfterUsd !== undefined) {
@@ -467,10 +467,10 @@ type BalanceCalibTab = 'exact' | 'delta';
                         }
                       </td>
                       <td class="px-4 py-3 text-right font-mono font-bold text-rose-600 whitespace-nowrap text-sm">
-                        -{{ dep.spentUah.toLocaleString('uk-UA') }} ₴
+                        -{{ (dep.spentUah || 0).toLocaleString('uk-UA') }} ₴
                       </td>
                       <td class="px-4 py-3 text-right font-mono text-slate-700 whitespace-nowrap">
-                        {{ (dep.exchangeRate || (dep.spentUah / dep.amountUsd)).toFixed(2) }} ₴/$
+                        {{ (dep.exchangeRate || ((dep.spentUah || 0) / (dep.amountUsd || 1))).toFixed(2) }} ₴/$
                       </td>
                       <td class="px-4 py-3 text-slate-700 whitespace-nowrap">
                         <span class="px-2 py-0.5 rounded bg-slate-100 text-2xs font-medium">

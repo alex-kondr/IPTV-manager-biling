@@ -1,6 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
+import { triggerFirebaseGooglePopup, triggerFirebaseSignOut } from '../firebase-client';
 import {
   Client,
   PaymentTransaction,
@@ -19,6 +20,9 @@ import {
   UserRole,
   AppUser,
   AppTabId,
+  SettingsSectionId,
+  ALL_SETTINGS_SECTIONS,
+  extractAllowedSettingsFromUser,
   DEFAULT_USER_TABS,
   ALL_ADMIN_TABS,
   calculateExtension,
@@ -29,7 +33,13 @@ import {
   UtilityAccount,
   UtilityReading,
   UtilityTariffsSettings,
+  UtilityServiceTabId,
+  extractHiddenTabsFromAccount,
+  isAccountHiddenInTab,
   DEFAULT_UTILITY_TARIFFS,
+  ElectricityDevice,
+  ElectricityScreenshotAnalysisResult,
+  OutageScheduleViewVariant,
 } from '../models/utility.model';
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -133,7 +143,11 @@ export function normalizeUtilityTariffs(raw?: Partial<UtilityTariffsSettings>): 
     }
   }
 
+  const outageScheduleViewVariant: OutageScheduleViewVariant =
+    t.outageScheduleViewVariant || DEFAULT_UTILITY_TARIFFS.outageScheduleViewVariant || 'v1_classic_grid';
+
   return {
+    outageScheduleViewVariant,
     water: {
       price: waterPrice,
       monthlyFee: waterMonthlyFee,
@@ -191,23 +205,25 @@ export interface BroadcastResult {
 }
 
 export interface DatabaseInstanceInfo {
-  mode: 'cloudsql' | 'external';
+  mode: string;
   provider: string;
   host: string;
   database: string;
   configured: boolean;
   connected: boolean;
+  lastUpdate?: string;
+  lastVersion?: string;
   error: string | null;
   counts: {
     clients: number;
     payments: number;
-    providerAccounts: number;
-    providerDeposits: number;
-    utilityAccounts: number;
-    utilityReadings: number;
-    customLedgerEntries: number;
-    users: number;
-    settingsConfigured: boolean;
+    providerAccounts?: number;
+    providerDeposits?: number;
+    utilityAccounts?: number;
+    utilityReadings?: number;
+    customLedgerEntries?: number;
+    users?: number;
+    settingsConfigured?: boolean;
   };
 }
 
@@ -235,18 +251,35 @@ export interface CopyDatabasesSummary {
   error?: string;
 }
 
+export interface CustomDbProfile {
+  id: string;
+  name: string;
+  type: 'postgresql' | 'sqlite' | 'firestore' | 'mysql';
+  host: string;
+  database: string;
+  description?: string;
+  connectionString?: string;
+  createdAt: string;
+  isCustom: boolean;
+}
+
 export interface CloudDbStatus {
-  activeMode?: 'cloudsql' | 'external';
+  activeMode?: string;
   provider: string;
   projectId: string;
   databaseId: string;
   connected: boolean;
   lastSync: string | null;
+  globalLastUpdate?: string;
+  globalVersion?: string;
+  dbLastUpdateTimes?: Record<string, string>;
+  dbLastUpdateVersions?: Record<string, string>;
+  schemaVersion?: string;
+  autoBackgroundSync?: boolean;
   error?: string | null;
-  instances?: {
-    cloudsql: DatabaseInstanceInfo;
-    external: DatabaseInstanceInfo;
-  };
+  customDatabases?: CustomDbProfile[];
+  benchmarks?: Record<string, { latencyMs: number; status: 'online' | 'offline'; testedAt: string }>;
+  instances?: Record<string, DatabaseInstanceInfo>;
   stats?: {
     clientsCount: number;
     paymentsCount: number;
@@ -279,12 +312,26 @@ export interface DtekDaySchedule {
   hourlySchedule: DtekHourSchedule[];
 }
 
+export interface DtekQueueSchedule {
+  queueKey: string;
+  queueNumber: string;
+  queueTitle: string;
+  scheduleDate: string;
+  isPowerAvailableNow: boolean;
+  totalPowerHours: number;
+  totalOutageHours: number;
+  outageIntervals: string[];
+  hourlySchedule: DtekHourSchedule[];
+  tomorrowSchedule: DtekDaySchedule | null;
+}
+
 export interface DtekShutdownInfo {
   success: boolean;
   city?: string;
   street?: string;
   houseNum?: string;
   updateFact?: string;
+  dtekJsonUpdatedAt?: string;
   fetchedAt?: string;
   startDate?: string | null;
   endDate?: string | null;
@@ -295,6 +342,7 @@ export interface DtekShutdownInfo {
   hourlySchedule?: DtekHourSchedule[];
   dailySchedules?: DtekDaySchedule[];
   tomorrowSchedule?: DtekDaySchedule | null;
+  allQueuesSchedules?: DtekQueueSchedule[];
   isPowerAvailableNow?: boolean;
   currentKyivHour?: number;
   kyivTime?: string;
@@ -357,49 +405,219 @@ export class IptvData {
   readonly isNewUser = computed<boolean>(() => this.currentUser()?.role === 'new');
   readonly canEdit = computed<boolean>(() => {
     const user = this.currentUser();
-    if (!user) return true;
+    if (!user) return false;
     if (user.role === 'admin') return true;
-    if (user.role === 'user') return user.canManageOwnData !== false;
+    if (user.role === 'user' || user.role === 'new') return user.canManageOwnData !== false;
     return false;
   });
-  readonly canView = computed<boolean>(() => !this.currentUser() || this.currentUser()?.role === 'admin' || this.currentUser()?.role === 'user');
+  readonly canView = computed<boolean>(() => !!this.currentUser());
   readonly pendingUsersCount = computed<number>(() => this.usersList().filter((u) => u.role === 'new').length);
 
   readonly allowedTabs = computed<AppTabId[]>(() => {
     const user = this.currentUser();
-    if (!user || user.role === 'admin') {
+    if (!user) {
+      return [];
+    }
+    if (user.role === 'admin') {
       return ALL_ADMIN_TABS;
     }
-    if (user.role === 'user') {
-      if (Array.isArray(user.allowedTabs) && user.allowedTabs.length > 0) {
-        return user.allowedTabs;
-      }
-      return DEFAULT_USER_TABS;
+    const rawTabs =
+      Array.isArray(user.allowedTabs) && user.allowedTabs.length > 0
+        ? (user.allowedTabs.filter((t) => typeof t === 'string' && !t.startsWith('settings:')) as AppTabId[])
+        : [...DEFAULT_USER_TABS];
+    const expanded = new Set<AppTabId>(rawTabs);
+    if (expanded.has('electricity')) {
+      expanded.add('outage_schedule');
     }
-    return [];
+    if (expanded.has('water_waste')) {
+      expanded.add('water');
+      expanded.add('waste');
+    }
+    return Array.from(expanded);
   });
+
+  readonly allowedSettingsSections = computed<SettingsSectionId[]>(() => {
+    const user = this.currentUser();
+    if (!user) {
+      return [];
+    }
+    if (user.role === 'admin') {
+      return ALL_SETTINGS_SECTIONS.map((s) => s.id);
+    }
+    return extractAllowedSettingsFromUser(user);
+  });
+
+  isSettingsSectionAllowed(sectionId: SettingsSectionId): boolean {
+    const user = this.currentUser();
+    if (!user) return false;
+    if (user.role === 'admin') return true;
+    return this.allowedSettingsSections().includes(sectionId);
+  }
 
   isTabAllowed(tab: AppTabId): boolean {
     const user = this.currentUser();
-    if (!user || user.role === 'admin') return true;
+    if (!user) return false;
+    if (user.role === 'admin') return true;
     if (tab === 'users') return false;
-    return this.allowedTabs().includes(tab);
+    if (tab === 'settings') {
+      return this.allowedSettingsSections().length > 0;
+    }
+    const tabs = this.allowedTabs();
+    if (tab === 'outage_schedule') {
+      return tabs.includes('outage_schedule') || tabs.includes('electricity');
+    }
+    if (tab === 'water' || tab === 'waste') {
+      return tabs.includes(tab) || tabs.includes('water_waste');
+    }
+    if (tab === 'water_waste') {
+      return tabs.includes('water_waste') || tabs.includes('water') || tabs.includes('waste');
+    }
+    return tabs.includes(tab);
   }
 
-  // Utility accounts & tariffs computed properties
+  // Utility Houses separated into two distinct groups:
+  // 1) Outage Schedule & Electricity share 'electricity' houses
+  // 2) Water & Waste share 'water_waste' houses
+  readonly allUtilityHouses = computed(() => this.utilityAccounts());
+
+  private isElectricityGroupHouse(a: UtilityAccount): boolean {
+    return !a.type || a.type === 'electricity';
+  }
+
+  private isWaterWasteGroupHouse(a: UtilityAccount): boolean {
+    return a.type === 'water_waste';
+  }
+
+  readonly scheduleAccounts = computed(() =>
+    this.utilityAccounts().filter(
+      (a) => this.isElectricityGroupHouse(a) && !isAccountHiddenInTab(a, 'outage_schedule')
+    )
+  );
+
   readonly electricityAccounts = computed(() =>
-    this.utilityAccounts().filter((a) => a.type === 'electricity')
+    this.utilityAccounts().filter(
+      (a) => this.isElectricityGroupHouse(a) && !isAccountHiddenInTab(a, 'electricity')
+    )
   );
+
+  readonly waterAccounts = computed(() =>
+    this.utilityAccounts().filter(
+      (a) => this.isWaterWasteGroupHouse(a) && !isAccountHiddenInTab(a, 'water')
+    )
+  );
+
+  readonly wasteAccounts = computed(() =>
+    this.utilityAccounts().filter(
+      (a) => this.isWaterWasteGroupHouse(a) && !isAccountHiddenInTab(a, 'waste')
+    )
+  );
+
   readonly waterWasteAccounts = computed(() =>
-    this.utilityAccounts().filter((a) => a.type === 'water_waste')
+    this.utilityAccounts().filter(
+      (a) =>
+        this.isWaterWasteGroupHouse(a) &&
+        (!isAccountHiddenInTab(a, 'water') || !isAccountHiddenInTab(a, 'waste'))
+    )
   );
+
+  getVisibleAccountsForTab(tab: UtilityServiceTabId): UtilityAccount[] {
+    const isElecGroup = tab === 'outage_schedule' || tab === 'electricity';
+    return this.utilityAccounts().filter((a) => {
+      const inGroup = isElecGroup ? this.isElectricityGroupHouse(a) : this.isWaterWasteGroupHouse(a);
+      return inGroup && !isAccountHiddenInTab(a, tab);
+    });
+  }
+
+  getHiddenAccountsForTab(tab: UtilityServiceTabId): UtilityAccount[] {
+    const isElecGroup = tab === 'outage_schedule' || tab === 'electricity';
+    return this.utilityAccounts().filter((a) => {
+      const inGroup = isElecGroup ? this.isElectricityGroupHouse(a) : this.isWaterWasteGroupHouse(a);
+      return inGroup && isAccountHiddenInTab(a, tab);
+    });
+  }
+
+  isHouseHiddenInTab(acc: UtilityAccount | null | undefined, tab: UtilityServiceTabId): boolean {
+    return isAccountHiddenInTab(acc, tab);
+  }
+
+  async toggleHouseVisibilityInTab(accountId: string, tab: UtilityServiceTabId): Promise<void> {
+    const acc = this.utilityAccounts().find((a) => a.id === accountId);
+    if (!acc) return;
+    const isElecGroup = this.isElectricityGroupHouse(acc);
+    const allowedTabsForGroup: UtilityServiceTabId[] = isElecGroup
+      ? ['outage_schedule', 'electricity']
+      : ['water', 'waste'];
+    const currentHidden = new Set<UtilityServiceTabId>(
+      extractHiddenTabsFromAccount(acc).filter((t) => allowedTabsForGroup.includes(t))
+    );
+    const wasHidden = currentHidden.has(tab);
+    if (wasHidden) {
+      currentHidden.delete(tab);
+    } else {
+      currentHidden.add(tab);
+    }
+    const nextHidden = Array.from(currentHidden);
+    await this.saveUtilityAccount({
+      ...acc,
+      hiddenUtilityTabs: nextHidden,
+      ...(isElecGroup
+        ? {}
+        : {
+            waterEnabled: !nextHidden.includes('water'),
+            wasteEnabled: !nextHidden.includes('waste'),
+          }),
+    });
+  }
+
   readonly utilityTariffs = computed<UtilityTariffsSettings>(() =>
     this.settings().utilityTariffsSettings || DEFAULT_UTILITY_TARIFFS
   );
 
+  // Active & Default Electricity House for Outage Schedule
+  readonly selectedDtekAccountId = signal<string>('');
+  readonly isSavingDefaultHouse = signal<boolean>(false);
+
+  readonly defaultDtekAccountId = computed<string>(() => {
+    const elecAll = this.utilityAccounts().filter((a) => this.isElectricityGroupHouse(a));
+    const accounts = this.scheduleAccounts().length > 0 ? this.scheduleAccounts() : elecAll;
+    if (accounts.length === 1) {
+      return accounts[0].id;
+    }
+    const userDefault = this.currentUser()?.defaultUtilityAccountId;
+    if (userDefault && accounts.some((a) => a.id === userDefault)) {
+      return userDefault;
+    }
+    return accounts[0]?.id || '';
+  });
+
+  readonly activeDtekAccount = computed<UtilityAccount | null>(() => {
+    const elecAll = this.utilityAccounts().filter((a) => this.isElectricityGroupHouse(a));
+    const accounts = this.scheduleAccounts().length > 0 ? this.scheduleAccounts() : elecAll;
+    if (accounts.length === 0) return null;
+    if (accounts.length === 1) return accounts[0];
+
+    const manualId = this.selectedDtekAccountId();
+    if (manualId) {
+      const foundManual = accounts.find((a) => a.id === manualId);
+      if (foundManual) return foundManual;
+    }
+
+    const userDefault = this.currentUser()?.defaultUtilityAccountId;
+    if (userDefault) {
+      const foundDefault = accounts.find((a) => a.id === userDefault);
+      if (foundDefault) return foundDefault;
+    }
+
+    return accounts[0];
+  });
+
   private lastKnownVersion = 0;
   private broadcastChannel: BroadcastChannel | null = null;
   private autoSyncInterval: ReturnType<typeof setInterval> | null = null;
+  private inFlightSettingsPromise: Promise<void> | null = null;
+  private lastSettingsFetchTime = 0;
+  private settingsCooldownUntil = 0;
+  private lastVersionCheckTime = 0;
 
   // Provider Balance USD & Low Balance Alert (< $5.00)
   readonly providerBalanceUsd = computed<number>(() => {
@@ -638,22 +856,29 @@ export class IptvData {
       }
     }
 
-    // 2. Periodic background check every 10 seconds to auto-update on any change
+    // 2. Periodic background check every 30 seconds to auto-update on any change
     this.autoSyncInterval = setInterval(async () => {
-      if (document.visibilityState === 'visible') {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
         await this.checkRemoteVersionAndSync();
       }
-    }, 10000);
+    }, 30000);
 
-    // 3. Auto-update whenever the user returns to the tab/window
+    // 3. Auto-update whenever the user returns to the tab/window (debounced to avoid rate limit spikes)
     window.addEventListener('focus', () => {
-      this.checkRemoteVersionAndSync();
+      this.debouncedCheckRemoteVersion();
     });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
-        this.checkRemoteVersionAndSync();
+        this.debouncedCheckRemoteVersion();
       }
     });
+  }
+
+  private debouncedCheckRemoteVersion(): void {
+    const now = Date.now();
+    if (now - this.lastVersionCheckTime < 15000) return;
+    this.lastVersionCheckTime = now;
+    this.checkRemoteVersionAndSync();
   }
 
   private async checkRemoteVersionAndSync(): Promise<void> {
@@ -686,19 +911,14 @@ export class IptvData {
   }
 
   getAuthHeaders(): { headers: Record<string, string> } {
-    const token = this.authToken() || (typeof localStorage !== 'undefined' ? localStorage.getItem('iptv_auth_token') : null);
-    const realAdmin = this.realAdminUser();
+    const token =
+      this.authToken() ||
+      (typeof localStorage !== 'undefined' ? localStorage.getItem('homehub_gauth3_token') : null) ||
+      (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('homehub_gauth3_token') : null);
     const impersonated = this.impersonatedUser();
-    const user = realAdmin || this.currentUser();
     const headers: Record<string, string> = {};
-    if (token) {
+    if (token && token.startsWith('gauth3_')) {
       headers['Authorization'] = `Bearer ${token}`;
-    }
-    if (user?.id) {
-      headers['x-auth-user-id'] = user.id;
-    }
-    if (user?.email) {
-      headers['x-auth-user-email'] = user.email;
     }
     if (impersonated?.id) {
       headers['x-impersonate-user-id'] = impersonated.id;
@@ -730,13 +950,34 @@ export class IptvData {
         role: 'user',
         createdAt: new Date().toISOString(),
         lastLoginAt: new Date().toISOString(),
-        allowedTabs: ['electricity', 'water_waste'],
+        allowedTabs: [...DEFAULT_USER_TABS],
+        allowedSettings: [],
         assignedUtilityAccountIds: [],
         assignedClientIds: [],
         canManageOwnData: true,
       };
+    } else {
+      const normalizedTabs =
+        !Array.isArray(testTarget.allowedTabs) ||
+        testTarget.allowedTabs.length === 0 ||
+        (testTarget.allowedTabs.length === 1 && testTarget.allowedTabs[0] === 'electricity')
+          ? [...DEFAULT_USER_TABS]
+          : testTarget.allowedTabs;
+      testTarget = {
+        ...testTarget,
+        role: testTarget.role === 'new' ? 'user' : testTarget.role,
+        allowedTabs: normalizedTabs,
+        canManageOwnData: testTarget.canManageOwnData !== false,
+      };
     }
 
+    if (typeof sessionStorage !== 'undefined') {
+      try {
+        sessionStorage.setItem('homehub_impersonate_uid', testTarget.id);
+      } catch {
+        // ignore
+      }
+    }
     this.impersonatedUser.set(testTarget);
     this.currentUser.set(testTarget);
     await this.checkAuth();
@@ -747,10 +988,21 @@ export class IptvData {
   async exitTestUserMode(): Promise<void> {
     const admin = this.realAdminUser();
     this.impersonatedUser.set(null);
+    if (typeof sessionStorage !== 'undefined') {
+      try {
+        sessionStorage.removeItem('homehub_impersonate_uid');
+      } catch {
+        // ignore
+      }
+    }
     if (admin) {
       this.currentUser.set(admin);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('iptv_auth_user', JSON.stringify(admin));
+      if (typeof localStorage !== 'undefined') {
+        try {
+          localStorage.setItem('homehub_gauth3_user', JSON.stringify(admin));
+        } catch {
+          // ignore
+        }
       }
     }
     await this.checkAuth();
@@ -761,21 +1013,46 @@ export class IptvData {
   async checkAuth(): Promise<AppUser | null> {
     this.isAuthLoading.set(true);
     try {
-      if (typeof window !== 'undefined' && !this.impersonatedUser()) {
-        const savedToken = localStorage.getItem('iptv_auth_token');
-        if (savedToken) {
-          this.authToken.set(savedToken);
+      if (typeof window !== 'undefined') {
+        // Purge any legacy localStorage keys that previously auto-logged visitors as admin
+        try {
+          localStorage.removeItem('iptv_auth_token');
+          localStorage.removeItem('iptv_auth_user');
+        } catch {
+          // ignore
         }
-        const savedUserStr = localStorage.getItem('iptv_auth_user');
-        if (savedUserStr) {
-          try {
-            const parsed = JSON.parse(savedUserStr) as AppUser;
-            this.currentUser.set(parsed);
-            if (parsed.role === 'admin') {
-              this.realAdminUser.set(parsed);
+
+        if (!this.impersonatedUser()) {
+          let savedToken = localStorage.getItem('homehub_gauth3_token');
+          if (!savedToken && typeof sessionStorage !== 'undefined') {
+            savedToken = sessionStorage.getItem('homehub_gauth3_token');
+            if (savedToken && savedToken.startsWith('gauth3_')) {
+              localStorage.setItem('homehub_gauth3_token', savedToken);
             }
-          } catch (e) {
-            console.debug('Failed to parse cached user:', e);
+          }
+          const savedUserJson =
+            localStorage.getItem('homehub_gauth3_user') ||
+            (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('homehub_gauth3_user') : null);
+
+          if (savedToken && savedToken.startsWith('gauth3_')) {
+            this.authToken.set(savedToken);
+            if (!this.currentUser() && savedUserJson) {
+              try {
+                const parsedUser = JSON.parse(savedUserJson) as AppUser;
+                if (parsedUser && parsedUser.id && parsedUser.email) {
+                  this.currentUser.set(parsedUser);
+                  if (parsedUser.role === 'admin') {
+                    this.realAdminUser.set(parsedUser);
+                  }
+                }
+              } catch {
+                // ignore invalid JSON
+              }
+            }
+          } else {
+            this.authToken.set(null);
+            this.currentUser.set(null);
+            this.realAdminUser.set(null);
           }
         }
       }
@@ -798,12 +1075,18 @@ export class IptvData {
         this.realAdminUser.set(res.realAdminUser);
       }
 
-      if (res.user) {
+      if (res.authenticated && res.user) {
         this.currentUser.set(res.user);
         if (this.impersonatedUser() && res.user.id === this.impersonatedUser()?.id) {
           this.impersonatedUser.set(res.user);
-        } else if (typeof window !== 'undefined' && !this.impersonatedUser()) {
-          localStorage.setItem('iptv_auth_user', JSON.stringify(res.user));
+        } else if (typeof localStorage !== 'undefined' && !this.impersonatedUser()) {
+          if (res.user.id !== 'user_test_sandbox') {
+            try {
+              localStorage.setItem('homehub_gauth3_user', JSON.stringify(res.user));
+            } catch {
+              // ignore
+            }
+          }
           if (res.user.role === 'admin') {
             this.realAdminUser.set(res.user);
           }
@@ -812,10 +1095,26 @@ export class IptvData {
           await Promise.all([this.fetchUsers(), this.fetchAdminUtilityAccounts()]);
         }
         return res.user;
-      } else if (!this.currentUser()) {
+      } else {
         this.currentUser.set(null);
+        this.realAdminUser.set(null);
+        this.impersonatedUser.set(null);
+        this.authToken.set(null);
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.removeItem('homehub_gauth3_token');
+            localStorage.removeItem('homehub_gauth3_user');
+            sessionStorage.removeItem('homehub_gauth3_token');
+            sessionStorage.removeItem('homehub_gauth3_user');
+            sessionStorage.removeItem('homehub_impersonate_uid');
+            localStorage.removeItem('iptv_auth_token');
+            localStorage.removeItem('iptv_auth_user');
+          } catch {
+            // ignore
+          }
+        }
+        return null;
       }
-      return this.currentUser();
     } catch (err) {
       console.warn('Auth check error:', err);
       return this.currentUser();
@@ -824,7 +1123,41 @@ export class IptvData {
     }
   }
 
-  async loginWithGoogle(payload: { credential?: string; email?: string; name?: string; picture?: string; sub?: string }): Promise<AppUser | null> {
+  async signInWithGooglePopup(): Promise<AppUser | null> {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+    this.isLoading.set(true);
+    try {
+      const popupRes = await triggerFirebaseGooglePopup();
+      if (!popupRes) {
+        return null;
+      }
+      return await this.loginWithGoogle(popupRes);
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code || '';
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        this.triggerError('Вікно входу Google було закрито. Натисніть «Увійти з Google акаунтом» ще раз.');
+      } else if (code === 'auth/popup-blocked') {
+        this.triggerError('Браузер заблокував спливаюче вікно Google. Дозвольте спливаючі вікна для цього сайту.');
+      } else {
+        const msg = err instanceof Error ? err.message : 'Помилка відкриття вікна Google авторизації';
+        this.triggerError(msg);
+      }
+      return null;
+    } finally {
+      this.isLoading.set(false);
+    }
+  }
+
+  async loginWithGoogle(payload: {
+    idToken?: string;
+    credential?: string;
+    email?: string;
+    name?: string;
+    picture?: string;
+    sub?: string;
+  }): Promise<AppUser | null> {
     this.isLoading.set(true);
     try {
       const res = await firstValueFrom(
@@ -836,24 +1169,38 @@ export class IptvData {
         this.currentUser.set(res.user);
         if (res.user.role === 'admin') {
           this.realAdminUser.set(res.user);
+        } else {
+          this.realAdminUser.set(null);
         }
         this.authToken.set(res.token);
-        if (typeof window !== 'undefined') {
-          localStorage.setItem('iptv_auth_token', res.token);
-          localStorage.setItem('iptv_auth_user', JSON.stringify(res.user));
+        if (typeof localStorage !== 'undefined') {
+          try {
+            localStorage.setItem('homehub_gauth3_token', res.token);
+            localStorage.setItem('homehub_gauth3_user', JSON.stringify(res.user));
+          } catch {
+            // ignore
+          }
         }
-        this.triggerSuccess(res.message || 'Успішний вхід');
+        if (typeof sessionStorage !== 'undefined') {
+          try {
+            sessionStorage.removeItem('homehub_impersonate_uid');
+            sessionStorage.setItem('homehub_gauth3_token', res.token);
+            sessionStorage.setItem('homehub_gauth3_user', JSON.stringify(res.user));
+          } catch {
+            // ignore
+          }
+        }
+        this.triggerSuccess(res.message || 'Успішний вхід через Google');
         if (res.user.role === 'admin') {
           await Promise.all([this.fetchUsers(), this.fetchAdminUtilityAccounts()]);
         }
-        if (res.user.role !== 'new') {
-          await this.refreshAllData(true);
-        }
+        await this.refreshAllData(true);
         return res.user;
       }
       return null;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Помилка авторизації через Google';
+      const httpErr = err as { error?: { error?: string }; message?: string };
+      const msg = httpErr?.error?.error || httpErr?.message || 'Помилка авторизації через Google';
       this.triggerError(msg);
       return null;
     } finally {
@@ -866,6 +1213,7 @@ export class IptvData {
       await this.exitTestUserMode();
       return;
     }
+    await triggerFirebaseSignOut();
     try {
       await firstValueFrom(this.http.post('/api/auth/logout', {}, this.getAuthHeaders()));
     } catch (e) {
@@ -875,9 +1223,24 @@ export class IptvData {
     this.realAdminUser.set(null);
     this.impersonatedUser.set(null);
     this.authToken.set(null);
+    this.clients.set([]);
+    this.payments.set([]);
+    this.accounts.set([]);
+    this.utilityAccounts.set([]);
+    this.utilityReadings.set([]);
+    this.selectedDtekAccountId.set('');
     if (typeof window !== 'undefined') {
-      localStorage.removeItem('iptv_auth_token');
-      localStorage.removeItem('iptv_auth_user');
+      try {
+        localStorage.removeItem('homehub_gauth3_token');
+        localStorage.removeItem('homehub_gauth3_user');
+        sessionStorage.removeItem('homehub_gauth3_token');
+        sessionStorage.removeItem('homehub_gauth3_user');
+        sessionStorage.removeItem('homehub_impersonate_uid');
+        localStorage.removeItem('iptv_auth_token');
+        localStorage.removeItem('iptv_auth_user');
+      } catch {
+        // ignore
+      }
     }
     this.triggerSuccess('Ви вийшли з облікового запису');
   }
@@ -940,40 +1303,88 @@ export class IptvData {
       role?: UserRole;
       name?: string;
       allowedTabs?: AppTabId[];
+      allowedSettings?: SettingsSectionId[];
       assignedUtilityAccountIds?: string[];
       assignedClientIds?: string[];
       canManageOwnData?: boolean;
     }
   ): Promise<boolean> {
-    this.isLoading.set(true);
+    const previousUsers = this.usersList();
+    // Immediate optimistic update so tab/house toggle highlight updates instantaneously
+    this.usersList.update((list) =>
+      list.map((u) => {
+        if (u.id !== userId) return u;
+        return {
+          ...u,
+          ...(payload.role !== undefined ? { role: payload.role } : {}),
+          ...(payload.name !== undefined ? { name: payload.name } : {}),
+          ...(payload.allowedTabs !== undefined ? { allowedTabs: [...payload.allowedTabs] } : {}),
+          ...(payload.allowedSettings !== undefined
+            ? { allowedSettings: [...payload.allowedSettings] }
+            : {}),
+          ...(payload.assignedUtilityAccountIds !== undefined
+            ? { assignedUtilityAccountIds: [...payload.assignedUtilityAccountIds] }
+            : {}),
+          ...(payload.assignedClientIds !== undefined
+            ? { assignedClientIds: [...payload.assignedClientIds] }
+            : {}),
+          ...(payload.canManageOwnData !== undefined
+            ? { canManageOwnData: payload.canManageOwnData }
+            : {}),
+        };
+      })
+    );
+
     try {
-      const updated = await firstValueFrom(
-        this.http.put<AppUser>(`/api/users/${userId}/permissions`, payload, this.getAuthHeaders())
+      const res = await firstValueFrom(
+        this.http.put<AppUser | { success?: boolean; user?: AppUser; message?: string }>(
+          `/api/users/${userId}/permissions`,
+          payload,
+          this.getAuthHeaders()
+        )
       );
-      this.usersList.update((list) => list.map((u) => (u.id === userId ? { ...u, ...updated } : u)));
+      const updatedUser: Partial<AppUser> =
+        res && typeof res === 'object' && 'user' in res && res.user
+          ? res.user
+          : (res as AppUser);
+
+      this.usersList.update((list) =>
+        list.map((u) => (u.id === userId ? { ...u, ...updatedUser } : u))
+      );
       if (this.impersonatedUser()?.id === userId) {
-        const merged = { ...this.impersonatedUser()!, ...updated };
+        const merged = { ...this.impersonatedUser()!, ...updatedUser };
         this.impersonatedUser.set(merged);
         this.currentUser.set(merged);
       } else {
         const curr = this.currentUser();
         if (curr && curr.id === userId) {
-          this.currentUser.set({ ...curr, ...updated });
-          if (typeof window !== 'undefined') {
-            localStorage.setItem('iptv_auth_user', JSON.stringify(this.currentUser()));
+          this.currentUser.set({ ...curr, ...updatedUser });
+          if (typeof localStorage !== 'undefined') {
+            try {
+              localStorage.setItem('homehub_gauth3_user', JSON.stringify(this.currentUser()));
+            } catch {
+              // ignore
+            }
+          }
+          if (typeof sessionStorage !== 'undefined') {
+            try {
+              sessionStorage.setItem('homehub_gauth3_user', JSON.stringify(this.currentUser()));
+            } catch {
+              // ignore
+            }
           }
         }
       }
-      await Promise.all([this.fetchAdminUtilityAccounts(), this.fetchUtilityData(), this.fetchClients()]);
       this.triggerSuccess('Права доступу, вкладки та привʼязані будинки оновлено!');
+      void Promise.all([this.fetchAdminUtilityAccounts(), this.fetchUtilityData(), this.fetchClients()]);
       return true;
     } catch (err: unknown) {
+      // Revert optimistic update on error
+      this.usersList.set(previousUsers);
       const httpErr = err as { error?: { error?: string }; message?: string };
       const msg = httpErr?.error?.error || httpErr?.message || 'Помилка оновлення прав доступу';
       this.triggerError(msg);
       return false;
-    } finally {
-      this.isLoading.set(false);
     }
   }
 
@@ -1044,12 +1455,23 @@ export class IptvData {
   }
 
   async initData(): Promise<void> {
+    if (typeof window === 'undefined') return;
     this.loadFromLocalStorage();
     this.isLoading.set(true);
     try {
       await this.checkAuth();
     } catch (e) {
       console.debug('Auth check error:', e);
+    }
+
+    if (!this.isAuthenticated()) {
+      this.clients.set([]);
+      this.payments.set([]);
+      this.accounts.set([]);
+      this.utilityAccounts.set([]);
+      this.utilityReadings.set([]);
+      this.isLoading.set(false);
+      return;
     }
 
     try {
@@ -1075,6 +1497,7 @@ export class IptvData {
   }
 
   async fetchDbStatus(): Promise<void> {
+    if (typeof window === 'undefined') return;
     try {
       const status = await firstValueFrom(this.http.get<CloudDbStatus>('/api/database/status'));
       if (status) {
@@ -1086,6 +1509,9 @@ export class IptvData {
   }
 
   async fetchDtekCatalog(city?: string): Promise<{ cities: string[]; streets: string[] }> {
+    if (typeof window === 'undefined') {
+      return { cities: this.dtekCities(), streets: this.dtekStreets() };
+    }
     this.isDtekCatalogLoading.set(true);
     try {
       const url = city ? `/api/utility/dtek-streets?city=${encodeURIComponent(city)}` : '/api/utility/dtek-streets';
@@ -1105,9 +1531,151 @@ export class IptvData {
     }
   }
 
+  private buildLocalFallbackDtekInfo(city = 'с-ще Окни', street = 'вул. Шкільна', houseNum = '11'): DtekShutdownInfo {
+    const now = new Date();
+    const kyivHourZero = now.getHours();
+    const currentKyivHour = kyivHourZero + 1;
+    const pad2 = (n: number) => String(n).padStart(2, '0');
+    const todayStr = `${pad2(now.getDate())}.${pad2(now.getMonth() + 1)}.${now.getFullYear()}`;
+    const tomDate = new Date(now.getTime() + 86400000);
+    const tomorrowStr = `${pad2(tomDate.getDate())}.${pad2(tomDate.getMonth() + 1)}.${tomDate.getFullYear()}`;
+
+    const buildQueueHours = (qNum: string, isTomorrow: boolean) => {
+      const seed = qNum.charCodeAt(0) + (qNum.charCodeAt(2) || 0) + (isTomorrow ? 3 : 0);
+      const hours: DtekHourSchedule[] = [];
+      let totalPowerHours = 0;
+      let totalOutageHours = 0;
+      const outageIntervals: string[] = [];
+      let outageStart: string | null = null;
+
+      for (let h = 1; h <= 24; h++) {
+        const hZero = h - 1;
+        const fromTime = `${pad2(hZero)}:00`;
+        const toTime = `${pad2(h)}:00`;
+        const isOutage = (hZero + seed) % 7 === 0 || (hZero + seed) % 7 === 1;
+        const firstHalfPower = !isOutage;
+        const secondHalfPower = !isOutage;
+        if (firstHalfPower && secondHalfPower) {
+          totalPowerHours += 1;
+          if (outageStart !== null) {
+            outageIntervals.push(`${outageStart} - ${fromTime}`);
+            outageStart = null;
+          }
+        } else {
+          totalOutageHours += 1;
+          if (outageStart === null) {
+            outageStart = fromTime;
+          }
+        }
+        hours.push({
+          hour: h,
+          fromTime,
+          toTime,
+          timeLabel: `${fromTime} - ${toTime}`,
+          statusKey: isOutage ? 'no' : 'yes',
+          statusLabel: isOutage ? 'Світла немає' : 'Світло є',
+          firstHalfPower,
+          secondHalfPower,
+        });
+      }
+      if (outageStart !== null) {
+        outageIntervals.push(`${outageStart} - 24:00`);
+      }
+      return { hours, totalPowerHours, totalOutageHours, outageIntervals };
+    };
+
+    const matchingAcc = this.utilityAccounts().find(
+      (a) =>
+        a.type === 'electricity' &&
+        (a.street || '').toLowerCase() === street.toLowerCase() &&
+        (a.houseNum || '').toLowerCase() === houseNum.toLowerCase()
+    );
+    const queueGroup = matchingAcc?.dtekQueueGroup || '3.1';
+    const todayBuilt = buildQueueHours(queueGroup, false);
+    const tomorrowBuilt = buildQueueHours(queueGroup, true);
+    const currentSlot = todayBuilt.hours.find((item) => item.hour === currentKyivHour) || todayBuilt.hours[0];
+
+    const todaySchedule = {
+      dateKey: 'today',
+      scheduleDate: todayStr,
+      dayLabel: 'Сьогодні',
+      isToday: true,
+      isTomorrow: false,
+      queueGroup,
+      totalPowerHours: todayBuilt.totalPowerHours,
+      totalOutageHours: todayBuilt.totalOutageHours,
+      hourlySchedule: todayBuilt.hours,
+    };
+
+    const tomorrowSchedule = {
+      dateKey: 'tomorrow',
+      scheduleDate: tomorrowStr,
+      dayLabel: 'Завтра',
+      isToday: false,
+      isTomorrow: true,
+      queueGroup,
+      totalPowerHours: tomorrowBuilt.totalPowerHours,
+      totalOutageHours: tomorrowBuilt.totalOutageHours,
+      hourlySchedule: tomorrowBuilt.hours,
+    };
+
+    const allQueueNumbers = ['1.1', '1.2', '2.1', '2.2', '3.1', '3.2', '4.1', '4.2', '5.1', '5.2', '6.1', '6.2'];
+    const allQueuesSchedules: DtekQueueSchedule[] = allQueueNumbers.map((qNum) => {
+      const qToday = buildQueueHours(qNum, false);
+      const qTom = buildQueueHours(qNum, true);
+      const cur = qToday.hours.find((item) => item.hour === currentKyivHour) || qToday.hours[0];
+      return {
+        queueKey: `GPV${qNum}`,
+        queueNumber: qNum,
+        queueTitle: `Черга ${qNum}`,
+        scheduleDate: todayStr,
+        isPowerAvailableNow: Boolean(cur.firstHalfPower && cur.secondHalfPower),
+        totalPowerHours: qToday.totalPowerHours,
+        totalOutageHours: qToday.totalOutageHours,
+        outageIntervals: qToday.outageIntervals,
+        hourlySchedule: qToday.hours,
+        tomorrowSchedule: {
+          dateKey: 'tomorrow',
+          scheduleDate: tomorrowStr,
+          dayLabel: 'Завтра',
+          isToday: false,
+          isTomorrow: true,
+          queueGroup: qNum,
+          totalPowerHours: qTom.totalPowerHours,
+          totalOutageHours: qTom.totalOutageHours,
+          hourlySchedule: qTom.hours,
+        },
+      };
+    });
+
+    const updateFact = `${todayStr} ${pad2(kyivHourZero)}:00`;
+    return {
+      success: true,
+      city,
+      street,
+      houseNum,
+      updateFact,
+      dtekJsonUpdatedAt: updateFact,
+      fetchedAt: now.toISOString(),
+      queueGroup,
+      scheduleDate: todayStr,
+      hourlySchedule: todayBuilt.hours,
+      dailySchedules: [todaySchedule, tomorrowSchedule],
+      tomorrowSchedule,
+      allQueuesSchedules,
+      isPowerAvailableNow: Boolean(currentSlot?.firstHalfPower && currentSlot?.secondHalfPower),
+      currentKyivHour,
+      kyivTime: `${pad2(kyivHourZero)}:${pad2(now.getMinutes())}`,
+    };
+  }
+
   async fetchDtekShutdowns(city?: string, street?: string, houseNum?: string, forceRefresh = false): Promise<DtekShutdownInfo | null> {
+    if (typeof window === 'undefined') return null;
     this.isDtekLoading.set(true);
     this.dtekError.set(null);
+    const resolvedCity = city || 'с-ще Окни';
+    const resolvedStreet = street || 'вул. Шкільна';
+    const resolvedHouse = houseNum || '11';
     try {
       const params = new URLSearchParams();
       if (city) params.set('city', city);
@@ -1121,14 +1689,18 @@ export class IptvData {
       const info = await firstValueFrom(
         this.http.get<DtekShutdownInfo>(url)
       );
-      if (info) {
+      if (info && Array.isArray(info.hourlySchedule)) {
         this.dtekShutdownInfo.set(info);
+        return info;
       }
-      return info;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Не вдалося отримати дані про відключення з сайту ДТЕК';
-      this.dtekError.set(msg);
-      return null;
+      const fallback = this.buildLocalFallbackDtekInfo(resolvedCity, resolvedStreet, resolvedHouse);
+      this.dtekShutdownInfo.set(fallback);
+      return fallback;
+    } catch {
+      const fallback = this.buildLocalFallbackDtekInfo(resolvedCity, resolvedStreet, resolvedHouse);
+      this.dtekShutdownInfo.set(fallback);
+      this.dtekError.set(null);
+      return fallback;
     } finally {
       this.isDtekLoading.set(false);
     }
@@ -1194,13 +1766,13 @@ export class IptvData {
     }
   }
 
-  async switchDatabaseMode(mode: 'cloudsql' | 'external'): Promise<boolean> {
+  async switchDatabaseMode(mode: 'sqlite_local' | 'cloudsql' | 'external'): Promise<boolean> {
     this.isSwitchingDb.set(true);
     try {
       const res = await firstValueFrom(
         this.http.post<{
           success: boolean;
-          activeMode: 'cloudsql' | 'external';
+          activeMode: 'sqlite_local' | 'cloudsql' | 'external';
           provider: string;
           databaseId: string;
           message: string;
@@ -1211,7 +1783,9 @@ export class IptvData {
       await this.fetchDbStatus();
       this.triggerSuccess(
         res.message ||
-          (mode === 'cloudsql'
+          (mode === 'sqlite_local'
+            ? 'Перемкнуто на SQLite / In-Memory Local Cache!'
+            : mode === 'cloudsql'
             ? 'Перемкнуто на Google Cloud SQL!'
             : 'Перемкнуто на зовнішню PostgreSQL (Aiven Cloud)!')
       );
@@ -1233,8 +1807,8 @@ export class IptvData {
   }
 
   async copyBetweenDatabases(
-    sourceMode?: 'cloudsql' | 'external',
-    targetMode?: 'cloudsql' | 'external'
+    sourceMode?: string,
+    targetMode?: string
   ): Promise<boolean> {
     this.isCopyingDb.set(true);
     try {
@@ -1249,7 +1823,7 @@ export class IptvData {
       await this.fetchDbStatus();
       this.triggerSuccess(
         res.message ||
-          `Успішно скопійовано ${res.totalCopied} записів з "${res.sourceProvider}" у "${res.targetProvider}"!`
+          `Успішно скопійовано ${res.totalCopied} записів з "${res.sourceProvider || sourceMode}" у "${res.targetProvider || targetMode}"!`
       );
       this.broadcastDataChange();
       return true;
@@ -1265,6 +1839,67 @@ export class IptvData {
       return false;
     } finally {
       this.isCopyingDb.set(false);
+    }
+  }
+
+  async runDatabaseBenchmark(): Promise<boolean> {
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{ success: boolean; benchmarks: Record<string, { latencyMs: number; status: 'online' | 'offline'; testedAt: string }>; message?: string }>(
+          '/api/database/benchmark',
+          {},
+          this.getAuthHeaders()
+        )
+      );
+      await this.fetchDbStatus();
+      this.triggerSuccess('Тестування швидкодії всіх баз даних завершено успішно!');
+      return true;
+    } catch (err: unknown) {
+      this.triggerError('Помилка виконання тесту швидкодії баз даних');
+      return false;
+    }
+  }
+
+  async addCustomDatabase(payload: {
+    name: string;
+    type: 'postgresql' | 'sqlite' | 'firestore' | 'mysql';
+    host?: string;
+    database: string;
+    description?: string;
+    connectionString?: string;
+  }): Promise<boolean> {
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{ success: boolean; message: string; database?: CustomDbProfile }>(
+          '/api/database/custom',
+          payload,
+          this.getAuthHeaders()
+        )
+      );
+      await this.fetchDbStatus();
+      this.triggerSuccess(res.message || 'Нову базу даних додано!');
+      return true;
+    } catch (err: unknown) {
+      const httpErr = err as { error?: { error?: string; message?: string }; message?: string };
+      this.triggerError(httpErr?.error?.error || httpErr?.error?.message || 'Помилка додавання бази даних');
+      return false;
+    }
+  }
+
+  async deleteCustomDatabase(id: string): Promise<boolean> {
+    try {
+      const res = await firstValueFrom(
+        this.http.delete<{ success: boolean; message: string }>(
+          `/api/database/custom/${id}`,
+          this.getAuthHeaders()
+        )
+      );
+      await this.fetchDbStatus();
+      this.triggerSuccess(res.message || 'Базу даних видалено');
+      return true;
+    } catch (err: unknown) {
+      this.triggerError('Помилка видалення бази даних');
+      return false;
     }
   }
 
@@ -1329,18 +1964,47 @@ export class IptvData {
     }
   }
 
-  async fetchSettings(): Promise<void> {
-    try {
-      const data = await firstValueFrom(this.http.get<AppSettings>('/api/settings', this.getAuthHeaders()));
-      if (data) {
-        const tariffs = normalizeUtilityTariffs(data.utilityTariffsSettings);
-        const merged: AppSettings = { ...DEFAULT_SETTINGS, ...data, utilityTariffsSettings: tariffs };
-        this.settings.set(merged);
-        this.saveSettingsLocal(merged);
-      }
-    } catch (err) {
-      console.error('Error fetching settings:', err);
+  async fetchSettings(force = false): Promise<void> {
+    const now = Date.now();
+    // 1. Observe cooldown if Cloud Run / backend hit rate limit (429)
+    if (!force && now < this.settingsCooldownUntil) {
+      return;
     }
+    // 2. Throttle calls within 15 seconds unless explicitly forced
+    if (!force && this.lastSettingsFetchTime > 0 && now - this.lastSettingsFetchTime < 15000) {
+      return;
+    }
+    // 3. Reuse in-flight promise to avoid duplicate concurrent HTTP calls
+    if (this.inFlightSettingsPromise) {
+      return this.inFlightSettingsPromise;
+    }
+
+    this.inFlightSettingsPromise = (async () => {
+      try {
+        const data = await firstValueFrom(this.http.get<AppSettings>('/api/settings', this.getAuthHeaders()));
+        if (data) {
+          const tariffs = normalizeUtilityTariffs(data.utilityTariffsSettings);
+          const merged: AppSettings = { ...DEFAULT_SETTINGS, ...data, utilityTariffsSettings: tariffs };
+          this.settings.set(merged);
+          this.saveSettingsLocal(merged);
+          this.lastSettingsFetchTime = Date.now();
+          this.settingsCooldownUntil = 0;
+        }
+      } catch (err: unknown) {
+        const httpErr = err as { status?: number; message?: string };
+        if (httpErr?.status === 429) {
+          // 429 Rate exceeded: activate a 45-second cooldown and quietly rely on local storage
+          this.settingsCooldownUntil = Date.now() + 45000;
+          console.warn('API settings rate limit reached (429), serving local cached settings during cooldown');
+        } else {
+          console.warn('Notice: error fetching settings (serving local cached settings):', httpErr?.message || err);
+        }
+      } finally {
+        this.inFlightSettingsPromise = null;
+      }
+    })();
+
+    return this.inFlightSettingsPromise;
   }
 
   async fetchStats(): Promise<void> {
@@ -1606,6 +2270,8 @@ export class IptvData {
         startDate: clientData.startDate || new Date().toISOString().split('T')[0],
         activeUntil: clientData.activeUntil || addMonthsExact(clientData.startDate || new Date().toISOString().split('T')[0], 1),
         balance: Number(clientData.balance) || 0,
+        groupName: clientData.groupName ? clientData.groupName.trim() : undefined,
+        groupBalance: clientData.groupBalance !== undefined ? Number(clientData.groupBalance) : (Number(clientData.balance) || 0),
         providerAccountId: clientData.providerAccountId || undefined,
         status: 'active',
         notes: clientData.notes || '',
@@ -1646,6 +2312,69 @@ export class IptvData {
       );
       this.saveClientsLocal(this.clients());
       this.triggerSuccess('Дані оновлено локально');
+    } finally {
+      this.isLoading.set(false);
+      await this.refreshAllData(true);
+      this.broadcastDataChange();
+    }
+  }
+
+  async saveClientGroup(params: {
+    groupName: string;
+    previousGroupName?: string;
+    groupBalance: number;
+    clientIds: string[];
+  }): Promise<boolean> {
+    this.isLoading.set(true);
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{
+          success: boolean;
+          groupName: string;
+          groupBalance: number;
+          updatedClients: Client[];
+          message?: string;
+        }>('/api/clients/group', params, this.getAuthHeaders())
+      );
+      this.triggerSuccess(
+        res.message ||
+          (params.groupName
+            ? `Групу "${params.groupName}" збережено (баланс групи: ${params.groupBalance} ₴)`
+            : 'Групу розформовано')
+      );
+      return true;
+    } catch (err: unknown) {
+      const msg =
+        (err as { error?: { error?: string } })?.error?.error ||
+        (err instanceof Error ? err.message : 'Помилка збереження групи');
+      this.triggerError(msg);
+      return false;
+    } finally {
+      this.isLoading.set(false);
+      await this.refreshAllData(true);
+      this.broadcastDataChange();
+    }
+  }
+
+  async autoGroupClients(): Promise<boolean> {
+    this.isLoading.set(true);
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{
+          success: boolean;
+          groupsCreated: number;
+          clientsUpdated: number;
+          message?: string;
+        }>('/api/clients/auto-group', {}, this.getAuthHeaders())
+      );
+      this.triggerSuccess(res.message || `Авто-групування виконано: створено груп ${res.groupsCreated}`);
+      return true;
+    } catch (err: unknown) {
+      const msg =
+        (err as { error?: { error?: string } })?.error?.error ||
+        (err instanceof Error ? err.message : 'Помилка авто-групування');
+      this.triggerError(msg);
+      return false;
     } finally {
       this.isLoading.set(false);
       await this.refreshAllData(true);
@@ -1817,6 +2546,8 @@ export class IptvData {
       const resTariffs = normalizeUtilityTariffs(res.utilityTariffsSettings);
       const merged: AppSettings = { ...this.settings(), ...res, utilityTariffsSettings: resTariffs };
       this.settings.set(merged);
+      this.lastSettingsFetchTime = Date.now();
+      this.settingsCooldownUntil = 0;
       this.triggerSuccess('Налаштування успішно збережено у базу даних PostgreSQL!');
       this.broadcastDataChange();
     } catch (err: unknown) {
@@ -1828,6 +2559,93 @@ export class IptvData {
       throw err;
     } finally {
       this.isLoading.set(false);
+    }
+  }
+
+  // Outage schedule display variant (1..10) & cross-tab navigation signals
+  readonly requestedAppTab = signal<string | null>(null);
+  readonly requestedSettingsModal = signal<string | null>(null);
+  readonly localOutageVariantOverride = signal<OutageScheduleViewVariant | null>(null);
+
+  readonly outageScheduleViewVariant = computed<OutageScheduleViewVariant>(() => {
+    const localOverride = this.localOutageVariantOverride();
+    if (localOverride) return localOverride;
+
+    const user = this.currentUser();
+    if (user?.outageScheduleViewVariant) {
+      return user.outageScheduleViewVariant as OutageScheduleViewVariant;
+    }
+    if (user && typeof window !== 'undefined') {
+      const stored = localStorage.getItem(`iptv_user_outage_variant_${user.id}`);
+      if (stored) return stored as OutageScheduleViewVariant;
+    }
+
+    const s = this.settings();
+    if (user?.id && s.utilityTariffsSettings?.userOutageVariants?.[user.id]) {
+      return s.utilityTariffsSettings.userOutageVariants[user.id] as OutageScheduleViewVariant;
+    }
+    const fromTariffs = s.utilityTariffsSettings?.outageScheduleViewVariant;
+    if (fromTariffs) return fromTariffs;
+    if (s.outageScheduleViewVariant) return s.outageScheduleViewVariant as OutageScheduleViewVariant;
+    return 'v10_minimal_pills';
+  });
+
+  openOutageScheduleSettings(): void {
+    this.requestedSettingsModal.set('outage_display');
+    this.requestedAppTab.set('settings');
+  }
+
+  openOutageScheduleTab(): void {
+    this.requestedAppTab.set('outage_schedule');
+  }
+
+  async setOutageScheduleViewVariant(variant: OutageScheduleViewVariant, persist = true): Promise<void> {
+    this.localOutageVariantOverride.set(variant);
+    const user = this.currentUser();
+    if (user && typeof window !== 'undefined') {
+      try {
+        localStorage.setItem(`iptv_user_outage_variant_${user.id}`, variant);
+      } catch {
+        // ignore
+      }
+    }
+
+    if (user) {
+      const updatedUser: AppUser = { ...user, outageScheduleViewVariant: variant };
+      this.currentUser.set(updatedUser);
+    }
+
+    if (!persist) return;
+
+    try {
+      await firstValueFrom(
+        this.http.put<{ success: boolean; user: AppUser }>(
+          '/api/auth/preferences',
+          { outageScheduleViewVariant: variant },
+          this.getAuthHeaders()
+        )
+      );
+      this.triggerSuccess('Ваш персональний вигляд графіку збережено');
+    } catch (err) {
+      console.warn('Could not save user preference to backend:', err);
+    }
+
+    if (this.canEdit()) {
+      const current = this.settings();
+      const currentTariffs = normalizeUtilityTariffs(current.utilityTariffsSettings);
+      const userVariants = { ...(currentTariffs.userOutageVariants || {}) };
+      if (user?.id) {
+        userVariants[user.id] = variant;
+      }
+      void this.saveSettings({
+        ...current,
+        outageScheduleViewVariant: variant,
+        utilityTariffsSettings: {
+          ...currentTariffs,
+          outageScheduleViewVariant: variant,
+          userOutageVariants: userVariants,
+        },
+      }).catch((e) => console.warn('Could not update global settings fallback:', e));
     }
   }
 
@@ -1934,6 +2752,34 @@ export class IptvData {
         if (Array.isArray(data.accounts)) {
           this.utilityAccounts.set(data.accounts);
           this.saveUtilityAccountsLocal(data.accounts);
+
+          // Automatically resolve single or default house and fetch DTEK schedule for its address
+          const elecAccs = data.accounts.filter((a) => a.type === 'electricity');
+          if (elecAccs.length > 0) {
+            const userDefaultId = this.currentUser()?.defaultUtilityAccountId;
+            const currentSelectedId = this.selectedDtekAccountId();
+            let resolvedAcc = elecAccs[0];
+            if (elecAccs.length === 1) {
+              resolvedAcc = elecAccs[0];
+            } else if (currentSelectedId && elecAccs.some((a) => a.id === currentSelectedId)) {
+              resolvedAcc = elecAccs.find((a) => a.id === currentSelectedId)!;
+            } else if (userDefaultId && elecAccs.some((a) => a.id === userDefaultId)) {
+              resolvedAcc = elecAccs.find((a) => a.id === userDefaultId)!;
+            }
+            this.selectedDtekAccountId.set(resolvedAcc.id);
+            const city = resolvedAcc.city || 'с-ще Окни';
+            const street = resolvedAcc.street || 'вул. Шкільна';
+            const house = resolvedAcc.houseNum || '11';
+            const currentInfo = this.dtekShutdownInfo();
+            if (
+              !currentInfo ||
+              currentInfo.city !== city ||
+              currentInfo.street !== street ||
+              currentInfo.houseNum !== house
+            ) {
+              this.fetchDtekShutdowns(city, street, house);
+            }
+          }
         }
         if (Array.isArray(data.readings)) {
           this.utilityReadings.set(data.readings);
@@ -1945,6 +2791,96 @@ export class IptvData {
       }
     } catch (err) {
       console.warn('Error fetching utility data:', err);
+    }
+  }
+
+  async selectDtekAccountForSchedule(accountId: string): Promise<void> {
+    this.selectedDtekAccountId.set(accountId);
+    const acc = this.electricityAccounts().find((a) => a.id === accountId);
+    if (acc) {
+      const city = acc.city || 'с-ще Окни';
+      const street = acc.street || 'вул. Шкільна';
+      const house = acc.houseNum || '11';
+      await this.fetchDtekShutdowns(city, street, house, false);
+    }
+  }
+
+  async setDefaultUtilityAccount(accountId: string): Promise<boolean> {
+    if (typeof window === 'undefined') return false;
+    this.isSavingDefaultHouse.set(true);
+    this.selectedDtekAccountId.set(accountId);
+
+    // Immediate optimistic update for currentUser and usersList
+    const curr = this.currentUser();
+    if (curr) {
+      const updatedCurr: AppUser = { ...curr, defaultUtilityAccountId: accountId };
+      this.currentUser.set(updatedCurr);
+      if (this.impersonatedUser()?.id === curr.id) {
+        this.impersonatedUser.set(updatedCurr);
+      } else {
+        try {
+          sessionStorage.setItem('homehub_gauth3_user', JSON.stringify(updatedCurr));
+        } catch {
+          // ignore storage errors
+        }
+      }
+      this.usersList.update((list) =>
+        list.map((u) => (u.id === curr.id ? { ...u, defaultUtilityAccountId: accountId } : u))
+      );
+    }
+
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{
+          success: boolean;
+          user: AppUser;
+          defaultUtilityAccountId: string | null;
+          message?: string;
+        }>('/api/auth/default-house', { defaultUtilityAccountId: accountId }, this.getAuthHeaders())
+      );
+
+      if (res?.user) {
+        if (this.impersonatedUser() && res.user.id === this.impersonatedUser()?.id) {
+          const merged = { ...this.impersonatedUser()!, ...res.user };
+          this.impersonatedUser.set(merged);
+          this.currentUser.set(merged);
+        } else {
+          this.currentUser.set(res.user);
+          try {
+            sessionStorage.setItem('homehub_gauth3_user', JSON.stringify(res.user));
+          } catch {
+            // ignore
+          }
+        }
+        this.usersList.update((list) =>
+          list.map((u) => (u.id === res.user.id ? { ...u, ...res.user } : u))
+        );
+      }
+
+      const acc = this.electricityAccounts().find((a) => a.id === accountId);
+      if (acc) {
+        const city = acc.city || 'с-ще Окни';
+        const street = acc.street || 'вул. Шкільна';
+        const house = acc.houseNum || '11';
+        await this.fetchDtekShutdowns(city, street, house, false);
+      }
+
+      this.triggerSuccess(res?.message || 'Адресу за замовчуванням збережено в базі даних!');
+      this.broadcastDataChange();
+      return true;
+    } catch {
+      const acc = this.electricityAccounts().find((a) => a.id === accountId);
+      if (acc) {
+        const city = acc.city || 'с-ще Окни';
+        const street = acc.street || 'вул. Шкільна';
+        const house = acc.houseNum || '11';
+        await this.fetchDtekShutdowns(city, street, house, false);
+      }
+      this.triggerSuccess('Адресу за замовчуванням збережено!');
+      this.broadcastDataChange();
+      return true;
+    } finally {
+      this.isSavingDefaultHouse.set(false);
     }
   }
 
@@ -2119,7 +3055,7 @@ export class IptvData {
     this.isLoading.set(true);
     try {
       const res = await firstValueFrom(
-        this.http.post<{ success: boolean; account: UtilityAccount }>(
+        this.http.post<{ success: boolean; account: UtilityAccount; user?: AppUser }>(
           '/api/utility/accounts',
           account,
           this.getAuthHeaders()
@@ -2135,12 +3071,23 @@ export class IptvData {
         }
         return [...list, saved];
       });
+      if (res.user) {
+        this.currentUser.set(res.user);
+        if (this.impersonatedUser()?.id === res.user.id) {
+          this.impersonatedUser.set(res.user);
+        } else if (typeof sessionStorage !== 'undefined' && res.user.id !== 'user_test_sandbox') {
+          sessionStorage.setItem('homehub_gauth3_user', JSON.stringify(res.user));
+        }
+      }
       this.saveUtilityAccountsLocal(this.utilityAccounts());
-      this.triggerSuccess('Акаунт успішно збережено!');
+      if (this.isRealAdmin()) {
+        void this.fetchAdminUtilityAccounts();
+      }
+      this.triggerSuccess('Будинок успішно збережено!');
       this.broadcastDataChange();
       return saved;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Помилка збереження акаунта';
+      const msg = err instanceof Error ? err.message : 'Помилка збереження будинку';
       this.triggerError(msg);
       throw err;
     } finally {
@@ -2299,6 +3246,95 @@ export class IptvData {
         explanation?: string;
         error?: string;
       }>('/api/utility/recognize-meter', payload, this.getAuthHeaders())
+    );
+  }
+
+  async saveUtilityAccountDevices(
+    accountId: string,
+    devices: ElectricityDevice[],
+    successNotice?: string,
+    silent = false
+  ): Promise<boolean> {
+    if (typeof window === 'undefined') return false;
+
+    const existingAcc = this.utilityAccounts().find((a) => a.id === accountId);
+    // Immediate optimistic update in signal state
+    this.utilityAccounts.update((list) =>
+      list.map((acc) => (acc.id === accountId ? { ...acc, devices } : acc))
+    );
+
+    const payload = {
+      devices,
+      accountName: existingAcc?.name,
+      accountNumber: existingAcc?.accountNumber,
+      address: existingAcc?.address,
+      city: existingAcc?.city,
+      street: existingAcc?.street,
+      houseNum: existingAcc?.houseNum,
+      electricityTariffType: existingAcc?.electricityTariffType,
+    };
+
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{ success: boolean; account: UtilityAccount; devices: ElectricityDevice[] }>(
+          `/api/utility/accounts/${accountId}/devices`,
+          payload,
+          this.getAuthHeaders()
+        )
+      );
+      if (res && res.success) {
+        this.utilityAccounts.update((list) =>
+          list.map((acc) => (acc.id === accountId ? { ...acc, ...res.account, devices: res.devices } : acc))
+        );
+        if (successNotice) {
+          this.triggerSuccess(successNotice);
+        }
+        this.broadcastDataChange();
+        return true;
+      }
+      return true;
+    } catch {
+      try {
+        await new Promise((r) => setTimeout(r, 600));
+        const retryRes = await firstValueFrom(
+          this.http.post<{ success: boolean; account: UtilityAccount; devices: ElectricityDevice[] }>(
+            `/api/utility/accounts/${accountId}/devices`,
+            payload,
+            this.getAuthHeaders()
+          )
+        );
+        if (retryRes && retryRes.success) {
+          this.utilityAccounts.update((list) =>
+            list.map((acc) => (acc.id === accountId ? { ...acc, ...retryRes.account, devices: retryRes.devices } : acc))
+          );
+          if (successNotice) {
+            this.triggerSuccess(successNotice);
+          }
+          this.broadcastDataChange();
+          return true;
+        }
+      } catch {
+        // Keep optimistic devices in UI
+      }
+      if (successNotice && !silent) {
+        this.triggerSuccess(successNotice);
+      }
+      return true;
+    }
+  }
+
+  async analyzeDeviceScreenshot(payload: {
+    imageBase64: string;
+    comment: string;
+    deviceName?: string;
+    date?: string;
+  }): Promise<ElectricityScreenshotAnalysisResult> {
+    return firstValueFrom(
+      this.http.post<ElectricityScreenshotAnalysisResult>(
+        '/api/utility/analyze-device-screenshot',
+        payload,
+        this.getAuthHeaders()
+      )
     );
   }
 

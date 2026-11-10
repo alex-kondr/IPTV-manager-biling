@@ -1,0 +1,12 @@
+export const FIREBASE_APPLET_CONFIG = {
+  projectId: 'modern-realm-9nm8c',
+  appId: '1:456176021961:web:db9544efa01c8747833818',
+  apiKey: 'AIzaSyBBMsI-BiZJ7UhttBKwwkB61lylubSehTM',
+  authDomain: 'modern-realm-9nm8c.firebaseapp.com',
+  firestoreDatabaseId: 'ai-studio-iptv-d3d15c62-7975-482f-a649-5dcbe2bedaf3',
+  storageBucket: 'modern-realm-9nm8c.firebasestorage.app',
+  messagingSenderId: '456176021961',
+  measurementId: '',
+  oAuthClientId: '456176021961-2gleh35u10blqc3agin83fed09a2fqev.apps.googleusercontent.com',
+  recaptchaSiteKey: '',
+};

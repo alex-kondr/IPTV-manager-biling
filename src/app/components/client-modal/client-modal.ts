@@ -24,7 +24,7 @@ import { IptvData } from '../../services/iptv-data';
   template: `
     <div
       id="client-modal-overlay"
-      class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center"
+      class="fixed inset-0 z-[100] overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center"
     >
       <div
         id="client-modal-container"
@@ -275,6 +275,83 @@ import { IptvData } from '../../services/iptv-data';
             </div>
           </div>
 
+          <!-- GROUPING SECTION (For clients with multiple subscriptions) -->
+          <div class="p-3.5 rounded-xl bg-indigo-50/70 border border-indigo-200/90 space-y-3">
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-xs font-bold text-indigo-950 uppercase tracking-wider flex items-center gap-1.5">
+                <mat-icon class="text-base text-indigo-600">workspaces</mat-icon>
+                <span>Група підписок (якщо у клієнта декілька ТВ)</span>
+              </span>
+              @if (form.controls.groupName.value) {
+                <button
+                  type="button"
+                  (click)="clearGroup()"
+                  class="text-2xs text-rose-600 hover:underline font-bold cursor-pointer"
+                >
+                  Прибрати з групи
+                </button>
+              }
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label for="client-group-name-input" class="block text-xs font-semibold text-slate-700 mb-1">
+                  Назва групи
+                </label>
+                <input
+                  id="client-group-name-input"
+                  type="text"
+                  formControlName="groupName"
+                  list="existing-client-groups-list"
+                  placeholder="напр. Сім'я Коваленків (3 ТВ)"
+                  class="w-full px-3 py-2 bg-white border border-indigo-200 rounded-xl text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-indigo-600"
+                />
+                <datalist id="existing-client-groups-list">
+                  @for (gName of existingGroups(); track gName) {
+                    <option [value]="gName"></option>
+                  }
+                </datalist>
+              </div>
+
+              <div>
+                <label for="client-group-balance-input" class="block text-xs font-semibold text-slate-700 mb-1">
+                  Залишок на балансі групи (₴)
+                </label>
+                <div class="relative">
+                  <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-indigo-600 font-bold text-sm">
+                    ₴
+                  </span>
+                  <input
+                    id="client-group-balance-input"
+                    type="number"
+                    formControlName="groupBalance"
+                    placeholder="0"
+                    class="w-full pl-8 pr-3 py-2 bg-white border border-indigo-200 rounded-xl text-xs sm:text-sm font-bold text-indigo-950 focus:outline-none focus:border-indigo-600"
+                  />
+                </div>
+              </div>
+            </div>
+
+            @if (existingGroups().length > 0) {
+              <div class="flex items-center gap-1.5 flex-wrap pt-0.5">
+                <span class="text-2xs text-indigo-700 font-semibold">Існуючі групи:</span>
+                @for (gName of existingGroups(); track gName) {
+                  <button
+                    type="button"
+                    (click)="selectExistingGroup(gName)"
+                    [class.bg-indigo-600]="form.controls.groupName.value === gName"
+                    [class.text-white]="form.controls.groupName.value === gName"
+                    [class.bg-white]="form.controls.groupName.value !== gName"
+                    [class.text-indigo-900]="form.controls.groupName.value !== gName"
+                    class="px-2 py-0.5 rounded-lg border border-indigo-300 text-2xs font-bold transition-colors cursor-pointer"
+                  >
+                    {{ gName }}
+                  </button>
+                }
+              </div>
+            }
+          </div>
+
           <!-- PROVIDER ACCOUNT ATTACHMENT (Max 2 users rule) -->
           <div>
             <label for="client-provider-account" class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5 flex items-center justify-between">
@@ -441,6 +518,12 @@ export class ClientModal implements OnInit {
   private readonly dataService = inject(IptvData);
 
   readonly client = input<Client | null>(null);
+  readonly initialGroup = input<{
+    groupName: string;
+    groupBalance: number;
+    fullName?: string;
+    phone?: string;
+  } | null>(null);
   readonly modalClose = output<void>();
   readonly clientSaved = output<Client>();
 
@@ -461,13 +544,40 @@ export class ClientModal implements OnInit {
     startDate: new FormControl('', [Validators.required]),
     activeUntil: new FormControl('', [Validators.required]),
     balance: new FormControl<number>(0, [Validators.min(0)]),
+    groupName: new FormControl<string>(''),
+    groupBalance: new FormControl<number>(0),
     providerAccountId: new FormControl<string>(''),
     telegramUsername: new FormControl(''),
     notes: new FormControl(''),
   });
 
+  existingGroups(): string[] {
+    const names = new Set<string>();
+    for (const c of this.dataService.clients()) {
+      const g = (c.groupName || '').trim();
+      if (g) names.add(g);
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b, 'uk'));
+  }
+
+  selectExistingGroup(groupName: string): void {
+    const member = this.dataService.clients().find((c) => (c.groupName || '').trim() === groupName);
+    this.form.patchValue({
+      groupName,
+      groupBalance: member?.groupBalance !== undefined ? Number(member.groupBalance) : Number(this.form.controls.groupBalance.value) || 0,
+    });
+  }
+
+  clearGroup(): void {
+    this.form.patchValue({
+      groupName: '',
+      groupBalance: 0,
+    });
+  }
+
   ngOnInit(): void {
     const existing = this.client();
+    const presetGroup = this.initialGroup();
     const today = new Date().toISOString().split('T')[0];
 
     if (existing) {
@@ -486,6 +596,8 @@ export class ClientModal implements OnInit {
         startDate: existing.startDate,
         activeUntil: existing.activeUntil,
         balance: existing.balance,
+        groupName: existing.groupName || '',
+        groupBalance: existing.groupBalance !== undefined ? existing.groupBalance : (existing.balance || 0),
         providerAccountId: existing.providerAccountId || '',
         telegramUsername: existing.telegramUsername || existing.viberId || '',
         notes: existing.notes || '',
@@ -496,12 +608,16 @@ export class ClientModal implements OnInit {
       const nextMonthExact = addMonthsExact(today, 1);
 
       this.form.patchValue({
+        fullName: presetGroup?.fullName || '',
+        phone: presetGroup?.phone || '',
         startDate: today,
         activeUntil: nextMonthExact,
         subscriptionPlan: '1usd',
         costUsd: 1,
         monthlyPrice: 100,
         balance: 0,
+        groupName: presetGroup?.groupName || '',
+        groupBalance: presetGroup?.groupBalance || 0,
         providerAccountId: '',
         telegramUsername: '',
       });
@@ -564,6 +680,8 @@ export class ClientModal implements OnInit {
       const plan = this.selectedPlan();
       const cost = plan === '2usd' ? 2 : 1;
       const tgUser = val.telegramUsername ? val.telegramUsername.trim() : '';
+      const trimmedGroupName = val.groupName ? val.groupName.trim() : '';
+      const grpBalance = Number(val.groupBalance) || 0;
 
       if (this.isEditing() && this.client()) {
         const id = this.client()!.id;
@@ -578,6 +696,8 @@ export class ClientModal implements OnInit {
           startDate: val.startDate!,
           activeUntil: val.activeUntil!,
           balance: Number(val.balance),
+          groupName: trimmedGroupName || undefined,
+          groupBalance: trimmedGroupName ? grpBalance : 0,
           providerAccountId: val.providerAccountId || undefined,
           telegramUsername: tgUser,
           viberId: tgUser,
@@ -609,6 +729,8 @@ export class ClientModal implements OnInit {
           startDate: val.startDate!,
           activeUntil: val.activeUntil!,
           balance: Number(val.balance),
+          groupName: trimmedGroupName || undefined,
+          groupBalance: trimmedGroupName ? grpBalance : 0,
           providerAccountId: val.providerAccountId || undefined,
           telegramUsername: tgUser,
           viberId: tgUser,

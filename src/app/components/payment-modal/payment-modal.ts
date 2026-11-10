@@ -26,7 +26,7 @@ import { IptvData } from '../../services/iptv-data';
   template: `
     <div
       id="payment-modal-overlay"
-      class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-3 sm:p-4 flex items-center justify-center"
+      class="fixed inset-0 z-[100] overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-3 sm:p-4 flex items-center justify-center"
     >
       <div
         id="payment-modal-container"

@@ -1,15 +1,15 @@
 {
   "name": "ai-studio-angular-app",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "type": "module",
   "scripts": {
-    "ng": "ng",
+    "ng": "node ./node_modules/@angular/cli/bin/ng.js",
     "start": "node server.ts",
     "dev": "node dev-server.cjs",
     "build": "ng build",
-    "watch": "ng build --watch --configuration development",
-    "test": "ng test",
-    "lint": "ng lint",
+    "watch": "node ./node_modules/@angular/cli/bin/ng.js build --watch --configuration development",
+    "test": "node ./node_modules/@angular/cli/bin/ng.js test",
+    "lint": "node ./node_modules/typescript/bin/tsc -p tsconfig.app.json --noEmit",
     "serve:ssr:app": "node dist/app/server/server.mjs"
   },
   "private": true,
@@ -25,15 +25,14 @@
     "@angular/ssr": "^21.0.0",
     "@google/genai": "^2.4.0",
     "@types/pg": "^8.23.1",
-    "@types/semver": "^7.8.0",
     "dotenv": "^18.0.2",
     "drizzle-kit": "^0.31.11",
     "drizzle-orm": "^0.45.3",
     "express": "^5.1.0",
+    "firebase": "^13.2.0",
     "motion": "^12.23.24",
     "pg": "^8.23.0",
     "rxjs": "~7.8.0",
-    "semver": "^7.8.6",
     "tslib": "^2.3.0"
   },
   "devDependencies": {
@@ -44,14 +43,8 @@
     "@tailwindcss/postcss": "^4.1.12",
     "@types/express": "^5.0.1",
     "@types/node": "^20.17.19",
-    "angular-eslint": "21.1.0",
-    "cross-env": "^10.1.0",
-    "eslint": "^9.39.1",
-    "jsdom": "^27.0.0",
     "postcss": "^8.5.3",
     "tailwindcss": "^4.1.12",
-    "typescript": "~5.9.2",
-    "typescript-eslint": "8.47.0",
-    "vitest": "^4.0.0"
+    "typescript": "~5.9.2"
   }
 }

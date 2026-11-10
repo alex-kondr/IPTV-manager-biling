@@ -12,9 +12,13 @@ import {
   AppUser,
   UserRole,
   AppTabId,
+  SettingsSectionId,
   ALL_USER_ASSIGNABLE_TABS,
+  ALL_SETTINGS_SECTIONS,
   DEFAULT_USER_TABS,
+  extractAllowedSettingsFromUser,
   formatDateUa,
+  Client,
 } from '../../models/client.model';
 import { UtilityAccount } from '../../models/utility.model';
 
@@ -382,49 +386,89 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
               </div>
             </div>
 
-            <!-- Extended Per-User Controls: Allowed Tabs + Assigned Houses (for non-admin users) -->
+            <!-- Extended Per-User Controls: Allowed Tabs + Settings Sections + Assigned Houses (for non-admin users) -->
             @if (user.role === 'user') {
               <div class="pt-3 border-t border-slate-100 grid grid-cols-1 lg:grid-cols-12 gap-4">
-                <!-- Left Column: Allowed Tabs Toggles -->
-                <div class="lg:col-span-7 space-y-2">
-                  <div class="flex items-center justify-between flex-wrap gap-2">
-                    <span class="text-2xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1">
-                      <mat-icon class="text-sm text-indigo-600">tab</mat-icon>
-                      <span>Доступні вкладки застосунку (натисніть, щоб увімкнути/вимкнути):</span>
-                    </span>
-                    <label class="inline-flex items-center gap-1.5 text-2xs font-semibold text-slate-700 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        [checked]="user.canManageOwnData !== false"
-                        (change)="toggleUserCanManageOwnData(user, $any($event.target).checked)"
-                        class="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                      />
-                      <span>Дозволити додавати/редагувати свої дані</span>
-                    </label>
+                <!-- Left Column: Allowed Tabs & Granular Settings Toggles -->
+                <div class="lg:col-span-7 space-y-3">
+                  <div class="space-y-2">
+                    <div class="flex items-center justify-between flex-wrap gap-2">
+                      <span class="text-2xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1">
+                        <mat-icon class="text-sm text-indigo-600">tab</mat-icon>
+                        <span>Доступні вкладки застосунку (натисніть, щоб увімкнути/вимкнути):</span>
+                      </span>
+                      <label class="inline-flex items-center gap-1.5 text-2xs font-semibold text-slate-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          [checked]="user.canManageOwnData !== false"
+                          (change)="toggleUserCanManageOwnData(user, $any($event.target).checked)"
+                          class="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                        />
+                        <span>Дозволити додавати/редагувати свої дані</span>
+                      </label>
+                    </div>
+
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                      @for (tabItem of assignableTabs; track tabItem.id) {
+                        @let isEnabled = isUserTabEnabled(user, tabItem.id);
+                        <button
+                          type="button"
+                          (click)="quickToggleUserTab(user, tabItem.id)"
+                          class="px-2.5 py-1.5 rounded-xl text-xs font-semibold border flex items-center gap-1.5 transition-all duration-150 cursor-pointer select-none active:scale-95"
+                          [class.bg-emerald-600]="isEnabled"
+                          [class.text-white]="isEnabled"
+                          [class.border-emerald-600]="isEnabled"
+                          [class.shadow-2xs]="isEnabled"
+                          [class.bg-slate-50]="!isEnabled"
+                          [class.text-slate-500]="!isEnabled"
+                          [class.border-slate-200]="!isEnabled"
+                          [title]="isEnabled ? 'Вимкнути вкладку «' + tabItem.label + '»' : 'Увімкнути вкладку «' + tabItem.label + '»'"
+                        >
+                          <mat-icon class="text-sm leading-none">{{ tabItem.icon }}</mat-icon>
+                          <span>{{ tabItem.label }}</span>
+                          <mat-icon class="text-xs leading-none">{{ isEnabled ? 'check_circle' : 'block' }}</mat-icon>
+                        </button>
+                      }
+                    </div>
                   </div>
 
-                  <div class="flex items-center gap-1.5 flex-wrap">
-                    @for (tabItem of assignableTabs; track tabItem.id) {
-                      @let isEnabled = isUserTabEnabled(user, tabItem.id);
-                      <button
-                        type="button"
-                        (click)="quickToggleUserTab(user, tabItem.id)"
-                        [disabled]="isLoading()"
-                        class="px-2.5 py-1.5 rounded-xl text-xs font-semibold border flex items-center gap-1.5 transition-all cursor-pointer"
-                        [class.bg-emerald-600]="isEnabled"
-                        [class.text-white]="isEnabled"
-                        [class.border-emerald-600]="isEnabled"
-                        [class.shadow-2xs]="isEnabled"
-                        [class.bg-slate-50]="!isEnabled"
-                        [class.text-slate-500]="!isEnabled"
-                        [class.border-slate-200]="!isEnabled"
-                        [title]="isEnabled ? 'Вимкнути вкладку «' + tabItem.label + '»' : 'Увімкнути вкладку «' + tabItem.label + '»'"
-                      >
-                        <mat-icon class="text-sm leading-none">{{ tabItem.icon }}</mat-icon>
-                        <span>{{ tabItem.label }}</span>
-                        <mat-icon class="text-xs leading-none">{{ isEnabled ? 'check_circle' : 'block' }}</mat-icon>
-                      </button>
-                    }
+                  <!-- Granular Settings Sections Access -->
+                  <div class="pt-2.5 border-t border-slate-100 space-y-2">
+                    <div class="flex items-center justify-between flex-wrap gap-2">
+                      <span class="text-2xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1">
+                        <mat-icon class="text-sm text-slate-700">settings</mat-icon>
+                        <span>Доступ до окремих пунктів системних налаштувань ({{ getUserAllowedSettings(user).length }}/{{ allSettingsSections.length }}):</span>
+                      </span>
+                      @if (getUserAllowedSettings(user).length === 0) {
+                        <span class="px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 text-3xs font-semibold flex items-center gap-1">
+                          <mat-icon class="text-3xs">lock</mat-icon>
+                          <span>Системні налаштування закрито</span>
+                        </span>
+                      }
+                    </div>
+
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                      @for (sec of allSettingsSections; track sec.id) {
+                        @let secEnabled = isUserSettingsSectionEnabled(user, sec.id);
+                        <button
+                          type="button"
+                          (click)="quickToggleUserSettingsSection(user, sec.id)"
+                          class="px-2.5 py-1 rounded-xl text-2xs font-semibold border flex items-center gap-1 transition-all duration-150 cursor-pointer select-none active:scale-95"
+                          [class.bg-indigo-600]="secEnabled"
+                          [class.text-white]="secEnabled"
+                          [class.border-indigo-600]="secEnabled"
+                          [class.shadow-2xs]="secEnabled"
+                          [class.bg-slate-50]="!secEnabled"
+                          [class.text-slate-500]="!secEnabled"
+                          [class.border-slate-200]="!secEnabled"
+                          [title]="sec.subtitle"
+                        >
+                          <mat-icon class="text-xs leading-none">{{ sec.icon }}</mat-icon>
+                          <span>{{ sec.label }}</span>
+                          <mat-icon class="text-3xs leading-none">{{ secEnabled ? 'check_circle' : 'lock' }}</mat-icon>
+                        </button>
+                      }
+                    </div>
                   </div>
                 </div>
 
@@ -449,17 +493,9 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
                     <div class="flex items-center gap-1.5 flex-wrap">
                       @for (house of getUserBoundHouses(user); track house.id) {
                         <span
-                          class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-2xs font-semibold border"
-                          [class.bg-amber-50]="house.type === 'electricity'"
-                          [class.border-amber-200]="house.type === 'electricity'"
-                          [class.text-amber-900]="house.type === 'electricity'"
-                          [class.bg-cyan-50]="house.type === 'water_waste'"
-                          [class.border-cyan-200]="house.type === 'water_waste'"
-                          [class.text-cyan-900]="house.type === 'water_waste'"
+                          class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-2xs font-semibold border bg-amber-50 border-amber-200 text-amber-900"
                         >
-                          <mat-icon class="text-xs leading-none">
-                            {{ house.type === 'electricity' ? 'bolt' : 'water_drop' }}
-                          </mat-icon>
+                          <mat-icon class="text-xs leading-none">home</mat-icon>
                           <span>{{ house.name }} ({{ house.accountNumber }})</span>
                           @if (house.ownerUserId === user.id) {
                             <span class="px-1 py-0.2 rounded bg-white/80 text-3xs font-bold">Власний</span>
@@ -478,9 +514,40 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
                     </div>
                   } @else {
                     <div class="text-2xs text-slate-400 italic bg-slate-50 rounded-xl px-3 py-2 border border-slate-200/70">
-                      Немає привʼязаних будинків адміна. Користувач бачить лише ті рахунки, які створить сам.
+                      Немає привʼязаних будинків адміна. Користувач бачитиме лише свої рахунки.
                     </div>
                   }
+
+                  <!-- Bound IPTV Clients (Клієнти та групи) -->
+                  <div class="pt-2 border-t border-slate-100 space-y-1.5">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="text-2xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1">
+                        <mat-icon class="text-sm text-indigo-600">groups</mat-icon>
+                        <span>Прив'язані IPTV Абоненти ({{ getUserBoundClients(user).length }}):</span>
+                      </span>
+                      <button
+                        type="button"
+                        (click)="openPermissionsModal(user)"
+                        class="text-2xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5 cursor-pointer"
+                      >
+                        <mat-icon class="text-xs">add_link</mat-icon>
+                        <span>Прив'язати акаунт</span>
+                      </button>
+                    </div>
+
+                    @if (getUserBoundClients(user).length > 0) {
+                      <div class="flex items-center gap-1.5 flex-wrap">
+                        @for (c of getUserBoundClients(user); track c.id) {
+                          <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-2xs font-semibold border bg-indigo-50 border-indigo-200 text-indigo-900">
+                            <mat-icon class="text-xs leading-none text-indigo-600">person</mat-icon>
+                            <span>{{ c.fullName }} ({{ c.balance }} ₴)</span>
+                          </span>
+                        }
+                      </div>
+                    } @else {
+                      <div class="text-3xs text-slate-400 italic">Абонентів з «Клієнти та групи» не прив'язано</div>
+                    }
+                  </div>
                 </div>
               </div>
             }
@@ -496,7 +563,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
 
       <!-- MODAL: PERMISSIONS, TABS & HOUSE BINDING -->
       @if (editingUserForPermissions(); as targetUser) {
-        <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+        <div class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
           <div class="bg-white rounded-3xl p-6 sm:p-7 max-w-2xl w-full shadow-2xl border border-slate-200 max-h-[90vh] flex flex-col">
             <!-- Header -->
             <div class="flex items-center justify-between pb-4 border-b border-slate-100 shrink-0">
@@ -603,6 +670,76 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
                 </div>
               </div>
 
+              <!-- Section 2B: Granular System Settings Permissions -->
+              <div class="space-y-2.5">
+                <div class="flex items-center justify-between flex-wrap gap-2">
+                  <div>
+                    <div class="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                      <mat-icon class="text-base text-slate-700">settings</mat-icon>
+                      <span>Доступ до окремих пунктів Системних налаштувань</span>
+                    </div>
+                    <p class="text-2xs text-slate-500 mt-0.5">
+                      За замовчуванням системні налаштування закриті для користувачів. Оберіть окремі пункти, до яких потрібно відкрити доступ.
+                    </p>
+                  </div>
+                  <div class="flex items-center gap-2 text-2xs">
+                    <button
+                      type="button"
+                      (click)="selectAllModalSettings()"
+                      class="text-indigo-600 hover:underline font-semibold cursor-pointer"
+                    >
+                      Відкрити всі
+                    </button>
+                    <span class="text-slate-300">•</span>
+                    <button
+                      type="button"
+                      (click)="clearAllModalSettings()"
+                      class="text-rose-600 hover:underline font-semibold cursor-pointer"
+                    >
+                      Закрити всі
+                    </button>
+                  </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  @for (sec of allSettingsSections; track sec.id) {
+                    @let secChecked = modalAllowedSettings().includes(sec.id);
+                    <button
+                      type="button"
+                      (click)="toggleModalSettingsSection(sec.id)"
+                      class="p-3 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer"
+                      [class.bg-indigo-50/80]="secChecked"
+                      [class.border-indigo-400]="secChecked"
+                      [class.bg-white]="!secChecked"
+                      [class.border-slate-200]="!secChecked"
+                    >
+                      <div class="flex items-center gap-2.5 min-w-0">
+                        <div
+                          class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+                          [class.bg-indigo-600]="secChecked"
+                          [class.text-white]="secChecked"
+                          [class.bg-slate-100]="!secChecked"
+                          [class.text-slate-500]="!secChecked"
+                        >
+                          <mat-icon class="text-base">{{ sec.icon }}</mat-icon>
+                        </div>
+                        <div class="min-w-0">
+                          <div class="text-xs font-bold text-slate-900 truncate">{{ sec.label }}</div>
+                          <div class="text-3xs text-slate-500 truncate">{{ sec.subtitle }}</div>
+                        </div>
+                      </div>
+                      <mat-icon
+                        class="text-lg shrink-0"
+                        [class.text-indigo-600]="secChecked"
+                        [class.text-slate-300]="!secChecked"
+                      >
+                        {{ secChecked ? 'check_box' : 'check_box_outline_blank' }}
+                      </mat-icon>
+                    </button>
+                  }
+                </div>
+              </div>
+
               <!-- Section 3: Bind Existing Houses / Utility Accounts -->
               <div class="space-y-2.5">
                 <div>
@@ -682,6 +819,62 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
                   </div>
                 }
               </div>
+
+              <!-- Section 4: Bind IPTV Clients from "Клієнти та групи" -->
+              <div class="space-y-2.5">
+                <div>
+                  <div class="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                    <mat-icon class="text-base text-indigo-600">groups</mat-icon>
+                    <span>Привʼязка акаунтів абонентів з розділу «Клієнти та групи»</span>
+                  </div>
+                  <p class="text-2xs text-slate-500 mt-0.5">
+                    Адміністратор може привʼязати конкретного IPTV клієнта / групу підписок до даного користувача для перегляду та керування його балансом і підписками.
+                  </p>
+                </div>
+
+                @if (allClients().length > 0) {
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto pr-1">
+                    @for (c of allClients(); track c.id) {
+                      @let isClientBound = isClientBoundInModal(c.id, c.ownerUserId);
+                      <button
+                        type="button"
+                        (click)="toggleModalClient(c.id)"
+                        class="p-2.5 rounded-xl border text-left flex items-center justify-between gap-2 transition-all cursor-pointer"
+                        [class.bg-indigo-50/80]="isClientBound"
+                        [class.border-indigo-400]="isClientBound"
+                        [class.bg-white]="!isClientBound"
+                        [class.border-slate-200]="!isClientBound"
+                      >
+                        <div class="min-w-0">
+                          <div class="flex items-center gap-1.5 flex-wrap">
+                            <span class="text-xs font-bold text-slate-900 truncate">{{ c.fullName }}</span>
+                            @if (c.groupName) {
+                              <span class="px-1.5 py-0.2 rounded bg-indigo-100 text-indigo-800 text-3xs font-semibold">
+                                {{ c.groupName }}
+                              </span>
+                            }
+                          </div>
+                          <div class="text-3xs text-slate-500 truncate mt-0.5">
+                            Баланс: {{ c.balance }} ₴ | План: {{ c.subscriptionPlan }}
+                          </div>
+                        </div>
+
+                        <mat-icon
+                          class="text-lg shrink-0"
+                          [class.text-indigo-600]="isClientBound"
+                          [class.text-slate-300]="!isClientBound"
+                        >
+                          {{ isClientBound ? 'check_box' : 'check_box_outline_blank' }}
+                        </mat-icon>
+                      </button>
+                    }
+                  </div>
+                } @else {
+                  <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 text-center">
+                    У розділі «Клієнти та групи» ще немає створених абонентів.
+                  </div>
+                }
+              </div>
             </div>
 
             <!-- Footer -->
@@ -709,7 +902,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
 
       <!-- ADD USER MODAL -->
       @if (isAddModalOpen()) {
-        <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+        <div class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
           <div class="bg-white rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl border border-slate-200">
             <div class="flex items-center justify-between mb-5">
               <div class="flex items-center gap-2.5">
@@ -803,6 +996,7 @@ export class UsersView {
   readonly isLoading = this.dataService.isLoading;
   readonly pendingCount = this.dataService.pendingUsersCount;
   readonly assignableTabs = ALL_USER_ASSIGNABLE_TABS;
+  readonly allSettingsSections = ALL_SETTINGS_SECTIONS;
 
   readonly allUtilityAccounts = computed<UtilityAccount[]>(() => {
     const adminList = this.dataService.adminUtilityAccounts();
@@ -814,11 +1008,15 @@ export class UsersView {
   readonly searchControl = new FormControl('');
   readonly isAddModalOpen = signal<boolean>(false);
 
-  // Permissions & House Binding Modal state
+  // Permissions, House & Client Binding Modal state
   readonly editingUserForPermissions = signal<AppUser | null>(null);
   readonly modalAllowedTabs = signal<AppTabId[]>([]);
+  readonly modalAllowedSettings = signal<SettingsSectionId[]>([]);
   readonly modalAssignedUtilityIds = signal<string[]>([]);
+  readonly modalAssignedClientIds = signal<string[]>([]);
   readonly modalCanManageOwnData = signal<boolean>(true);
+
+  readonly allClients = computed<Client[]>(() => this.dataService.clients());
 
   readonly addUserForm = new FormGroup({
     email: new FormControl('', [Validators.required, Validators.email]),
@@ -865,13 +1063,42 @@ export class UsersView {
     if (user.role === 'admin') {
       return this.assignableTabs.map((t) => t.id);
     }
-    if (Array.isArray(user.allowedTabs) && user.allowedTabs.length > 0) {
-      return user.allowedTabs;
+    if (Array.isArray(user.allowedTabs)) {
+      const expanded = new Set<AppTabId>(user.allowedTabs);
+      if (expanded.has('water_waste')) {
+        expanded.add('water');
+        expanded.add('waste');
+      }
+      return Array.from(expanded);
     }
     return [...DEFAULT_USER_TABS];
   }
 
+  getUserAllowedSettings(user: AppUser): SettingsSectionId[] {
+    return extractAllowedSettingsFromUser(user);
+  }
+
+  isUserSettingsSectionEnabled(user: AppUser, sectionId: SettingsSectionId): boolean {
+    return this.getUserAllowedSettings(user).includes(sectionId);
+  }
+
+  async quickToggleUserSettingsSection(user: AppUser, sectionId: SettingsSectionId): Promise<void> {
+    const currentSecs = this.getUserAllowedSettings(user);
+    const nextSecs: SettingsSectionId[] = currentSecs.includes(sectionId)
+      ? currentSecs.filter((s) => s !== sectionId)
+      : [...currentSecs, sectionId];
+    const currentTabs = this.getUserAllowedTabs(user).filter((t) => t !== 'settings');
+    const nextTabs: AppTabId[] = nextSecs.length > 0 ? [...currentTabs, 'settings'] : currentTabs;
+    await this.dataService.updateUserPermissions(user.id, {
+      allowedTabs: nextTabs,
+      allowedSettings: nextSecs,
+    });
+  }
+
   isUserTabEnabled(user: AppUser, tabId: AppTabId): boolean {
+    if (tabId === 'settings') {
+      return user.role === 'admin' || this.getUserAllowedSettings(user).length > 0;
+    }
     return this.getUserAllowedTabs(user).includes(tabId);
   }
 
@@ -879,10 +1106,7 @@ export class UsersView {
     const currentTabs = this.getUserAllowedTabs(user);
     let nextTabs: AppTabId[];
     if (currentTabs.includes(tabId)) {
-      if (currentTabs.length <= 1) {
-        return; // Keep at least 1 tab active
-      }
-      nextTabs = currentTabs.filter((t) => t !== tabId);
+      nextTabs = currentTabs.filter((t) => t !== tabId && !( (tabId === 'water' || tabId === 'waste') && t === 'water_waste' ));
     } else {
       nextTabs = [...currentTabs, tabId];
     }
@@ -925,17 +1149,26 @@ export class UsersView {
     });
   }
 
+  getUserBoundClients(user: AppUser): Client[] {
+    const assignedSet = new Set(user.assignedClientIds || []);
+    return this.allClients().filter(
+      (c) => assignedSet.has(String(c.id)) || c.ownerUserId === user.id
+    );
+  }
+
   openPermissionsModal(user: AppUser): void {
     this.editingUserForPermissions.set(user);
     this.modalAllowedTabs.set([...this.getUserAllowedTabs(user)]);
+    this.modalAllowedSettings.set([...this.getUserAllowedSettings(user)]);
 
-    const assignedSet = new Set(user.assignedUtilityAccountIds || []);
+    const assignedHouseSet = new Set(user.assignedUtilityAccountIds || []);
     for (const acc of this.allUtilityAccounts()) {
       if (Array.isArray(acc.assignedUserIds) && acc.assignedUserIds.includes(user.id)) {
-        assignedSet.add(acc.id);
+        assignedHouseSet.add(acc.id);
       }
     }
-    this.modalAssignedUtilityIds.set(Array.from(assignedSet));
+    this.modalAssignedUtilityIds.set(Array.from(assignedHouseSet));
+    this.modalAssignedClientIds.set([...(user.assignedClientIds || [])]);
     this.modalCanManageOwnData.set(user.canManageOwnData !== false);
   }
 
@@ -947,10 +1180,29 @@ export class UsersView {
     const cur = this.modalAllowedTabs();
     if (cur.includes(tabId)) {
       if (cur.length <= 1) return;
-      this.modalAllowedTabs.set(cur.filter((t) => t !== tabId));
+      this.modalAllowedTabs.set(
+        cur.filter((t) => t !== tabId && !((tabId === 'water' || tabId === 'waste') && t === 'water_waste'))
+      );
     } else {
       this.modalAllowedTabs.set([...cur, tabId]);
     }
+  }
+
+  toggleModalSettingsSection(sectionId: SettingsSectionId): void {
+    const cur = this.modalAllowedSettings();
+    if (cur.includes(sectionId)) {
+      this.modalAllowedSettings.set(cur.filter((s) => s !== sectionId));
+    } else {
+      this.modalAllowedSettings.set([...cur, sectionId]);
+    }
+  }
+
+  selectAllModalSettings(): void {
+    this.modalAllowedSettings.set(this.allSettingsSections.map((s) => s.id));
+  }
+
+  clearAllModalSettings(): void {
+    this.modalAllowedSettings.set([]);
   }
 
   selectAllModalTabs(): void {
@@ -958,7 +1210,7 @@ export class UsersView {
   }
 
   selectUtilityOnlyModalTabs(): void {
-    this.modalAllowedTabs.set(['electricity', 'water_waste']);
+    this.modalAllowedTabs.set(['electricity', 'water', 'waste']);
   }
 
   toggleModalUtilityAccount(accountId: string): void {
@@ -970,12 +1222,36 @@ export class UsersView {
     }
   }
 
+  isClientBoundInModal(clientId: string | number, ownerUserId?: string): boolean {
+    const targetUser = this.editingUserForPermissions();
+    const strId = String(clientId);
+    return (
+      this.modalAssignedClientIds().includes(strId) ||
+      (!!ownerUserId && !!targetUser && ownerUserId === targetUser.id)
+    );
+  }
+
+  toggleModalClient(clientId: string | number): void {
+    const cur = this.modalAssignedClientIds();
+    const strId = String(clientId);
+    if (cur.includes(strId)) {
+      this.modalAssignedClientIds.set(cur.filter((id) => id !== strId));
+    } else {
+      this.modalAssignedClientIds.set([...cur, strId]);
+    }
+  }
+
   async saveModalPermissions(): Promise<void> {
     const user = this.editingUserForPermissions();
     if (!user) return;
+    const settingsSecs = this.modalAllowedSettings();
+    const baseTabs = this.modalAllowedTabs().filter((t) => t !== 'settings');
+    const finalTabs: AppTabId[] = settingsSecs.length > 0 ? [...baseTabs, 'settings'] : baseTabs;
     const ok = await this.dataService.updateUserPermissions(user.id, {
-      allowedTabs: this.modalAllowedTabs(),
+      allowedTabs: finalTabs,
+      allowedSettings: settingsSecs,
       assignedUtilityAccountIds: this.modalAssignedUtilityIds(),
+      assignedClientIds: this.modalAssignedClientIds(),
       canManageOwnData: this.modalCanManageOwnData(),
     });
     if (ok) {

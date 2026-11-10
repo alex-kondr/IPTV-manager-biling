@@ -7,7 +7,7 @@ dotenv.config();
 
 const { Pool } = pg;
 
-export type DatabaseMode = 'external' | 'cloudsql';
+export type DatabaseMode = 'sqlite_local' | 'external' | 'cloudsql';
 
 declare global {
   var _externalPool: pg.Pool | undefined;
@@ -40,14 +40,8 @@ export const isExternalDbConfigured = (): boolean => {
 };
 
 export const getActiveDbMode = (): DatabaseMode => {
-  if (!global._activeDbMode) {
-    if (isExternalDbConfigured()) {
-      global._activeDbMode = 'external';
-    } else if (isCloudSqlEnvConfigured()) {
-      global._activeDbMode = 'cloudsql';
-    } else {
-      global._activeDbMode = 'external';
-    }
+  if (!global._activeDbMode || global._activeDbMode === 'sqlite_local') {
+    global._activeDbMode = 'external';
   }
   return global._activeDbMode;
 };

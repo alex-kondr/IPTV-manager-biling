@@ -1,4 +1,4 @@
-import { UtilityTariffsSettings } from './utility.model';
+import { UtilityTariffsSettings, OutageScheduleViewVariant } from './utility.model';
 
 export type ClientStatus = 'active' | 'expiring_soon' | 'expired' | 'paused';
 export type SubscriptionPlanType = '1usd' | '2usd' | 'custom';
@@ -6,19 +6,93 @@ export type SubscriptionPlanType = '1usd' | '2usd' | 'custom';
 export type UserRole = 'admin' | 'user' | 'new';
 
 export type AppTabId =
+  | 'outage_schedule'
   | 'clients'
   | 'accounts'
   | 'budget'
   | 'analytics'
   | 'payments'
   | 'electricity'
+  | 'water'
+  | 'waste'
   | 'water_waste'
   | 'users'
   | 'settings';
 
+export type SettingsSectionId =
+  | 'outage_display'
+  | 'electricity_tariffs'
+  | 'water_waste_tariffs'
+  | 'billing'
+  | 'viber'
+  | 'telegram'
+  | 'database'
+  | 'backup';
+
+export const ALL_SETTINGS_SECTIONS: {
+  id: SettingsSectionId;
+  label: string;
+  subtitle: string;
+  icon: string;
+  isSystem?: boolean;
+}[] = [
+  {
+    id: 'outage_display',
+    label: 'Вигляд графіку відключень',
+    subtitle: '10 стилів відображення погодинного графіку ДТЕК',
+    icon: 'view_timeline',
+  },
+  {
+    id: 'electricity_tariffs',
+    label: 'Тарифи на електроенергію',
+    subtitle: 'Однозонний та двозонний тариф (День/Ніч), ліміти',
+    icon: 'bolt',
+  },
+  {
+    id: 'water_waste_tariffs',
+    label: 'Тарифи на воду та сміття',
+    subtitle: 'Вартість 1 м³ води, абонплата та тариф на ТПВ',
+    icon: 'water_drop',
+  },
+  {
+    id: 'billing',
+    label: 'Загальні налаштування та реквізити IPTV',
+    subtitle: 'Стандартний тариф IPTV, картка / IBAN, нагадування',
+    icon: 'payments',
+  },
+  {
+    id: 'viber',
+    label: 'Шаблони повідомлень Viber',
+    subtitle: 'Тексти нагадувань та підтверджень оплати',
+    icon: 'chat',
+  },
+  {
+    id: 'telegram',
+    label: 'Telegram Bot та сповіщення',
+    subtitle: 'Токен бота, юзернейм та параметри відправки',
+    icon: 'send',
+    isSystem: true,
+  },
+  {
+    id: 'database',
+    label: 'Бази даних PostgreSQL (Системне)',
+    subtitle: 'Керування Aiven PostgreSQL та Cloud SQL, копіювання таблиць',
+    icon: 'storage',
+    isSystem: true,
+  },
+  {
+    id: 'backup',
+    label: 'Резервне копіювання JSON (Системне)',
+    subtitle: 'Експорт та відновлення повної бази даних із JSON',
+    icon: 'cloud_download',
+    isSystem: true,
+  },
+];
+
 export const ALL_USER_ASSIGNABLE_TABS: { id: AppTabId; label: string; icon: string; badgeColor: string }[] = [
-  { id: 'electricity', label: 'Електроенергія', icon: 'bolt', badgeColor: 'amber' },
-  { id: 'water_waste', label: 'Вода та сміття', icon: 'water_drop', badgeColor: 'cyan' },
+  { id: 'electricity', label: 'Електроенергія та Графік', icon: 'bolt', badgeColor: 'amber' },
+  { id: 'water', label: 'Вода', icon: 'water_drop', badgeColor: 'cyan' },
+  { id: 'waste', label: 'Вивіз сміття', icon: 'delete_outline', badgeColor: 'emerald' },
   { id: 'clients', label: 'Клієнти IPTV', icon: 'group', badgeColor: 'emerald' },
   { id: 'payments', label: 'Оплати', icon: 'receipt_long', badgeColor: 'indigo' },
   { id: 'accounts', label: 'Акаунти IPTV', icon: 'dns', badgeColor: 'purple' },
@@ -27,18 +101,52 @@ export const ALL_USER_ASSIGNABLE_TABS: { id: AppTabId; label: string; icon: stri
   { id: 'settings', label: 'Налаштування', icon: 'settings', badgeColor: 'slate' },
 ];
 
-export const DEFAULT_USER_TABS: AppTabId[] = ['electricity', 'water_waste'];
+export const DEFAULT_USER_TABS: AppTabId[] = [
+  'outage_schedule',
+  'electricity',
+  'water',
+  'waste',
+  'water_waste',
+];
 export const ALL_ADMIN_TABS: AppTabId[] = [
+  'outage_schedule',
   'clients',
   'accounts',
   'budget',
   'analytics',
   'payments',
   'electricity',
+  'water',
+  'waste',
   'water_waste',
   'users',
   'settings',
 ];
+
+export const SETTINGS_PERMISSION_PREFIX = 'settings:';
+
+export function extractAllowedSettingsFromUser(user?: Partial<AppUser> | null): SettingsSectionId[] {
+  if (!user) return [];
+  if (user.role === 'admin') {
+    return ALL_SETTINGS_SECTIONS.map((s) => s.id);
+  }
+  const set = new Set<SettingsSectionId>();
+  const validIds = new Set<string>(ALL_SETTINGS_SECTIONS.map((s) => s.id));
+  if (Array.isArray(user.allowedSettings)) {
+    for (const s of user.allowedSettings) {
+      if (validIds.has(s)) set.add(s);
+    }
+  }
+  if (Array.isArray(user.allowedTabs)) {
+    for (const t of user.allowedTabs) {
+      if (typeof t === 'string' && t.startsWith(SETTINGS_PERMISSION_PREFIX)) {
+        const sec = t.slice(SETTINGS_PERMISSION_PREFIX.length) as SettingsSectionId;
+        if (validIds.has(sec)) set.add(sec);
+      }
+    }
+  }
+  return Array.from(set);
+}
 
 export interface AppUser {
   id: string;
@@ -47,8 +155,11 @@ export interface AppUser {
   picture?: string;
   role: UserRole; // 'admin' (Всі права), 'user' (Індивідуальний доступ), 'new' (Зовсім без доступу)
   allowedTabs?: AppTabId[]; // Вкладки, доступні користувачу
+  allowedSettings?: SettingsSectionId[]; // Окремі пункти налаштувань, відкриті адміністратором
   assignedUtilityAccountIds?: string[]; // ID прив'язаних адміністратором будинків / комунальних рахунків
   assignedClientIds?: string[]; // ID прив'язаних абонентів IPTV
+  defaultUtilityAccountId?: string; // ID будинку за замовчуванням для відображення графіку відключень
+  outageScheduleViewVariant?: OutageScheduleViewVariant; // Персональний вигляд графіку відключень для користувача
   canManageOwnData?: boolean; // Дозвіл додавати та редагувати власні дані й показники (за замовчуванням true)
   createdAt: string;
   lastLoginAt: string;
@@ -226,11 +337,22 @@ export interface Client {
   telegramUsername?: string; // Telegram @username
   viberId?: string; // Legacy field if present
   notes?: string;
+  groupName?: string; // Назва групи (якщо один клієнт має декілька підписок)
+  groupBalance?: number; // Залишок гривень на балансі даної групи (₴)
   lastReminderDate?: string;
   lastReminderStatus?: 'sent' | 'failed' | 'manual';
   ownerUserId?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ClientGroupView {
+  groupKey: string;
+  groupName: string;
+  isGrouped: boolean;
+  groupBalance: number;
+  totalMonthlyPrice: number;
+  clients: Client[];
 }
 
 export interface PaymentTransaction {
@@ -280,6 +402,7 @@ export interface AppSettings {
   // Viber Message Templates
   viberRenewalMessageTemplate?: string;
   viberReminderMessageTemplate?: string;
+  outageScheduleViewVariant?: string;
   utilityTariffsSettings?: UtilityTariffsSettings;
 }
 

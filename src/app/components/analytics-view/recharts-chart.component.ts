@@ -222,18 +222,18 @@ import { MonthlyChartItem } from './recharts-wrapper';
                     <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
                     Доходи (₴):
                   </span>
-                  <strong class="font-bold">+{{ item.totalIncome.toLocaleString('uk-UA') }} ₴</strong>
+                  <strong class="font-bold">+{{ (item.totalIncome || 0).toLocaleString('uk-UA') }} ₴</strong>
                 </div>
                 <div class="flex items-center justify-between text-rose-400">
                   <span class="flex items-center gap-1">
                     <span class="w-2 h-2 rounded-full bg-rose-400"></span>
                     Витрати (₴):
                   </span>
-                  <strong class="font-bold">-{{ item.totalExpenses.toLocaleString('uk-UA') }} ₴</strong>
+                  <strong class="font-bold">-{{ (item.totalExpenses || 0).toLocaleString('uk-UA') }} ₴</strong>
                 </div>
                 <div class="flex items-center justify-between text-amber-300 pt-1 border-t border-slate-800">
                   <span>Чистий прибуток:</span>
-                  <strong class="font-bold">{{ item.netProfit.toLocaleString('uk-UA') }} ₴</strong>
+                  <strong class="font-bold">{{ (item.netProfit || 0).toLocaleString('uk-UA') }} ₴</strong>
                 </div>
               </div>
               <div class="pt-1.5 border-t border-slate-800/80 text-3xs text-slate-400 space-y-0.5">

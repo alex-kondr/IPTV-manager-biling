@@ -1,12 +1,3 @@
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
-}
-
-.no-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-
 @keyframes fadeIn {
   from {
     opacity: 0;
@@ -19,5 +10,18 @@
 }
 
 .animate-fade-in {
-  animation: fadeIn 0.25s ease-out forwards;
+  animation: fadeIn 0.22s ease-out both;
+}
+
+.animate-client-card {
+  animation: fadeIn 0.25s ease-out both;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
