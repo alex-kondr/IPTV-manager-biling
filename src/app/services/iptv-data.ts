@@ -156,9 +156,14 @@ export function normalizeUtilityTariffs(raw?: Partial<UtilityTariffsSettings>): 
 
   const outageScheduleViewVariant: OutageScheduleViewVariant =
     t.outageScheduleViewVariant || DEFAULT_UTILITY_TARIFFS.outageScheduleViewVariant || 'v1_classic_grid';
+  const dtekSyncIntervalMinutes =
+    typeof t.dtekSyncIntervalMinutes === 'number' && !isNaN(t.dtekSyncIntervalMinutes) && t.dtekSyncIntervalMinutes >= 1
+      ? Math.min(Math.round(t.dtekSyncIntervalMinutes), 360)
+      : (DEFAULT_UTILITY_TARIFFS.dtekSyncIntervalMinutes ?? 20);
 
   return {
     outageScheduleViewVariant,
+    dtekSyncIntervalMinutes,
     water: {
       price: waterPrice,
       monthlyFee: waterMonthlyFee,
@@ -371,6 +376,59 @@ export interface DtekShutdownInfo {
   error?: string;
 }
 
+export interface DtekMeterCheckZone {
+  codeZone: string;
+  codeScale: string;
+  alias: string;
+  name: string;
+  old: string;
+  readingDate: string;
+}
+
+export interface DtekMeterCheckProfile {
+  companyId?: string;
+  kontAccountId?: string;
+  worksId?: string;
+  worksName?: string;
+  eicCode?: string;
+  languageId?: string;
+  equipNumber?: string;
+  nameByPass?: string;
+}
+
+export interface DtekMeterCheckResult {
+  result: boolean;
+  address?: string;
+  personalAccountNumberText?: string;
+  personalAccountAddressText?: string;
+  counterNumber?: string;
+  counterModel?: string;
+  data?: DtekMeterCheckZone[];
+  profile?: DtekMeterCheckProfile;
+  listAddresses?: boolean;
+  [key: string]: unknown;
+}
+
+export interface DtekMeterCheckApiResponse {
+  success: boolean;
+  formattedNumber: string;
+  rawNumber: string;
+  data?: DtekMeterCheckResult;
+  error?: string;
+  details?: string;
+}
+
+export function formatDtekMeterAccountNumber(rawNumber: string): string {
+  if (!rawNumber) return '';
+  const clean = String(rawNumber).trim().replace(/\s+/g, '');
+  if (clean.includes('/')) {
+    const [prefix, suffix] = clean.split('/');
+    const cleanSuffix = (suffix || '').replace(/^0+/, '') || '0';
+    return `${prefix}/${cleanSuffix}`;
+  }
+  return clean;
+}
+
 @Injectable({
   providedIn: 'root',
 })
@@ -503,6 +561,7 @@ export class IptvData {
       electricity_tariffs: 'user',
       water_tariffs: 'user',
       waste_tariffs: 'user',
+      outage_sync_interval: 'system',
       billing: 'system',
       viber: 'system',
       telegram: 'system',
@@ -778,6 +837,26 @@ export class IptvData {
       water,
       waste,
     });
+  });
+
+  readonly dtekSyncIntervalMinutes = computed<number>(() => {
+    const fromSysVals = Number(this.systemSettingsConfig().systemValues?.['dtekSyncIntervalMinutes']);
+    if (!isNaN(fromSysVals) && fromSysVals >= 1 && fromSysVals <= 360) {
+      return Math.round(fromSysVals);
+    }
+    const fromSettings = Number(this.settings().dtekSyncIntervalMinutes);
+    if (!isNaN(fromSettings) && fromSettings >= 1 && fromSettings <= 360) {
+      return Math.round(fromSettings);
+    }
+    const fromTariffs = Number(this.settings().utilityTariffsSettings?.dtekSyncIntervalMinutes);
+    if (!isNaN(fromTariffs) && fromTariffs >= 1 && fromTariffs <= 360) {
+      return Math.round(fromTariffs);
+    }
+    const fromInfo = Number(this.dtekShutdownInfo()?.syncIntervalMinutes);
+    if (!isNaN(fromInfo) && fromInfo >= 1 && fromInfo <= 360) {
+      return Math.round(fromInfo);
+    }
+    return 20;
   });
 
   // Active & Default Electricity House for Outage Schedule
@@ -1374,9 +1453,9 @@ export class IptvData {
     dismissedVersion: string;
     shouldShowModal: boolean;
   }>({
-    currentVersion: 'v4.0',
-    previousVersion: 'v3.0',
-    userLastSeenVersion: 'v3.0',
+    currentVersion: 'v4.2',
+    previousVersion: 'v4.0',
+    userLastSeenVersion: 'v4.0',
     dismissedVersion: '',
     shouldShowModal: false,
   });
@@ -1392,7 +1471,7 @@ export class IptvData {
     this.isUpdateModalOpen.set(false);
   }
 
-  async dismissAppReleaseForUser(version = 'v4.0'): Promise<void> {
+  async dismissAppReleaseForUser(version = 'v4.2'): Promise<void> {
     this.isDismissingUpdate.set(true);
     try {
       const res = await firstValueFrom(
@@ -1758,7 +1837,15 @@ export class IptvData {
         }
       }
       this.triggerSuccess('Права доступу, вкладки та привʼязані будинки оновлено!');
-      void Promise.all([this.fetchAdminUtilityAccounts(), this.fetchUtilityData(), this.fetchClients()]);
+      void Promise.all([
+        this.fetchAdminUtilityAccounts(),
+        this.fetchUtilityData(),
+        this.fetchClients(true),
+        this.fetchPayments(true),
+        this.fetchAccounts(true),
+        this.fetchBudget(true),
+        this.fetchStats(true),
+      ]);
       return true;
     } catch (err: unknown) {
       // Revert optimistic update on error
@@ -2314,14 +2401,12 @@ export class IptvData {
           this.fetchClients(),
           this.fetchPayments(),
         ]);
-        if (Date.now() >= this.apiRateLimitCooldownUntil) {
-          await Promise.all([
-            this.fetchAccounts(),
-            this.fetchBudget(),
-            this.fetchStats(),
-            this.fetchDbStatus(),
-          ]);
-        }
+        await Promise.all([
+          this.fetchAccounts(this.accounts().length === 0),
+          this.fetchBudget(this.ledger().length === 0),
+          this.fetchStats(this.monthlyStats().length === 0),
+          this.fetchDbStatus(),
+        ]);
         if (!this.dtekShutdownInfo() && Date.now() >= this.apiRateLimitCooldownUntil) {
           await this.fetchDtekShutdowns();
         }
@@ -2387,12 +2472,15 @@ export class IptvData {
     }
     this.isDtekCatalogLoading.set(true);
     try {
-      const url = city ? `/api/utility/dtek-streets?city=${encodeURIComponent(city)}` : '/api/utility/dtek-streets';
+      const cleanCity = (city || '').trim();
+      const url = cleanCity ? `/api/utility/dtek-streets?city=${encodeURIComponent(cleanCity)}` : '/api/utility/dtek-streets';
       const res = await firstValueFrom(this.http.get<{ cities: string[]; streets: string[] }>(url));
       if (res && Array.isArray(res.cities) && res.cities.length > 0) {
         this.dtekCities.set(res.cities);
       }
-      if (res && Array.isArray(res.streets)) {
+      if (!cleanCity) {
+        this.dtekStreets.set([]);
+      } else if (res && Array.isArray(res.streets)) {
         this.dtekStreets.set(res.streets);
       }
       return res || { cities: [], streets: [] };
@@ -2571,8 +2659,9 @@ export class IptvData {
             );
           } else if (info.refreshSkippedByCooldown) {
             const mins = info.minutesUntilNextRefresh || 1;
+            const intervalMins = info.syncIntervalMinutes || this.dtekSyncIntervalMinutes();
             this.triggerSuccess(
-              `Графік завантажено з БД (останній запит до ДТЕК: ${info.lastDtekFetchAt || info.fetchedAt || 'нещодавно'}). Наступний запит на сайт ДТЕК можливий через ${mins} хв (інтервал 20 хв).`
+              `Графік завантажено з БД (останній запит до ДТЕК: ${info.lastDtekFetchAt || info.fetchedAt || 'нещодавно'}). Наступний запит на сайт ДТЕК можливий через ${mins} хв (інтервал ${intervalMins} хв).`
             );
           }
         }
@@ -2591,6 +2680,28 @@ export class IptvData {
     }
   }
 
+  formatDtekMeterAccountNumber(rawNumber: string): string {
+    return formatDtekMeterAccountNumber(rawNumber);
+  }
+
+  async checkDtekMeterAddress(accountNumber: string, accountId?: string): Promise<DtekMeterCheckApiResponse> {
+    const payload = { accountNumber, accountId };
+    try {
+      return await firstValueFrom(
+        this.http.post<DtekMeterCheckApiResponse>('/api/utility/dtek-meter-check', payload)
+      );
+    } catch (err: unknown) {
+      const httpErr = err as { error?: { error?: string; message?: string }; message?: string };
+      const errorMsg =
+        httpErr.error?.error || httpErr.error?.message || httpErr.message || 'Помилка запиту до сервера ДТЕК ОЕМ';
+      return {
+        success: false,
+        error: errorMsg,
+        rawNumber: accountNumber,
+        formattedNumber: this.formatDtekMeterAccountNumber(accountNumber),
+      };
+    }
+  }
 
   async syncCloudDatabase(silent = false): Promise<boolean> {
     this.isSyncingCloud.set(true);
@@ -2812,8 +2923,8 @@ export class IptvData {
     }
   }
 
-  async fetchClients(): Promise<void> {
-    if (Date.now() < this.apiRateLimitCooldownUntil) return;
+  async fetchClients(force = false): Promise<void> {
+    if (!force && this.clients().length > 0 && Date.now() < this.apiRateLimitCooldownUntil) return;
     if (this.inFlightClientsPromise) return this.inFlightClientsPromise;
     this.inFlightClientsPromise = (async () => {
       try {
@@ -2841,8 +2952,8 @@ export class IptvData {
     return this.inFlightClientsPromise;
   }
 
-  async fetchPayments(): Promise<void> {
-    if (Date.now() < this.apiRateLimitCooldownUntil) return;
+  async fetchPayments(force = false): Promise<void> {
+    if (!force && this.payments().length > 0 && Date.now() < this.apiRateLimitCooldownUntil) return;
     if (this.inFlightPaymentsPromise) return this.inFlightPaymentsPromise;
     this.inFlightPaymentsPromise = (async () => {
       try {
@@ -2996,8 +3107,8 @@ export class IptvData {
     }
   }
 
-  async fetchStats(): Promise<void> {
-    if (Date.now() < this.apiRateLimitCooldownUntil) return;
+  async fetchStats(force = false): Promise<void> {
+    if (!force && this.monthlyStats().length > 0 && Date.now() < this.apiRateLimitCooldownUntil) return;
     if (this.inFlightStatsPromise) return this.inFlightStatsPromise;
     this.inFlightStatsPromise = (async () => {
       try {
@@ -3020,8 +3131,8 @@ export class IptvData {
     return this.inFlightStatsPromise;
   }
 
-  async fetchAccounts(): Promise<void> {
-    if (Date.now() < this.apiRateLimitCooldownUntil) return;
+  async fetchAccounts(force = false): Promise<void> {
+    if (!force && this.accounts().length > 0 && Date.now() < this.apiRateLimitCooldownUntil) return;
     if (this.inFlightAccountsPromise) return this.inFlightAccountsPromise;
     this.inFlightAccountsPromise = (async () => {
       try {
@@ -3042,8 +3153,8 @@ export class IptvData {
     return this.inFlightAccountsPromise;
   }
 
-  async fetchBudget(): Promise<void> {
-    if (Date.now() < this.apiRateLimitCooldownUntil) return;
+  async fetchBudget(force = false): Promise<void> {
+    if (!force && this.ledger().length > 0 && Date.now() < this.apiRateLimitCooldownUntil) return;
     if (this.inFlightBudgetPromise) return this.inFlightBudgetPromise;
     this.inFlightBudgetPromise = (async () => {
       try {
@@ -3977,6 +4088,22 @@ export class IptvData {
       if (res?.account) {
         this.utilityAccounts.update((list) =>
           list.map((a) => (a.id === res.account!.id ? res.account! : a))
+        );
+      }
+      if (res?.amountToPayUah !== undefined && res.amountToPayUah !== null && res.amountToPayUah <= 0) {
+        const todayStr = new Date().toISOString().split('T')[0];
+        this.utilityReadings.update((list) =>
+          list.map((r) => {
+            if (
+              r.accountId === accountId &&
+              (r.utilityType === 'electricity' || !r.utilityType) &&
+              !r.isControlOnly &&
+              !r.isPaid
+            ) {
+              return { ...r, isPaid: true, paidAmount: r.totalCost, paidDate: todayStr };
+            }
+            return r;
+          })
         );
       }
       if (res?.success) {

@@ -464,11 +464,13 @@ export interface CloudSqlLoadResult {
   settingsReadSuccess: boolean;
 }
 
-export async function loadAllFromCloudSql(): Promise<CloudSqlLoadResult | null> {
-  if (!isCloudSqlAvailable()) return null;
+export async function loadAllFromCloudSql(mode?: DatabaseMode): Promise<CloudSqlLoadResult | null> {
+  const targetMode = mode || getActiveDbMode();
+  if (!isCloudSqlAvailable(targetMode)) return null;
 
   try {
-    await ensureDatabaseSchema();
+    await ensureDatabaseSchema(targetMode);
+    const targetDb = getDbForMode(targetMode);
 
     const [
       clientsRes,
@@ -485,28 +487,30 @@ export async function loadAllFromCloudSql(): Promise<CloudSqlLoadResult | null> 
       userSettingsRes,
       systemSettingsConfigRes,
     ] = await Promise.all([
-      trySelect(db.select().from(clients)),
-      trySelect(db.select().from(payments)),
-      trySelect(db.select().from(providerAccounts)),
-      trySelect(db.select().from(providerDeposits)),
-      trySelect(db.select().from(settings)),
-      trySelect(db.select().from(utilityAccounts)),
-      trySelect(db.select().from(utilityReadings)),
-      trySelect(db.select().from(customLedgerEntries)),
-      trySelect(db.select().from(providerBalanceAdjustments)),
-      trySelect(db.select().from(accountDeductionOverrides)),
-      trySelect(db.select().from(users)),
-      trySelect(db.select().from(userSettings)),
-      trySelect(db.select().from(systemSettingsConfig)),
+      trySelect(targetDb.select().from(clients)),
+      trySelect(targetDb.select().from(payments)),
+      trySelect(targetDb.select().from(providerAccounts)),
+      trySelect(targetDb.select().from(providerDeposits)),
+      trySelect(targetDb.select().from(settings)),
+      trySelect(targetDb.select().from(utilityAccounts)),
+      trySelect(targetDb.select().from(utilityReadings)),
+      trySelect(targetDb.select().from(customLedgerEntries)),
+      trySelect(targetDb.select().from(providerBalanceAdjustments)),
+      trySelect(targetDb.select().from(accountDeductionOverrides)),
+      trySelect(targetDb.select().from(users)),
+      trySelect(targetDb.select().from(userSettings)),
+      trySelect(targetDb.select().from(systemSettingsConfig)),
     ]);
 
-    if (settingsRes.ok) {
-      isConnectedToCloudSql = true;
-      lastSyncTimestamp = new Date().toISOString();
-      connectionError = null;
-    } else {
-      isConnectedToCloudSql = false;
-      connectionError = settingsRes.error || 'Помилка читання таблиці settings';
+    if (!mode || mode === getActiveDbMode()) {
+      if (settingsRes.ok) {
+        isConnectedToCloudSql = true;
+        lastSyncTimestamp = new Date().toISOString();
+        connectionError = null;
+      } else {
+        isConnectedToCloudSql = false;
+        connectionError = settingsRes.error || 'Помилка читання таблиці settings';
+      }
     }
 
     let settingsObj: Record<string, unknown> | null = null;
@@ -1400,48 +1404,48 @@ export async function seedInitialDataToCloudSql(fullDb: Record<string, unknown>,
   if (targetMode === 'sqlite_local') return true;
   try {
     if (fullDb['settings']) {
-      await saveSettingsToCloudSql(fullDb['settings'] as Record<string, unknown>);
+      await saveSettingsToCloudSql(fullDb['settings'] as Record<string, unknown>, targetMode);
     }
     if (Array.isArray(fullDb['clients'])) {
-      for (const c of fullDb['clients']) await saveClientToCloudSql(c as Record<string, unknown>);
+      for (const c of fullDb['clients']) await saveClientToCloudSql(c as Record<string, unknown>, targetMode);
     }
     if (Array.isArray(fullDb['payments'])) {
-      for (const p of fullDb['payments']) await savePaymentToCloudSql(p as Record<string, unknown>);
+      for (const p of fullDb['payments']) await savePaymentToCloudSql(p as Record<string, unknown>, targetMode);
     }
     if (Array.isArray(fullDb['providerAccounts'])) {
-      for (const a of fullDb['providerAccounts']) await saveProviderAccountToCloudSql(a as Record<string, unknown>);
+      for (const a of fullDb['providerAccounts']) await saveProviderAccountToCloudSql(a as Record<string, unknown>, targetMode);
     }
     if (Array.isArray(fullDb['providerDeposits'])) {
-      for (const d of fullDb['providerDeposits']) await saveProviderDepositToCloudSql(d as Record<string, unknown>);
+      for (const d of fullDb['providerDeposits']) await saveProviderDepositToCloudSql(d as Record<string, unknown>, targetMode);
     }
     if (Array.isArray(fullDb['utilityAccounts'])) {
-      for (const u of fullDb['utilityAccounts']) await saveUtilityAccountToCloudSql(u as Record<string, unknown>);
+      for (const u of fullDb['utilityAccounts']) await saveUtilityAccountToCloudSql(u as Record<string, unknown>, targetMode);
     }
     if (Array.isArray(fullDb['utilityReadings'])) {
-      for (const r of fullDb['utilityReadings']) await saveUtilityReadingToCloudSql(r as Record<string, unknown>);
+      for (const r of fullDb['utilityReadings']) await saveUtilityReadingToCloudSql(r as Record<string, unknown>, targetMode);
     }
     if (Array.isArray(fullDb['customLedgerEntries'])) {
-      for (const e of fullDb['customLedgerEntries']) await saveCustomLedgerEntryToCloudSql(e as Record<string, unknown>);
+      for (const e of fullDb['customLedgerEntries']) await saveCustomLedgerEntryToCloudSql(e as Record<string, unknown>, targetMode);
     }
     if (Array.isArray(fullDb['providerBalanceAdjustments'])) {
-      for (const a of fullDb['providerBalanceAdjustments']) await saveProviderBalanceAdjustmentToCloudSql(a as Record<string, unknown>);
+      for (const a of fullDb['providerBalanceAdjustments']) await saveProviderBalanceAdjustmentToCloudSql(a as Record<string, unknown>, targetMode);
     }
     if (Array.isArray(fullDb['accountDeductionOverrides'])) {
-      for (const o of fullDb['accountDeductionOverrides']) await saveAccountDeductionOverrideToCloudSql(o as Record<string, unknown>);
+      for (const o of fullDb['accountDeductionOverrides']) await saveAccountDeductionOverrideToCloudSql(o as Record<string, unknown>, targetMode);
     }
     if (Array.isArray(fullDb['users'])) {
-      for (const u of fullDb['users']) await saveUserToCloudSql(u as Record<string, unknown>);
+      for (const u of fullDb['users']) await saveUserToCloudSql(u as Record<string, unknown>, targetMode);
     }
     if (fullDb['userSettings'] && typeof fullDb['userSettings'] === 'object') {
       const entries = Array.isArray(fullDb['userSettings'])
         ? (fullDb['userSettings'] as Record<string, unknown>[])
         : (Object.values(fullDb['userSettings'] as Record<string, unknown>) as Record<string, unknown>[]);
       for (const us of entries) {
-        if (us && us['userId']) await saveUserSettingsToCloudSql(us);
+        if (us && us['userId']) await saveUserSettingsToCloudSql(us, targetMode);
       }
     }
     if (fullDb['systemSettingsConfig'] && typeof fullDb['systemSettingsConfig'] === 'object') {
-      await saveSystemSettingsConfigToCloudSql(fullDb['systemSettingsConfig'] as Record<string, unknown>);
+      await saveSystemSettingsConfigToCloudSql(fullDb['systemSettingsConfig'] as Record<string, unknown>, targetMode);
     }
     console.log(`[PostgreSQL:${targetMode}] Full database initialized in PostgreSQL`);
     return true;

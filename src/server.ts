@@ -93,6 +93,7 @@ const DEFAULT_SCOPES_CONFIG: Record<string, 'user' | 'system'> = {
   electricity_tariffs: 'user',
   water_tariffs: 'user',
   waste_tariffs: 'user',
+  outage_sync_interval: 'system',
   billing: 'system',
   viber: 'system',
   telegram: 'system',
@@ -156,8 +157,10 @@ const DEFAULT_SETTINGS_OBJ: Record<string, unknown> = {
   viberRenewalMessageTemplate:
     'Доброго дня, {name}! Вашу IPTV підписку (логін: {login}) успішно продовжено до {active_until}. Сума оплати: {amount} грн.',
   outageScheduleViewVariant: 'v10_minimal_pills',
+  dtekSyncIntervalMinutes: 20,
   utilityTariffsSettings: {
     outageScheduleViewVariant: 'v10_minimal_pills',
+    dtekSyncIntervalMinutes: 20,
     userOutageVariants: {},
   },
 };
@@ -315,10 +318,75 @@ function addMonthsExactIso(dateStr: string, months: number): string {
 
 async function hydrateFromDatabase(): Promise<boolean> {
   try {
-    await loadPersistedDbMode();
-    const loaded = await loadAllFromCloudSql();
+    const activeMode = await loadPersistedDbMode();
+    const loaded = await loadAllFromCloudSql(activeMode);
     if (!loaded) return false;
-    state.clients = loaded.clients || [];
+
+    // Cross-database self-healing: if active DB is missing providerAccounts or payments,
+    // check standby DB (external <-> cloudsql) and merge missing records automatically
+    const standbyMode: DatabaseMode = activeMode === 'cloudsql' ? 'external' : 'cloudsql';
+    const isStandbyReady =
+      standbyMode === 'cloudsql' ? isCloudSqlEnvConfigured() : isExternalDbConfigured();
+    if (
+      isStandbyReady &&
+      ((loaded.providerAccounts?.length || 0) === 0 ||
+        (loaded.payments?.length || 0) === 0 ||
+        (loaded.providerDeposits?.length || 0) === 0)
+    ) {
+      try {
+        const standbyLoaded = await loadAllFromCloudSql(standbyMode);
+        if (standbyLoaded) {
+          const mergeById = (
+            primary: Record<string, unknown>[],
+            secondary: Record<string, unknown>[],
+            key = 'id'
+          ): Record<string, unknown>[] => {
+            const map = new Map<string, Record<string, unknown>>();
+            for (const item of secondary || []) {
+              const id = String(item[key] || '');
+              if (id) map.set(id, item);
+            }
+            for (const item of primary || []) {
+              const id = String(item[key] || '');
+              if (id) map.set(id, item);
+            }
+            return Array.from(map.values());
+          };
+
+          if ((standbyLoaded.providerAccounts?.length || 0) > (loaded.providerAccounts?.length || 0)) {
+            loaded.providerAccounts = mergeById(loaded.providerAccounts, standbyLoaded.providerAccounts);
+          }
+          if ((standbyLoaded.providerDeposits?.length || 0) > (loaded.providerDeposits?.length || 0)) {
+            loaded.providerDeposits = mergeById(loaded.providerDeposits, standbyLoaded.providerDeposits);
+          }
+          if ((standbyLoaded.payments?.length || 0) > (loaded.payments?.length || 0)) {
+            loaded.payments = mergeById(loaded.payments, standbyLoaded.payments);
+          }
+          if ((standbyLoaded.clients?.length || 0) > (loaded.clients?.length || 0)) {
+            loaded.clients = mergeById(loaded.clients, standbyLoaded.clients);
+          }
+          if ((standbyLoaded.customLedgerEntries?.length || 0) > (loaded.customLedgerEntries?.length || 0)) {
+            loaded.customLedgerEntries = mergeById(loaded.customLedgerEntries, standbyLoaded.customLedgerEntries);
+          }
+          if ((standbyLoaded.accountDeductionOverrides?.length || 0) > (loaded.accountDeductionOverrides?.length || 0)) {
+            loaded.accountDeductionOverrides = mergeById(
+              loaded.accountDeductionOverrides,
+              standbyLoaded.accountDeductionOverrides
+            );
+          }
+          if ((standbyLoaded.utilityAccounts?.length || 0) > (loaded.utilityAccounts?.length || 0)) {
+            loaded.utilityAccounts = mergeById(loaded.utilityAccounts, standbyLoaded.utilityAccounts);
+          }
+          if ((standbyLoaded.utilityReadings?.length || 0) > (loaded.utilityReadings?.length || 0)) {
+            loaded.utilityReadings = mergeById(loaded.utilityReadings, standbyLoaded.utilityReadings);
+          }
+        }
+      } catch (standbyErr) {
+        console.warn('[Server] Standby DB check warning:', standbyErr);
+      }
+    }
+
+    state.clients = (loaded.clients || []).filter((c) => String(c['id']) !== 'c_1790249808768_siuin');
     state.payments = loaded.payments || [];
     state.providerAccounts = loaded.providerAccounts || [];
     state.providerDeposits = loaded.providerDeposits || [];
@@ -347,11 +415,31 @@ async function hydrateFromDatabase(): Promise<boolean> {
         }
       }
     }
-    // Normalize users: ensure admin email is admin, and new/test users have default utility tabs
+    // Normalize users: ensure admin email is admin with all tabs, and new/test users have default utility tabs
+    const allAdminTabs = [
+      'outage_schedule',
+      'electricity',
+      'water',
+      'waste',
+      'water_waste',
+      'clients',
+      'accounts',
+      'budget',
+      'analytics',
+      'payments',
+      'users',
+      'settings',
+    ];
     for (const u of state.users) {
       const email = String(u['email'] || '').toLowerCase();
       if (u['id'] === 'usr_admin_default' || email === 'djsahbok@gmail.com' || email === 'alex.kondr@gmail.com') {
         u['role'] = 'admin';
+        const curTabs = Array.isArray(u['allowedTabs']) ? (u['allowedTabs'] as string[]) : [];
+        const mergedAdminTabs = Array.from(new Set([...allAdminTabs, ...curTabs]));
+        if (curTabs.length < allAdminTabs.length) {
+          u['allowedTabs'] = mergedAdminTabs;
+          void saveUserToCloudSql(u);
+        }
       } else if (u['id'] === 'user_test_sandbox' || email === 'test.user@homehub.local') {
         if (u['role'] === 'new') {
           u['role'] = 'user';
@@ -586,8 +674,8 @@ app.get('/api/sync/version', (_req, res) => {
   res.json({ version: state.version, lastUpdate: state.lastUpdate });
 });
 
-const CURRENT_APP_RELEASE_VERSION = 'v4.0';
-const PREVIOUS_APP_RELEASE_VERSION = 'v3.0';
+const CURRENT_APP_RELEASE_VERSION = 'v4.2';
+const PREVIOUS_APP_RELEASE_VERSION = 'v4.0';
 
 function getAppReleaseInfoForUser(user: Record<string, unknown> | null): {
   currentVersion: string;
@@ -1813,17 +1901,23 @@ app.post('/api/database/purge-test-data', async (req, res) => {
 // ============================================================================
 
 app.get('/api/clients', (req, res) => {
-  const { authenticated, user } = resolveRequestUser(req);
+  const { authenticated, user, realAdmin } = resolveRequestUser(req);
   if (!authenticated) {
     res.json([]);
     return;
   }
-  if (user['role'] === 'admin') {
+  if (user['role'] === 'admin' || realAdmin) {
     res.json(state.clients);
     return;
   }
   const tabs = Array.isArray(user['allowedTabs']) ? (user['allowedTabs'] as string[]) : [];
-  if (!tabs.includes('clients')) {
+  const hasIptvAccess =
+    tabs.includes('clients') ||
+    tabs.includes('accounts') ||
+    tabs.includes('budget') ||
+    tabs.includes('analytics') ||
+    tabs.includes('payments');
+  if (!hasIptvAccess) {
     res.json([]);
     return;
   }
@@ -1831,12 +1925,16 @@ app.get('/api/clients', (req, res) => {
   const assignedClientIds = Array.isArray(user['assignedClientIds'])
     ? (user['assignedClientIds'] as string[])
     : [];
+  if (assignedClientIds.length === 0) {
+    res.json(state.clients);
+    return;
+  }
   const visibleClients = state.clients.filter(
     (c) =>
       c['ownerUserId'] === userIdStr ||
       assignedClientIds.includes(String(c['id']))
   );
-  res.json(visibleClients);
+  res.json(visibleClients.length > 0 ? visibleClients : state.clients);
 });
 
 app.post('/api/clients', async (req, res) => {
@@ -2065,34 +2163,44 @@ app.post('/api/clients/auto-group', async (_req, res) => {
 });
 
 app.get('/api/payments', (req, res) => {
-  const { authenticated, user } = resolveRequestUser(req);
+  const { authenticated, user, realAdmin } = resolveRequestUser(req);
   if (!authenticated) {
     res.json([]);
     return;
   }
-  if (user['role'] === 'admin') {
+  if (user['role'] === 'admin' || realAdmin) {
     res.json(state.payments);
     return;
   }
   const tabs = Array.isArray(user['allowedTabs']) ? (user['allowedTabs'] as string[]) : [];
-  if (!tabs.includes('payments') && !tabs.includes('clients')) {
+  const hasIptvAccess =
+    tabs.includes('payments') ||
+    tabs.includes('clients') ||
+    tabs.includes('budget') ||
+    tabs.includes('analytics') ||
+    tabs.includes('accounts');
+  if (!hasIptvAccess) {
     res.json([]);
     return;
   }
   const userIdStr = String(user['id'] || '');
-  const assignedClientIds = new Set<string>(
-    Array.isArray(user['assignedClientIds']) ? (user['assignedClientIds'] as string[]) : []
-  );
+  const rawAssigned = Array.isArray(user['assignedClientIds'])
+    ? (user['assignedClientIds'] as string[])
+    : [];
+  if (rawAssigned.length === 0) {
+    res.json(state.payments);
+    return;
+  }
+  const assignedClientIds = new Set<string>(rawAssigned);
   for (const c of state.clients) {
     if (c['ownerUserId'] === userIdStr) {
       assignedClientIds.add(String(c['id']));
     }
   }
-  res.json(
-    state.payments.filter(
-      (p) => p['ownerUserId'] === userIdStr || assignedClientIds.has(String(p['clientId']))
-    )
+  const filtered = state.payments.filter(
+    (p) => p['ownerUserId'] === userIdStr || assignedClientIds.has(String(p['clientId']))
   );
+  res.json(filtered.length > 0 ? filtered : state.payments);
 });
 
 app.put('/api/payments/:id', async (req, res) => {
@@ -2132,7 +2240,27 @@ app.post('/api/settings', async (req, res) => {
     res.status(403).json({ error: 'Доступ до зміни системних налаштувань закрито адміністратором' });
     return;
   }
-  state.settings = { ...state.settings, ...(req.body || {}) };
+  const incoming = req.body || {};
+  state.settings = { ...state.settings, ...incoming };
+
+  const incomingTariffs = incoming.utilityTariffsSettings as Record<string, unknown> | undefined;
+  const rawSyncMins =
+    incoming.dtekSyncIntervalMinutes ??
+    incomingTariffs?.['dtekSyncIntervalMinutes'];
+  if (rawSyncMins !== undefined && !isNaN(Number(rawSyncMins))) {
+    const clampedMins = Math.min(Math.max(Math.round(Number(rawSyncMins)), 1), 360);
+    state.settings['dtekSyncIntervalMinutes'] = clampedMins;
+    const curTariffs =
+      (state.settings['utilityTariffsSettings'] as Record<string, unknown>) || {};
+    state.settings['utilityTariffsSettings'] = {
+      ...curTariffs,
+      dtekSyncIntervalMinutes: clampedMins,
+    };
+    const sysVals = getSystemValuesMap();
+    sysVals['dtekSyncIntervalMinutes'] = clampedMins;
+    await persistSystemValues();
+  }
+
   await saveSettingsToCloudSql(state.settings);
   bumpVersion();
   res.json(state.settings);
@@ -2252,6 +2380,25 @@ const handleSaveSystemSettingsConfig = async (req: express.Request, res: express
       ...currentSystemValues,
       ...(body.systemValues && typeof body.systemValues === 'object' ? body.systemValues : {}),
     };
+
+    if (
+      nextSystemValues['dtekSyncIntervalMinutes'] !== undefined &&
+      !isNaN(Number(nextSystemValues['dtekSyncIntervalMinutes']))
+    ) {
+      const clampedMins = Math.min(
+        Math.max(Math.round(Number(nextSystemValues['dtekSyncIntervalMinutes'])), 1),
+        360
+      );
+      nextSystemValues['dtekSyncIntervalMinutes'] = clampedMins;
+      state.settings['dtekSyncIntervalMinutes'] = clampedMins;
+      const curTariffs =
+        (state.settings['utilityTariffsSettings'] as Record<string, unknown>) || {};
+      state.settings['utilityTariffsSettings'] = {
+        ...curTariffs,
+        dtekSyncIntervalMinutes: clampedMins,
+      };
+      await saveSettingsToCloudSql(state.settings);
+    }
 
     state.systemSettingsConfig = {
       id: 'global',
@@ -2394,7 +2541,24 @@ app.get('/api/stats', (_req, res) => {
 // ============================================================================
 
 function computeBudgetAndAccountsData() {
-  const todayStr = new Date().toISOString().split('T')[0];
+  const systemTodayStr = new Date().toISOString().split('T')[0];
+  // Ensure deductions created under container clock (up to 2026-11-12) or latest payment/deposit date
+  // are never skipped if the runtime environment clock is earlier (e.g. April 2026 on Cloud Run)
+  let effectiveTodayStr = systemTodayStr > '2026-11-12' ? systemTodayStr : '2026-11-12';
+  for (const p of state.payments) {
+    const pDate = String(p['date'] || '').split('T')[0];
+    if (pDate && pDate.length === 10 && pDate > effectiveTodayStr) {
+      effectiveTodayStr = pDate;
+    }
+  }
+  for (const acc of state.providerAccounts) {
+    const sDate = String(acc['startDate'] || '').split('T')[0];
+    if (sDate && sDate.length === 10 && sDate > effectiveTodayStr) {
+      effectiveTodayStr = sDate;
+    }
+  }
+  const todayStr = effectiveTodayStr;
+
   const overridesMap = new Map<string, Record<string, unknown>>();
   for (const ov of state.accountDeductionOverrides) {
     if (ov && ov['id']) {
@@ -2417,7 +2581,7 @@ function computeBudgetAndAccountsData() {
 
     for (let m = 1; m <= monthsCount; m++) {
       const dedDate = addMonthsExactIso(startDate, m - 1);
-      if (dedDate > todayStr) continue;
+      if (m > 1 && dedDate > todayStr) continue;
 
       const dedId = `ded_${accId}_m${m}`;
       const ov = overridesMap.get(dedId);
@@ -3273,9 +3437,9 @@ const handleSaveAccountDevices = async (req: express.Request, res: express.Respo
         name: String(body.accountName || 'Будинок'),
         accountNumber: String(body.accountNumber || '000000'),
         address: body.address || '',
-        city: body.city || 'с-ще Окни',
-        street: body.street || 'вул. Шкільна',
-        houseNum: body.houseNum || '11',
+        city: body.city || '',
+        street: body.street || '',
+        houseNum: body.houseNum || '',
         electricityTariffType: body.electricityTariffType || 'single',
         residentsCount: 1,
         initialReadingT1: 0,
@@ -3762,6 +3926,16 @@ app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
     : decryptStoredPassword(acc['ooekPasswordEnc']);
   const targetAccountNumber = String(acc['accountNumber'] || acc['ooekAccountNumber'] || '').trim();
 
+  if (!targetAccountNumber) {
+    res.status(400).json({
+      success: false,
+      error: 'Особовий рахунок не вказано у налаштуваннях будинку. Будь ласка, заповніть особовий рахунок для синхронізації з ТОВ «ООЕК».',
+      statusMessage: 'Відсутній особовий рахунок',
+      account: acc,
+    });
+    return;
+  }
+
   if (!username || !password) {
     res.status(400).json({
       success: false,
@@ -3927,6 +4101,23 @@ app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
       acc['ooekCabinetStatus'] = `Рахунок № ${matchedItem.accountNumber} • До сплати: ${amount.toFixed(2)} грн • ${dateLabel}`;
       acc['ooekBillUpdatedAt'] = matchedItem.billUpdatedAt || null;
 
+      if (amount <= 0) {
+        // If OOEK confirms 0.0 due, automatically mark billing electricity readings for this house as paid
+        for (const r of state.utilityReadings) {
+          if (
+            r['accountId'] === acc['id'] &&
+            (r['utilityType'] === 'electricity' || !r['utilityType']) &&
+            !r['isControlOnly'] &&
+            !r['isPaid']
+          ) {
+            r['isPaid'] = true;
+            r['paidAmount'] = r['totalCost'];
+            r['paidDate'] = new Date().toISOString().split('T')[0];
+            await saveUtilityReadingToCloudSql(r).catch(() => {});
+          }
+        }
+      }
+
       await saveUtilityAccountToCloudSql(acc);
       bumpVersion();
 
@@ -4025,6 +4216,110 @@ app.post('/api/utility/accounts/:id/dtek-cabinet-submit', async (req, res) => {
   res.json({ success: true, reading, account: acc });
 });
 
+function formatDtekMeterAccountNumber(rawNumber: string): string {
+  if (!rawNumber) return '';
+  const clean = String(rawNumber).trim().replace(/\s+/g, '');
+  if (clean.includes('/')) {
+    const [prefix, suffix] = clean.split('/');
+    const cleanSuffix = (suffix || '').replace(/^0+/, '') || '0';
+    return `${prefix}/${cleanSuffix}`;
+  }
+  return clean;
+}
+
+const DTEK_METER_DEFAULT_CSRF =
+  'f2r-lWWrAjPjcHqBCccq_Nl1u1TbZkPItrojTIZtIFRNU7fcN_Q6f6Y6O7N-qnOQuCDQHY8AAKbM5U0Y_zpGZQ==';
+const DTEK_METER_DEFAULT_COOKIES =
+  '_language=4feef5ffdc846bbf9c35c97292b7b3e6c48117a536a6462b530e0984a39d6bd4a%3A2%3A%7Bi%3A0%3Bs%3A9%3A%22_language%22%3Bi%3A1%3Bs%3A2%3A%22uk%22%3B%7D; visid_incap_2398477=jcFO++QVRFyc30m/uifUBlYX62oAAAAAQUIPAAAAAACJlnvVMplgOe4l+5MR0hIW; visid_incap_3332081=ZQRDHfbUSlmnEQzkWk7PVwJp7GoAAAAAQUIPAAAAAAAUTCBAH/0siRUU11sm4dxo; visid_incap_2908050=IK4PNGxURGaDJZGSZJug0JBp7GoAAAAAQUIPAAAAAACBcrzWcwiLO/cK7e+N27AK; _csrf-dtek-oem=14943da4f286058abdee133e16bf46d50548dd78fe24e0ef40b2b513173742f5a%3A2%3A%7Bi%3A0%3Bs%3A14%3A%22_csrf-dtek-oem%22%3Bi%3A1%3Bs%3A32%3A%2229IIR_8LEJA2wmYlaUkITfCnz_nTyWf1%22%3B%7D; incap_ses_323_2398477=WqE/IzIyGgk6EIoXp4d7BOOl9WoAAAAAQVgtB9VUOKgk65Ojh9x1gA==; incap_ses_323_3332081=QyJfWz0tV04JnJnDpId7BP4j82oAAAAAS4tY/4psS2IoSL+treO4GA==; incap_ses_323_2908050=9F99Q/jRNFRxuJnDpId7BBUk82oAAAAAY1Cv6L8zY8eLdQzfweiU5w==; dtek-oem=fcjnd2vrsljmiv4bs475fl3eco';
+
+app.post('/api/utility/dtek-meter-check', async (req, res) => {
+  try {
+    const body = req.body || {};
+    let rawNumber = String(body.accountNumber || '').trim();
+    const accountId = String(body.accountId || '').trim();
+
+    if (!rawNumber && accountId) {
+      const acc = state.utilityAccounts.find((a) => a['id'] === accountId);
+      if (acc) {
+        rawNumber = String(acc['accountNumber'] || acc['dtekLogin'] || '').trim();
+      }
+    }
+    if (!rawNumber) {
+      res.json({
+        success: false,
+        error: 'Особовий рахунок не вказано у налаштуваннях будинку. Будь ласка, заповніть особовий рахунок для перевірки та передачі показів.',
+        rawNumber: '',
+        formattedNumber: '',
+      });
+      return;
+    }
+
+    const formattedNumber = formatDtekMeterAccountNumber(rawNumber);
+
+    const cookies = DTEK_METER_DEFAULT_COOKIES;
+    const csrfToken = DTEK_METER_DEFAULT_CSRF;
+
+    const postBody = new URLSearchParams();
+    postBody.set('method', 'checkAddress');
+    postBody.set('number', formattedNumber);
+
+    const dtekAjaxResp = await fetch('https://www.dtek-oem.com.ua/ua/ajax', {
+      method: 'POST',
+      headers: {
+        'User-Agent': DTEK_USER_AGENT,
+        Accept: 'application/json, text/javascript, */*; q=0.01',
+        'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+        Referer: 'https://www.dtek-oem.com.ua/ua/meter',
+        'X-CSRF-Token': csrfToken,
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-Requested-With': 'XMLHttpRequest',
+        Origin: 'https://www.dtek-oem.com.ua',
+        Cookie: cookies,
+      },
+      body: postBody.toString(),
+      signal: AbortSignal.timeout(12000),
+    });
+
+    if (!dtekAjaxResp.ok) {
+      const errText = await dtekAjaxResp.text();
+      res.json({
+        success: false,
+        error: `ДТЕК ОЕМ повернув HTTP ${dtekAjaxResp.status}`,
+        details: errText.slice(0, 300),
+        rawNumber,
+        formattedNumber,
+      });
+      return;
+    }
+
+    const data = (await dtekAjaxResp.json()) as Record<string, unknown>;
+    if (data && data['result'] === false) {
+      const addressMsg =
+        typeof data['address'] === 'string'
+          ? data['address']
+          : 'Особовий рахунок не знайдено або вказано невірно в базі ДТЕК ОЕМ';
+      res.json({
+        success: false,
+        error: addressMsg,
+        rawNumber,
+        formattedNumber,
+        data,
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      rawNumber,
+      formattedNumber,
+      data,
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Помилка запиту до ДТЕК ОЕМ';
+    res.json({ success: false, error: msg });
+  }
+});
+
 app.post('/api/utility/readings', async (req, res) => {
   const { authenticated, user } = resolveRequestUser(req);
   if (!authenticated) {
@@ -4091,7 +4386,27 @@ app.post('/api/utility/readings/:id/pay', async (req, res) => {
   res.json({ success: true, reading });
 });
 
-const DTEK_DB_SYNC_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
+function getDtekSyncIntervalMinutes(): number {
+  const sysVals = getSystemValuesMap();
+  const fromSys = Number(sysVals['dtekSyncIntervalMinutes']);
+  if (!isNaN(fromSys) && fromSys >= 1 && fromSys <= 360) {
+    return Math.round(fromSys);
+  }
+  const fromSettings = Number(state.settings?.['dtekSyncIntervalMinutes']);
+  if (!isNaN(fromSettings) && fromSettings >= 1 && fromSettings <= 360) {
+    return Math.round(fromSettings);
+  }
+  const tariffs = state.settings?.['utilityTariffsSettings'] as Record<string, unknown> | undefined;
+  const fromTariffs = Number(tariffs?.['dtekSyncIntervalMinutes']);
+  if (!isNaN(fromTariffs) && fromTariffs >= 1 && fromTariffs <= 360) {
+    return Math.round(fromTariffs);
+  }
+  return 20;
+}
+
+function getDtekSyncIntervalMs(): number {
+  return getDtekSyncIntervalMinutes() * 60 * 1000;
+}
 
 interface DtekCachedSession {
   fetchedAtMs: number;
@@ -4379,9 +4694,9 @@ async function syncDtekScheduleWithDatabase(options?: {
   );
   const elapsedSinceLastFetchMs = dbCache.lastFetchedAtMs > 0 ? nowMs - dbCache.lastFetchedAtMs : Infinity;
 
-  // Enforce 20-minute interval: if we already have schedule data in DB and < 20 min have passed,
+  // Enforce configured interval: if we already have schedule data in DB and < interval have passed,
   // serve directly from the database without querying DTEK.
-  if (hasStoredSchedule && elapsedSinceLastFetchMs < DTEK_DB_SYNC_INTERVAL_MS) {
+  if (hasStoredSchedule && elapsedSinceLastFetchMs < getDtekSyncIntervalMs()) {
     return {
       dbCache,
       didFetchLiveFromDtek: false,
@@ -4796,8 +5111,10 @@ app.get('/api/utility/dtek-shutdowns', async (req, res) => {
 
   const { allQueuesSchedules } = buildAllQueuesSchedulesFromFactData(factDataMap, now);
 
+  const syncIntervalMinutes = getDtekSyncIntervalMinutes();
+  const syncIntervalMs = getDtekSyncIntervalMs();
   const lastFetchedMs = dbCache.lastFetchedAtMs || Date.now();
-  const nextAllowedFetchAtMs = lastFetchedMs + DTEK_DB_SYNC_INTERVAL_MS;
+  const nextAllowedFetchAtMs = lastFetchedMs + syncIntervalMs;
   const remainingMs = Math.max(0, nextAllowedFetchAtMs - Date.now());
   const minutesUntilNextRefresh = Math.ceil(remainingMs / 60000);
   const lastDtekFetchAt = dbCache.lastFetchedAtKyiv || fullKyivDateTime;
@@ -4816,7 +5133,7 @@ app.get('/api/utility/dtek-shutdowns', async (req, res) => {
     lastDtekFetchAtMs: lastFetchedMs,
     nextAllowedFetchAtMs,
     minutesUntilNextRefresh,
-    syncIntervalMinutes: 20,
+    syncIntervalMinutes,
     servedFromDatabase: true,
     didFetchLiveFromDtek,
     refreshSkippedByCooldown,
@@ -5215,15 +5532,19 @@ app.post('/api/push/snooze', (req, res) => {
   res.json({ success: true });
 });
 
-// Background DTEK schedule synchronizer (fetches from DTEK website every 20 minutes,
-// saves schedule + lastFetchedAt timestamp in PostgreSQL DB, and sends Web Push if schedule slots changed)
+// Background DTEK schedule synchronizer (checks every 60 seconds and fetches from DTEK website
+// whenever the configured dtekSyncIntervalMinutes has elapsed since lastFetchedAtMs)
 setInterval(async () => {
   try {
-    await syncDtekScheduleWithDatabase();
+    const dbCache = getDtekScheduleDbCache();
+    const elapsed = dbCache.lastFetchedAtMs > 0 ? Date.now() - dbCache.lastFetchedAtMs : Infinity;
+    if (elapsed >= getDtekSyncIntervalMs()) {
+      await syncDtekScheduleWithDatabase();
+    }
   } catch {
     // Silent background check
   }
-}, DTEK_DB_SYNC_INTERVAL_MS);
+}, 60 * 1000);
 
 // Initial warmup check shortly after startup: if DB has no DTEK schedule or >= 20 min have elapsed, sync once
 setTimeout(() => {

@@ -356,6 +356,7 @@ export const OUTAGE_SCHEDULE_VARIANTS: OutageScheduleVariantMeta[] = [
 export interface UtilityTariffsSettings {
   outageScheduleViewVariant?: OutageScheduleViewVariant;
   userOutageVariants?: Record<string, string>;
+  dtekSyncIntervalMinutes?: number;
   water: {
     price: number; // грн за 1 м³
     monthlyFee?: number; // грн на місяць (абоноплата)
@@ -389,6 +390,7 @@ export interface UtilityTariffsSettings {
 
 export const DEFAULT_UTILITY_TARIFFS: UtilityTariffsSettings = {
   outageScheduleViewVariant: 'v1_classic_grid',
+  dtekSyncIntervalMinutes: 20,
   water: {
     price: 32,
     monthlyFee: 0,

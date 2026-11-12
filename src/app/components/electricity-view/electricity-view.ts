@@ -12,7 +12,7 @@ import {
 import { CommonModule } from '@angular/common';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
-import { IptvData, DtekQueueSchedule, DtekHourSchedule } from '../../services/iptv-data';
+import { IptvData, DtekQueueSchedule, DtekHourSchedule, DtekMeterCheckResult } from '../../services/iptv-data';
 import {
   UtilityAccount,
   UtilityReading,
@@ -174,15 +174,42 @@ import {
                     </div>
                   </div>
                   @if (viewMode() !== 'schedule') {
-                    <span
-                      class="px-1.5 py-0.5 rounded text-3xs font-bold uppercase"
-                      [class.bg-white/20]="currentAccount()?.id === acc.id"
-                      [class.text-white]="currentAccount()?.id === acc.id"
-                      [class.bg-slate-200/80]="currentAccount()?.id !== acc.id"
-                      [class.text-slate-700]="currentAccount()?.id !== acc.id"
-                    >
-                      {{ acc.electricityTariffType === 'dual' ? '2-зонний' : '1-зонний' }}
-                    </span>
+                    @let due = getHouseDueInfo(acc);
+                    <div class="flex items-center gap-1.5 shrink-0">
+                      @if (due.hasDue) {
+                        <span
+                          class="px-2 py-0.5 rounded-lg text-3xs font-extrabold whitespace-nowrap shadow-xs"
+                          [class.bg-amber-400]="!due.isZeroOrPaid && currentAccount()?.id === acc.id"
+                          [class.text-slate-950]="!due.isZeroOrPaid && currentAccount()?.id === acc.id"
+                          [class.bg-amber-100]="!due.isZeroOrPaid && currentAccount()?.id !== acc.id"
+                          [class.text-amber-900]="!due.isZeroOrPaid && currentAccount()?.id !== acc.id"
+                          [class.border]="!due.isZeroOrPaid && currentAccount()?.id !== acc.id"
+                          [class.border-amber-300]="!due.isZeroOrPaid && currentAccount()?.id !== acc.id"
+                          [class.bg-emerald-500/25]="due.isZeroOrPaid && currentAccount()?.id === acc.id"
+                          [class.text-emerald-300]="due.isZeroOrPaid && currentAccount()?.id === acc.id"
+                          [class.border]="due.isZeroOrPaid && currentAccount()?.id === acc.id"
+                          [class.border-emerald-500/40]="due.isZeroOrPaid && currentAccount()?.id === acc.id"
+                          [class.bg-emerald-100]="due.isZeroOrPaid && currentAccount()?.id !== acc.id"
+                          [class.text-emerald-800]="due.isZeroOrPaid && currentAccount()?.id !== acc.id"
+                          [class.border-emerald-200]="due.isZeroOrPaid && currentAccount()?.id !== acc.id"
+                        >
+                          @if (!due.isZeroOrPaid) {
+                            До сплати: {{ due.amount.toFixed(2) }} грн
+                          } @else {
+                            Сплачено (0.00 грн)
+                          }
+                        </span>
+                      }
+                      <span
+                        class="px-1.5 py-0.5 rounded text-3xs font-bold uppercase"
+                        [class.bg-white/20]="currentAccount()?.id === acc.id"
+                        [class.text-white]="currentAccount()?.id === acc.id"
+                        [class.bg-slate-200/80]="currentAccount()?.id !== acc.id"
+                        [class.text-slate-700]="currentAccount()?.id !== acc.id"
+                      >
+                        {{ acc.electricityTariffType === 'dual' ? '2-зонний' : '1-зонний' }}
+                      </span>
+                    </div>
                   }
                 </button>
               }
@@ -250,10 +277,10 @@ import {
                     @if (dtekInfo()?.lastDtekFetchAt || dtekInfo()?.fetchedAt) {
                       <span
                         class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 text-amber-900 border border-amber-200 font-semibold"
-                        title="Графік зберігається у спільній базі даних та оновлюється з сайту ДТЕК кожні 20 хвилин"
+                        [title]="'Графік зберігається у спільній базі даних та оновлюється з сайту ДТЕК кожні ' + (dtekInfo()?.syncIntervalMinutes || dataService.dtekSyncIntervalMinutes()) + ' хвилин'"
                       >
                         <mat-icon class="text-xs text-amber-600 leading-none">storage</mat-icon>
-                        <span>Запит у БД: <strong>{{ dtekInfo()?.lastDtekFetchAt || dtekInfo()?.fetchedAt }}</strong> (інтервал 20 хв)</span>
+                        <span>Запит у БД: <strong>{{ dtekInfo()?.lastDtekFetchAt || dtekInfo()?.fetchedAt }}</strong> (інтервал {{ dtekInfo()?.syncIntervalMinutes || dataService.dtekSyncIntervalMinutes() }} хв)</span>
                       </span>
                     }
                     <span>•</span>
@@ -1326,7 +1353,7 @@ import {
               </div>
               <div class="mt-1 flex items-center justify-between gap-1 flex-wrap">
                 @if (lbr) {
-                  @if (lbr.isPaid) {
+                  @if (isReadingPaid(lbr, acc)) {
                     <span class="inline-flex items-center gap-1 text-3xs font-bold text-emerald-700 bg-emerald-100/90 px-2 py-0.5 rounded">
                       <mat-icon class="text-xs leading-none">check_circle</mat-icon> Оплачено
                     </span>
@@ -1408,9 +1435,9 @@ import {
                 <button
                   type="button"
                   (click)="syncOoekForCurrentAccount()"
-                  [disabled]="isSyncingOoek()"
-                  class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-2xs"
-                  title="Підключитися до personal.ooek.od.ua/home/accounts та оновити нараховану суму до сплати по особовому рахунку"
+                  [disabled]="isSyncingOoek() || !hasHouseAccountNumber(acc)"
+                  class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-2xs"
+                  [title]="!hasHouseAccountNumber(acc) ? 'Особовий рахунок не вказано у налаштуваннях будинку' : 'Підключитися до personal.ooek.od.ua/home/accounts та оновити нараховану суму до сплати по особовому рахунку'"
                 >
                   <mat-icon class="text-sm leading-none" [class.animate-spin]="isSyncingOoek()">receipt_long</mat-icon>
                   <span>{{ isSyncingOoek() ? 'Запит ООЕК...' : 'Оновити з ООЕК' }}</span>
@@ -1478,118 +1505,140 @@ import {
                       }
                     </div>
 
-                    <!-- Accrued Amount Display Box -->
-                    <div class="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between gap-3 flex-wrap">
-                      <div class="space-y-0.5">
-                        <span class="text-3xs font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300 block">
-                          Нарахована сума до сплати (ООЕК • о/р {{ acc.ooekAccountNumber || acc.accountNumber }})
-                        </span>
-                        @if (acc.ooekBillUpdatedAt) {
-                          <span class="text-2xs font-semibold text-emerald-900 dark:text-emerald-200 block">
-                            Дата отримання рахунку: {{ acc.ooekBillUpdatedAt }}
-                          </span>
-                        }
-                        @if (acc.ooekCabinetLastSync) {
-                          <span class="text-3xs text-emerald-700 dark:text-emerald-300 block">
-                            Останнє оновлення: {{ formatDate(acc.ooekCabinetLastSync) }}
-                          </span>
-                        } @else {
-                          <span class="text-3xs text-slate-500 dark:text-slate-400 block">Ще не синхронізовано</span>
-                        }
+                    @if (!hasHouseAccountNumber(acc)) {
+                      <div class="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-amber-950 dark:text-amber-200 space-y-2.5 my-1">
+                        <div class="flex items-center gap-2 font-bold text-xs text-amber-900 dark:text-amber-300">
+                          <mat-icon class="text-amber-600 dark:text-amber-400 text-base leading-none">lock</mat-icon>
+                          <span>Кабінет ТОВ «ООЕК» недоступний</span>
+                        </div>
+                        <p class="text-3xs leading-relaxed text-amber-800 dark:text-amber-300">
+                          Особовий рахунок не вказано. Для підключення до кабінету ТОВ «ООЕК» та отримання нарахувань необхідно заповнити особовий рахунок у налаштуваннях будинку.
+                        </p>
+                        <button
+                          type="button"
+                          (click)="openAccountModal(acc)"
+                          class="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-3xs font-bold inline-flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                        >
+                          <mat-icon class="text-xs leading-none">edit</mat-icon>
+                          <span>Заповнити особовий рахунок</span>
+                        </button>
                       </div>
-                      <div class="text-right shrink-0 flex flex-col items-end gap-1">
-                        @if (acc.ooekBalanceUah !== undefined && acc.ooekBalanceUah !== null) {
-                          <span class="text-lg font-extrabold font-mono text-emerald-950 dark:text-emerald-300 leading-tight">
-                            {{ acc.ooekBalanceUah.toFixed(2) }} грн
+                    } @else {
+                      <!-- Accrued Amount Display Box -->
+                      <div class="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between gap-3 flex-wrap">
+                        <div class="space-y-0.5">
+                          <span class="text-3xs font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300 block">
+                            Нарахована сума до сплати (ООЕК • о/р {{ acc.ooekAccountNumber || acc.accountNumber }})
                           </span>
-                          @if (acc.ooekBalanceUah > 0) {
-                            <span class="text-3xs font-mono font-semibold text-emerald-800 dark:text-emerald-300">
-                              ~{{ getEstimatedKwhFromOoekBalance(acc) }} кВт·г (за тарифом)
+                          @if (acc.ooekBillUpdatedAt) {
+                            <span class="text-2xs font-semibold text-emerald-900 dark:text-emerald-200 block">
+                              Дата отримання рахунку: {{ acc.ooekBillUpdatedAt }}
                             </span>
                           }
-                        } @else {
-                          <span class="text-xs font-semibold text-slate-400 italic">— грн</span>
-                        }
-                        @if (canEdit()) {
-                          <button
-                            type="button"
-                            (click)="addOoekAccruedAmountToHistory(acc)"
-                            [disabled]="isSubmitting() || acc.ooekBalanceUah === undefined || acc.ooekBalanceUah === null || acc.ooekBalanceUah <= 0"
-                            class="mt-0.5 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-3xs font-bold inline-flex items-center gap-1 cursor-pointer transition-colors shadow-2xs disabled:opacity-50 disabled:cursor-not-allowed"
-                            title="Додати нараховану суму у блок «Історія передачі показів та розрахунків» (якщо показників немає — кВт·г розраховуються на основі суми та тарифу)"
-                          >
-                            <mat-icon class="text-xs leading-none">playlist_add</mat-icon>
-                            <span>Додати до історії</span>
-                          </button>
-                        }
+                          @if (acc.ooekCabinetLastSync) {
+                            <span class="text-3xs text-emerald-700 dark:text-emerald-300 block">
+                              Останнє оновлення: {{ formatDate(acc.ooekCabinetLastSync) }}
+                            </span>
+                          } @else {
+                            <span class="text-3xs text-slate-500 dark:text-slate-400 block">Ще не синхронізовано</span>
+                          }
+                        </div>
+                        <div class="text-right shrink-0 flex flex-col items-end gap-1">
+                          @if (acc.ooekBalanceUah !== undefined && acc.ooekBalanceUah !== null) {
+                            <span class="text-lg font-extrabold font-mono text-emerald-950 dark:text-emerald-300 leading-tight">
+                              {{ acc.ooekBalanceUah.toFixed(2) }} грн
+                            </span>
+                            @if (acc.ooekBalanceUah > 0) {
+                              <span class="text-3xs font-mono font-semibold text-emerald-800 dark:text-emerald-300">
+                                ~{{ getEstimatedKwhFromOoekBalance(acc) }} кВт·г (за тарифом)
+                              </span>
+                            }
+                          } @else {
+                            <span class="text-xs font-semibold text-slate-400 italic">— грн</span>
+                          }
+                          @if (canEdit()) {
+                            <button
+                              type="button"
+                              (click)="addOoekAccruedAmountToHistory(acc)"
+                              [disabled]="isSubmitting() || acc.ooekBalanceUah === undefined || acc.ooekBalanceUah === null || acc.ooekBalanceUah <= 0"
+                              class="mt-0.5 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-3xs font-bold inline-flex items-center gap-1 cursor-pointer transition-colors shadow-2xs disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Додати нараховану суму у блок «Історія передачі показів та розрахунків» (якщо показників немає — кВт·г розраховуються на основі суми та тарифу)"
+                            >
+                              <mat-icon class="text-xs leading-none">playlist_add</mat-icon>
+                              <span>Додати до історії</span>
+                            </button>
+                          }
+                        </div>
                       </div>
-                    </div>
 
-                    @if (acc.ooekCabinetStatus) {
-                      <div class="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-2xs text-slate-700 dark:text-slate-200 flex items-start gap-1.5">
-                        <mat-icon class="text-sm text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5">info</mat-icon>
-                        <span>{{ acc.ooekCabinetStatus }}</span>
+                      @if (acc.ooekCabinetStatus) {
+                        <div class="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-2xs text-slate-700 dark:text-slate-200 flex items-start gap-1.5">
+                          <mat-icon class="text-sm text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5">info</mat-icon>
+                          <span>{{ acc.ooekCabinetStatus }}</span>
+                        </div>
+                      }
+
+                      <!-- OOEK Credentials Inputs (Account Number is automatically taken from House Settings) -->
+                      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                          <label for="cabinet-ooek-login-input" class="block text-3xs font-bold text-slate-600 dark:text-slate-300 uppercase mb-1">
+                            Логін (Email або телефон ООЕК)
+                          </label>
+                          <input
+                            id="cabinet-ooek-login-input"
+                            type="text"
+                            [value]="cabinetOoekLogin()"
+                            (input)="cabinetOoekLogin.set($any($event.target).value)"
+                            placeholder="user@email.com"
+                            autocomplete="off"
+                            class="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-300 text-xs text-slate-900 font-mono focus:outline-none focus:border-emerald-500"
+                          />
+                        </div>
+                        <div>
+                          <label for="cabinet-ooek-password-input" class="block text-3xs font-bold text-slate-600 dark:text-slate-300 uppercase mb-1">
+                            Пароль ООЕК {{ acc.hasOoekPassword ? '(збережено)' : '' }}
+                          </label>
+                          <input
+                            id="cabinet-ooek-password-input"
+                            type="password"
+                            [value]="cabinetOoekPassword()"
+                            (input)="cabinetOoekPassword.set($any($event.target).value)"
+                            [placeholder]="acc.hasOoekPassword ? '•••••••• (залиште порожнім без змін)' : 'Введіть пароль кабінету ООЕК'"
+                            autocomplete="new-password"
+                            class="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-300 text-xs text-slate-900 focus:outline-none focus:border-emerald-500"
+                          />
+                        </div>
                       </div>
                     }
+                  </div>
 
-                    <!-- OOEK Credentials Inputs (Account Number is automatically taken from House Settings) -->
-                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      <div>
-                        <label for="cabinet-ooek-login-input" class="block text-3xs font-bold text-slate-600 dark:text-slate-300 uppercase mb-1">
-                          Логін (Email або телефон ООЕК)
-                        </label>
-                        <input
-                          id="cabinet-ooek-login-input"
-                          type="text"
-                          [value]="cabinetOoekLogin()"
-                          (input)="cabinetOoekLogin.set($any($event.target).value)"
-                          placeholder="user@email.com"
-                          autocomplete="off"
-                          class="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-300 text-xs text-slate-900 font-mono focus:outline-none focus:border-emerald-500"
-                        />
-                      </div>
-                      <div>
-                        <label for="cabinet-ooek-password-input" class="block text-3xs font-bold text-slate-600 dark:text-slate-300 uppercase mb-1">
-                          Пароль ООЕК {{ acc.hasOoekPassword ? '(збережено)' : '' }}
-                        </label>
-                        <input
-                          id="cabinet-ooek-password-input"
-                          type="password"
-                          [value]="cabinetOoekPassword()"
-                          (input)="cabinetOoekPassword.set($any($event.target).value)"
-                          [placeholder]="acc.hasOoekPassword ? '•••••••• (залиште порожнім без змін)' : 'Введіть пароль кабінету ООЕК'"
-                          autocomplete="new-password"
-                          class="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-300 text-xs text-slate-900 focus:outline-none focus:border-emerald-500"
-                        />
-                      </div>
+                  @if (hasHouseAccountNumber(acc)) {
+                    <div class="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2 flex-wrap">
+                      <button
+                        type="button"
+                        (click)="saveCabinetCredentialsForCurrentAccount()"
+                        [disabled]="isSavingCabinet()"
+                        class="px-3 py-2 rounded-xl bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 dark:hover:bg-slate-600 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      >
+                        <mat-icon class="text-sm leading-none">lock</mat-icon>
+                        <span>Зберегти зашифровано</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        (click)="syncOoekForCurrentAccount()"
+                        [disabled]="isSyncingOoek()"
+                        class="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-2xs"
+                      >
+                        <mat-icon class="text-sm leading-none" [class.animate-spin]="isSyncingOoek()">sync</mat-icon>
+                        <span>{{ isSyncingOoek() ? 'Підключення...' : 'Отримати суму до сплати' }}</span>
+                      </button>
                     </div>
-                  </div>
-
-                  <div class="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2 flex-wrap">
-                    <button
-                      type="button"
-                      (click)="saveCabinetCredentialsForCurrentAccount()"
-                      [disabled]="isSavingCabinet()"
-                      class="px-3 py-2 rounded-xl bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 dark:hover:bg-slate-600 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                    >
-                      <mat-icon class="text-sm leading-none">lock</mat-icon>
-                      <span>Зберегти зашифровано</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      (click)="syncOoekForCurrentAccount()"
-                      [disabled]="isSyncingOoek()"
-                      class="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-2xs"
-                    >
-                      <mat-icon class="text-sm leading-none" [class.animate-spin]="isSyncingOoek()">sync</mat-icon>
-                      <span>{{ isSyncingOoek() ? 'Підключення...' : 'Отримати суму до сплати' }}</span>
-                    </button>
-                  </div>
+                  }
                 </div>
 
-                <!-- Right Card: DTEK OEM Direct Reading Submission (Greyed out "В розробці...") -->
-                <div class="p-4 rounded-xl bg-slate-100 dark:bg-slate-900/90 border border-slate-300 dark:border-slate-700 shadow-2xs space-y-3 flex flex-col justify-between opacity-80 select-none">
+                <!-- Right Card: DTEK OEM Direct Reading Submission (In development...) -->
+                <div class="p-4 rounded-xl bg-slate-100 dark:bg-slate-900/90 border border-slate-300 dark:border-slate-700 shadow-2xs space-y-3.5 flex flex-col justify-between">
                   <div class="space-y-3">
                     <div class="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-200 dark:border-slate-800">
                       <div>
@@ -1603,67 +1652,199 @@ import {
                           </h5>
                         </div>
                         <p class="text-2xs text-slate-500 dark:text-slate-400 mt-0.5">
-                          Швидка передача показів без входу в акаунт за особовим рахунком будинку (<span class="font-mono font-semibold text-slate-600 dark:text-slate-300">{{ acc.accountNumber }}</span>)
+                          @if (hasHouseAccountNumber(acc)) {
+                            Швидка передача показів без входу в акаунт за особовим рахунком (<span class="font-mono font-semibold text-slate-600 dark:text-slate-300">{{ acc.accountNumber }}</span> • для ДТЕК: <span class="font-mono font-bold text-amber-700 dark:text-amber-400">{{ getFormattedDtekAccountNumber(acc.accountNumber) }}</span>)
+                          } @else {
+                            <span class="text-rose-600 dark:text-rose-400 font-semibold">Особовий рахунок не вказано у налаштуваннях будинку</span>
+                          }
                         </p>
                       </div>
                     </div>
 
-                    <!-- Meter Reading Inputs (1 field for single-zone, 2 fields for dual-zone) -->
-                    @if (acc.electricityTariffType === 'dual') {
-                      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                        <div>
+                    @if (!hasHouseAccountNumber(acc)) {
+                      <div class="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-amber-950 dark:text-amber-200 space-y-2.5 my-1">
+                        <div class="flex items-center gap-2 font-bold text-xs text-amber-900 dark:text-amber-300">
+                          <mat-icon class="text-amber-600 dark:text-amber-400 text-base leading-none">lock</mat-icon>
+                          <span>Передача показів ДТЕК ОЕМ недоступна</span>
+                        </div>
+                        <p class="text-3xs leading-relaxed text-amber-800 dark:text-amber-300">
+                          Особовий рахунок не вказано. Для перевірки адреси та передачі показів лічильника необхідно заповнити особовий рахунок у налаштуваннях будинку.
+                        </p>
+                        <button
+                          type="button"
+                          (click)="openAccountModal(acc)"
+                          class="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-3xs font-bold inline-flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                        >
+                          <mat-icon class="text-xs leading-none">edit</mat-icon>
+                          <span>Заповнити особовий рахунок</span>
+                        </button>
+                      </div>
+                    } @else {
+                      <!-- Step 1 Trigger Button: "Хочу передати покази" -->
+                      <div class="p-3 rounded-xl bg-amber-50/90 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div class="space-y-0.5 min-w-0">
+                          <div class="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                            <mat-icon class="text-sm text-amber-600 leading-none">electric_meter</mat-icon>
+                            <span>Крок 1: Запит адреси та лічильника</span>
+                          </div>
+                          <p class="text-3xs text-slate-500 dark:text-slate-400">
+                            О/Р будинку: <strong class="font-mono text-slate-800 dark:text-slate-200">{{ getFormattedDtekAccountNumber(acc.accountNumber) }}</strong>
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          id="btn-dtek-want-submit-readings"
+                          (click)="onWantToSubmitDtekReadings(acc)"
+                          [disabled]="isDtekMeterChecking() || !hasHouseAccountNumber(acc)"
+                          class="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 active:scale-95 disabled:opacity-60 text-slate-950 font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer transition-all shadow-sm shrink-0"
+                        >
+                          @if (isDtekMeterChecking()) {
+                            <span class="w-3.5 h-3.5 border-2 border-slate-950/30 border-t-slate-950 rounded-full animate-spin"></span>
+                            <span>Запит до ДТЕК...</span>
+                          } @else {
+                            <mat-icon class="text-sm leading-none">send</mat-icon>
+                            <span>Хочу передати покази</span>
+                          }
+                        </button>
+                      </div>
+
+                      <!-- Step 1 Result Card (when checkAddress returns data) -->
+                      @if (dtekMeterCheckResult(); as res) {
+                        <div class="p-3 rounded-xl bg-emerald-50/90 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/60 space-y-2.5">
+                          <div class="flex items-start justify-between gap-2 flex-wrap">
+                            <div class="flex items-center gap-1.5 text-xs font-bold text-emerald-800 dark:text-emerald-300">
+                              <mat-icon class="text-sm text-emerald-600 leading-none">verified</mat-icon>
+                              <span>Дані отримано з ДТЕК ОЕМ:</span>
+                            </div>
+                            <button
+                              type="button"
+                              (click)="toggleShowDtekMeterRawJson()"
+                              class="text-3xs font-mono font-semibold px-2 py-0.5 rounded-md bg-white dark:bg-slate-800 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-slate-700 cursor-pointer transition-colors"
+                            >
+                              {{ showDtekMeterRawJson() ? 'Сховати JSON' : 'Переглянути JSON відповідь' }}
+                            </button>
+                          </div>
+
+                          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-2xs">
+                            <div class="space-y-0.5">
+                              <span class="text-3xs uppercase font-bold text-slate-400">Адреса ДТЕК:</span>
+                              <div class="font-medium text-slate-800 dark:text-slate-200 leading-tight">
+                                {{ res.personalAccountAddressText || res.address || '—' }}
+                              </div>
+                            </div>
+                            <div class="space-y-0.5">
+                              <span class="text-3xs uppercase font-bold text-slate-400">Особовий рахунок:</span>
+                              <div class="font-mono font-bold text-slate-800 dark:text-slate-200 leading-tight">
+                                {{ res.personalAccountNumberText || ('О/Р ' + getFormattedDtekAccountNumber(acc.accountNumber)) }}
+                              </div>
+                            </div>
+                            <div class="space-y-0.5">
+                              <span class="text-3xs uppercase font-bold text-slate-400">Лічильник:</span>
+                              <div class="font-mono font-medium text-slate-800 dark:text-slate-200">
+                                {{ res.counterModel || '—' }} (№ {{ res.counterNumber || '—' }})
+                              </div>
+                            </div>
+                            <div class="space-y-0.5">
+                              <span class="text-3xs uppercase font-bold text-slate-400">EIC код:</span>
+                              <div class="font-mono font-semibold text-slate-700 dark:text-slate-300 truncate">
+                                {{ res.profile?.eicCode || '—' }}
+                              </div>
+                            </div>
+                          </div>
+
+                          @if (res.data && res.data.length > 0) {
+                            <div class="pt-2 border-t border-emerald-200/80 dark:border-emerald-800/40">
+                              <div class="text-3xs uppercase font-bold text-slate-500 dark:text-slate-400 mb-1">Попередні зафіксовані покази:</div>
+                              <div class="grid grid-cols-2 gap-2">
+                                @for (zone of res.data; track zone.codeZone) {
+                                  <div class="px-2.5 py-1.5 rounded-lg bg-white/90 dark:bg-slate-800/90 border border-emerald-200 dark:border-emerald-700/50">
+                                    <div class="text-3xs text-slate-500 font-semibold">{{ zone.name }} ({{ zone.codeZone }})</div>
+                                    <div class="text-xs font-mono font-black text-slate-900 dark:text-slate-100">
+                                      {{ zone.old }} кВт·год
+                                    </div>
+                                  </div>
+                                }
+                              </div>
+                            </div>
+                          }
+
+                          @if (showDtekMeterRawJson()) {
+                            <div class="pt-2 border-t border-emerald-200 dark:border-emerald-800/40">
+                              <div class="text-3xs font-bold text-slate-500 dark:text-slate-400 mb-1">Сирий JSON (відповідь /ua/ajax checkAddress):</div>
+                              <pre class="p-2.5 rounded-lg bg-slate-950 text-emerald-400 text-3xs font-mono max-h-48 overflow-auto whitespace-pre-wrap select-all">{{ dtekMeterRawResponse() | json }}</pre>
+                            </div>
+                          }
+                        </div>
+                      }
+
+                      @if (dtekMeterCheckError()) {
+                        <div class="p-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-2xs text-rose-700 dark:text-rose-300 flex items-center gap-2">
+                          <mat-icon class="text-sm text-rose-600 shrink-0">error_outline</mat-icon>
+                          <span>{{ dtekMeterCheckError() }}</span>
+                        </div>
+                      }
+
+                      <!-- Meter Reading Inputs (1 field for single-zone, 2 fields for dual-zone) -->
+                      @if (acc.electricityTariffType === 'dual') {
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 opacity-70">
+                          <div>
+                            <label class="block text-3xs font-bold text-slate-500 uppercase mb-1">
+                              Покази День (Т2), кВт·год
+                            </label>
+                            <input
+                              type="number"
+                              disabled
+                              [placeholder]="latestAnyReading()?.readingT1 || 0"
+                              class="w-full px-3 py-2 rounded-lg bg-slate-200/70 dark:bg-slate-800/70 border border-slate-300 dark:border-slate-700 text-xs text-slate-500 font-mono cursor-not-allowed"
+                            />
+                          </div>
+                          <div>
+                            <label class="block text-3xs font-bold text-slate-500 uppercase mb-1">
+                              Покази Ніч (Т1), кВт·год
+                            </label>
+                            <input
+                              type="number"
+                              disabled
+                              [placeholder]="latestAnyReading()?.readingT2 || 0"
+                              class="w-full px-3 py-2 rounded-lg bg-slate-200/70 dark:bg-slate-800/70 border border-slate-300 dark:border-slate-700 text-xs text-slate-500 font-mono cursor-not-allowed"
+                            />
+                          </div>
+                        </div>
+                      } @else {
+                        <div class="opacity-70">
                           <label class="block text-3xs font-bold text-slate-500 uppercase mb-1">
-                            Покази День (Т2), кВт·год
+                            Покази лічильника (Загальний Т1, кВт·год)
                           </label>
                           <input
                             type="number"
                             disabled
                             [placeholder]="latestAnyReading()?.readingT1 || 0"
-                            class="w-full px-3 py-2 rounded-lg bg-slate-200/70 border border-slate-300 text-xs text-slate-500 font-mono cursor-not-allowed"
+                            class="w-full px-3 py-2 rounded-lg bg-slate-200/70 dark:bg-slate-800/70 border border-slate-300 dark:border-slate-700 text-xs text-slate-500 font-mono cursor-not-allowed"
                           />
                         </div>
-                        <div>
-                          <label class="block text-3xs font-bold text-slate-500 uppercase mb-1">
-                            Покази Ніч (Т1), кВт·год
-                          </label>
-                          <input
-                            type="number"
-                            disabled
-                            [placeholder]="latestAnyReading()?.readingT2 || 0"
-                            class="w-full px-3 py-2 rounded-lg bg-slate-200/70 border border-slate-300 text-xs text-slate-500 font-mono cursor-not-allowed"
-                          />
-                        </div>
-                      </div>
-                    } @else {
-                      <div>
-                        <label class="block text-3xs font-bold text-slate-500 uppercase mb-1">
-                          Покази лічильника (Загальний Т1, кВт·год)
-                        </label>
-                        <input
-                          type="number"
-                          disabled
-                          [placeholder]="latestAnyReading()?.readingT1 || 0"
-                          class="w-full px-3 py-2 rounded-lg bg-slate-200/70 border border-slate-300 text-xs text-slate-500 font-mono cursor-not-allowed"
-                        />
+                      }
+
+                      <div class="p-2.5 rounded-lg bg-slate-200/60 dark:bg-slate-800/60 border border-slate-300/80 dark:border-slate-700/80 text-2xs text-slate-600 dark:text-slate-400 flex items-center gap-2">
+                        <mat-icon class="text-sm text-slate-500 shrink-0">hourglass_top</mat-icon>
+                        <span>В розробці... Крок 1 (перевірка адреси та лічильника) виконано кнопкою «Хочу передати покази». Крок 2 (відправка нових показів) буде підключено на наступному етапі.</span>
                       </div>
                     }
+                  </div>
 
-                    <div class="p-2.5 rounded-lg bg-slate-200/60 border border-slate-300/80 text-2xs text-slate-600 flex items-center gap-2">
-                      <mat-icon class="text-sm text-slate-500 shrink-0">hourglass_top</mat-icon>
-                      <span>В розробці... Прямий запит передачі показів за особовим рахунком буде підключено найближчим часом.</span>
+                  @if (hasHouseAccountNumber(acc)) {
+                    <div class="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2 flex-wrap">
+                      <span class="text-3xs text-slate-400">Крок 2: Відправка показів</span>
+                      <button
+                        type="button"
+                        disabled
+                        class="px-3.5 py-2 rounded-xl bg-slate-400 text-white text-xs font-bold flex items-center gap-1.5 cursor-not-allowed opacity-80"
+                        title="Буде активовано на наступному кроці розробки"
+                      >
+                        <mat-icon class="text-sm leading-none">send</mat-icon>
+                        <span>Відправити покази</span>
+                      </button>
                     </div>
-                  </div>
-
-                  <div class="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      disabled
-                      class="px-3.5 py-2 rounded-xl bg-slate-400 text-white text-xs font-bold flex items-center gap-1.5 cursor-not-allowed opacity-80"
-                    >
-                      <mat-icon class="text-sm leading-none">send</mat-icon>
-                      <span>Відправити покази</span>
-                    </button>
-                  </div>
+                  }
                 </div>
               </div>
             }
@@ -4115,38 +4296,40 @@ import {
                                 <span>Моніторинг</span>
                               </span>
                             } @else if (canEdit()) {
+                              @let isPaid = isReadingPaid(r, currentAccount());
                               <button
                                 type="button"
                                 (click)="togglePaidStatus(r)"
                                 class="px-2.5 py-1 rounded-full text-2xs font-bold inline-flex items-center gap-1 cursor-pointer transition-colors"
-                                [class.bg-emerald-100]="r.isPaid"
-                                [class.dark:bg-emerald-950]="r.isPaid"
-                                [class.text-emerald-800]="r.isPaid"
-                                [class.dark:text-emerald-300]="r.isPaid"
-                                [class.hover:bg-emerald-200]="r.isPaid"
-                                [class.bg-rose-100]="!r.isPaid"
-                                [class.dark:bg-rose-950]="!r.isPaid"
-                                [class.text-rose-800]="!r.isPaid"
-                                [class.dark:text-rose-300]="!r.isPaid"
-                                [class.hover:bg-rose-200]="!r.isPaid"
+                                [class.bg-emerald-100]="isPaid"
+                                [class.dark:bg-emerald-950]="isPaid"
+                                [class.text-emerald-800]="isPaid"
+                                [class.dark:text-emerald-300]="isPaid"
+                                [class.hover:bg-emerald-200]="isPaid"
+                                [class.bg-rose-100]="!isPaid"
+                                [class.dark:bg-rose-950]="!isPaid"
+                                [class.text-rose-800]="!isPaid"
+                                [class.dark:text-rose-300]="!isPaid"
+                                [class.hover:bg-rose-200]="!isPaid"
                               >
-                                <mat-icon class="text-xs leading-none">{{ r.isPaid ? 'check_circle' : 'pending' }}</mat-icon>
-                                <span>{{ r.isPaid ? 'Сплачено' : 'До сплати' }}</span>
+                                <mat-icon class="text-xs leading-none">{{ isPaid ? 'check_circle' : 'pending' }}</mat-icon>
+                                <span>{{ isPaid ? 'Сплачено' : 'До сплати' }}</span>
                               </button>
                             } @else {
+                              @let isPaid = isReadingPaid(r, currentAccount());
                               <span
                                 class="px-2.5 py-1 rounded-full text-2xs font-bold inline-flex items-center gap-1"
-                                [class.bg-emerald-100]="r.isPaid"
-                                [class.dark:bg-emerald-950]="r.isPaid"
-                                [class.text-emerald-800]="r.isPaid"
-                                [class.dark:text-emerald-300]="r.isPaid"
-                                [class.bg-rose-100]="!r.isPaid"
-                                [class.dark:bg-rose-950]="!r.isPaid"
-                                [class.text-rose-800]="!r.isPaid"
-                                [class.dark:text-rose-300]="!r.isPaid"
+                                [class.bg-emerald-100]="isPaid"
+                                [class.dark:bg-emerald-950]="isPaid"
+                                [class.text-emerald-800]="isPaid"
+                                [class.dark:text-emerald-300]="isPaid"
+                                [class.bg-rose-100]="!isPaid"
+                                [class.dark:bg-rose-950]="!isPaid"
+                                [class.text-rose-800]="!isPaid"
+                                [class.dark:text-rose-300]="!isPaid"
                               >
-                                <mat-icon class="text-xs leading-none">{{ r.isPaid ? 'check_circle' : 'pending' }}</mat-icon>
-                                <span>{{ r.isPaid ? 'Сплачено' : 'До сплати' }}</span>
+                                <mat-icon class="text-xs leading-none">{{ isPaid ? 'check_circle' : 'pending' }}</mat-icon>
+                                <span>{{ isPaid ? 'Сплачено' : 'До сплати' }}</span>
                               </span>
                             }
                           </td>
@@ -4319,7 +4502,7 @@ import {
                       [value]="formCityQuery()"
                       (input)="onFormCityInput($any($event.target).value)"
                       (focus)="showFormCitySuggestions.set(true)"
-                      placeholder="напр. с-ще Окни або м. Одеса"
+                      placeholder="Введіть або оберіть населений пункт..."
                       autocomplete="off"
                       class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-900 focus:outline-none focus:border-amber-500"
                     />
@@ -4398,7 +4581,7 @@ import {
                       type="text"
                       formControlName="houseNum"
                       (input)="onFormHouseInput($any($event.target).value)"
-                      placeholder="11 або 24/А"
+                      placeholder="Введіть номер будинку..."
                       class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-xs font-mono font-medium text-slate-900 focus:outline-none focus:border-amber-500"
                     />
                   </div>
@@ -4427,7 +4610,7 @@ import {
                     id="acc-addr"
                     type="text"
                     formControlName="address"
-                    placeholder="с-ще Окни, вул. Шкільна, буд. 11"
+                    placeholder="Автоматично сформується з адреси або введіть вручну"
                     class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-amber-500"
                   />
                 </div>
@@ -7084,6 +7267,71 @@ export class ElectricityView {
   readonly isSyncingOoek = signal<boolean>(false);
   readonly isSyncingDtekCabinet = signal<boolean>(false);
 
+  // DTEK OEM Direct Meter Reading Submission (Check Address Step 1)
+  readonly isDtekMeterChecking = signal<boolean>(false);
+  readonly dtekMeterCheckResult = signal<DtekMeterCheckResult | null>(null);
+  readonly dtekMeterCheckError = signal<string | null>(null);
+  readonly dtekMeterRawResponse = signal<Record<string, unknown> | null>(null);
+  readonly showDtekMeterRawJson = signal<boolean>(false);
+
+  hasHouseAccountNumber(acc?: UtilityAccount | null): boolean {
+    const target = acc || this.currentAccount();
+    return Boolean(target?.accountNumber && target.accountNumber.trim().length > 0);
+  }
+
+  getFormattedDtekAccountNumber(rawNum?: string | null): string {
+    const num = (rawNum && rawNum.trim()) || (this.currentAccount()?.accountNumber && this.currentAccount()?.accountNumber.trim()) || '';
+    if (!num) return '';
+    return this.dataService.formatDtekMeterAccountNumber(num);
+  }
+
+  async onWantToSubmitDtekReadings(acc?: UtilityAccount | null): Promise<void> {
+    const targetAcc = acc || this.currentAccount();
+    const rawNum = (targetAcc?.accountNumber && targetAcc.accountNumber.trim()) || '';
+    const targetId = targetAcc?.id;
+
+    if (!rawNum) {
+      this.dtekMeterCheckError.set('Особовий рахунок не вказано у налаштуваннях будинку. Будь ласка, заповніть його для перевірки.');
+      return;
+    }
+
+    this.isDtekMeterChecking.set(true);
+    this.dtekMeterCheckError.set(null);
+
+    try {
+      const res = await this.dataService.checkDtekMeterAddress(rawNum, targetId);
+      if (res.success && res.data && res.data.result !== false) {
+        this.dtekMeterCheckResult.set(res.data);
+        this.dtekMeterRawResponse.set(res.data as Record<string, unknown>);
+      } else {
+        const errMsg =
+          res.error ||
+          (typeof res.data?.address === 'string' ? res.data.address : '') ||
+          'ДТЕК ОЕМ не повернув дані адреси';
+        this.dtekMeterCheckError.set(errMsg);
+      }
+    } catch (err: unknown) {
+      let errMsg = 'Помилка звернення до сервера ДТЕК ОЕМ';
+      if (err && typeof err === 'object') {
+        const httpErr = err as { error?: { error?: string; message?: string }; message?: string };
+        if (httpErr.error?.error) {
+          errMsg = httpErr.error.error;
+        } else if (httpErr.error?.message) {
+          errMsg = httpErr.error.message;
+        } else if (httpErr.message) {
+          errMsg = httpErr.message;
+        }
+      }
+      this.dtekMeterCheckError.set(errMsg);
+    } finally {
+      this.isDtekMeterChecking.set(false);
+    }
+  }
+
+  toggleShowDtekMeterRawJson(): void {
+    this.showDtekMeterRawJson.update((v) => !v);
+  }
+
   // Form calculated cost
   readonly formTotalCost = signal<number>(0);
   readonly calculatedSeason = signal<'summer' | 'winter'>('summer');
@@ -7257,6 +7505,58 @@ export class ElectricityView {
       return acc.ooekCabinetLastSync.slice(0, 10);
     }
     return new Date().toISOString().split('T')[0];
+  }
+
+  getHouseDueInfo(acc: UtilityAccount): { hasDue: boolean; amount: number; isZeroOrPaid: boolean } {
+    if (!acc) return { hasDue: false, amount: 0, isZeroOrPaid: true };
+
+    if (acc.ooekBalanceUah !== undefined && acc.ooekBalanceUah !== null) {
+      const amt = Number(acc.ooekBalanceUah) || 0;
+      if (amt <= 0) {
+        return { hasDue: true, amount: 0, isZeroOrPaid: true };
+      }
+      return { hasDue: true, amount: amt, isZeroOrPaid: false };
+    }
+
+    const readings = this.dataService.utilityReadings();
+    const houseUnpaid = readings.filter(
+      (r) =>
+        r.accountId === acc.id &&
+        (r.utilityType === 'electricity' || !r.utilityType) &&
+        !r.isControlOnly &&
+        !r.isPaid &&
+        (Number(r.totalCost) || 0) > 0
+    );
+    if (houseUnpaid.length > 0) {
+      const sum = houseUnpaid.reduce((tot, r) => tot + (Number(r.totalCost) || 0), 0);
+      return { hasDue: true, amount: Math.round(sum * 100) / 100, isZeroOrPaid: false };
+    }
+
+    const hasAnyBilling = readings.some(
+      (r) => r.accountId === acc.id && (r.utilityType === 'electricity' || !r.utilityType) && !r.isControlOnly
+    );
+    if (hasAnyBilling) {
+      return { hasDue: true, amount: 0, isZeroOrPaid: true };
+    }
+
+    return { hasDue: false, amount: 0, isZeroOrPaid: true };
+  }
+
+  isReadingPaid(r: UtilityReading, acc?: UtilityAccount | null): boolean {
+    if (!r) return false;
+    if (r.isPaid) return true;
+    if (r.isControlOnly) return true;
+    const targetAcc = acc || this.currentAccount();
+    if (
+      targetAcc &&
+      targetAcc.id === r.accountId &&
+      targetAcc.ooekBalanceUah !== undefined &&
+      targetAcc.ooekBalanceUah !== null &&
+      targetAcc.ooekBalanceUah <= 0
+    ) {
+      return true;
+    }
+    return false;
   }
 
   getEstimatedKwhFromOoekBalance(acc: UtilityAccount): number {
@@ -7981,20 +8281,20 @@ export class ElectricityView {
       this.accountForm.reset({
         name: '',
         accountNumber: '',
-        city: 'с-ще Окни',
-        street: 'вул. Шкільна',
-        houseNum: '11',
+        city: '',
+        street: '',
+        houseNum: '',
         dtekQueueGroup: '',
-        address: 'с-ще Окни, вул. Шкільна, буд. 11',
+        address: '',
         meterNumber: '',
         electricityTariffType: 'single',
         initialReadingT1: 0,
         initialReadingT2: 0,
         notes: '',
       });
-      this.formCityQuery.set('с-ще Окни');
-      this.formStreetQuery.set('вул. Шкільна');
-      this.dataService.fetchDtekCatalog('с-ще Окни');
+      this.formCityQuery.set('');
+      this.formStreetQuery.set('');
+      this.dataService.fetchDtekCatalog('');
     }
     this.showFormCitySuggestions.set(false);
     this.showFormStreetSuggestions.set(false);
@@ -8227,7 +8527,8 @@ export class ElectricityView {
 
   async togglePaidStatus(r: UtilityReading): Promise<void> {
     if (r.isControlOnly) return;
-    const nextStatus = !r.isPaid;
+    const isCurrentlyPaid = this.isReadingPaid(r, this.currentAccount());
+    const nextStatus = !isCurrentlyPaid;
     await this.dataService.markUtilityReadingPaid(r.id, nextStatus, r.totalCost);
   }
 

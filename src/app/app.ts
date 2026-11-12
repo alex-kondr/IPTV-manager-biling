@@ -90,8 +90,8 @@ export class App {
   readonly tgApp = inject(TelegramWebApp);
   readonly Math = Math;
 
-  // Application metadata for user tracking (v4.0)
-  readonly appVersion = 'v4.0';
+  // Application metadata for user tracking (v4.2)
+  readonly appVersion = 'v4.2';
   readonly publishDateTime = '12.11.2026 (Київ)';
   readonly sharedAppUrl = 'https://ais-pre-xwrvn3here3zzs7lwxjyvb-427445800479.europe-west2.run.app';
   readonly devAppUrl = 'https://ais-dev-xwrvn3here3zzs7lwxjyvb-427445800479.europe-west2.run.app';
@@ -339,6 +339,66 @@ export class App {
   readonly defaultDtekAccountId = this.dataService.defaultDtekAccountId;
   readonly isSavingDefaultHouse = this.dataService.isSavingDefaultHouse;
 
+  readonly unpaidElectricityInfo = computed<{ hasUnpaid: boolean; totalAmount: number }>(() => {
+    const accounts = this.dataService.utilityAccounts();
+    const readings = this.dataService.utilityReadings();
+
+    const unpaidReadings = readings.filter(
+      (r) =>
+        r.utilityType === 'electricity' &&
+        !r.isPaid &&
+        !r.isControlOnly &&
+        r.readingPurpose !== 'control' &&
+        (Number(r.totalCost) || 0) > 0
+    );
+    const unpaidReadingsSum = unpaidReadings.reduce((sum, r) => sum + (Number(r.totalCost) || 0), 0);
+
+    let unpaidOoekSum = 0;
+    for (const acc of accounts) {
+      if (acc.type === 'electricity' || !acc.type) {
+        const bal = Number(acc.ooekBalanceUah) || 0;
+        if (bal > 0) {
+          unpaidOoekSum += bal;
+        }
+      }
+    }
+
+    const hasUnpaid = unpaidReadings.length > 0 || unpaidOoekSum > 0;
+    const totalAmount = unpaidOoekSum > 0 ? unpaidOoekSum : unpaidReadingsSum;
+    return { hasUnpaid, totalAmount: Math.round(totalAmount * 100) / 100 };
+  });
+
+  readonly iptvBillingAlertStatus = computed<'critical' | 'warning' | null>(() => {
+    const provBal = this.dataService.providerBalanceUsd();
+    const clientsList = this.dataService.clients();
+
+    let hasCriticalClient = false;
+    let hasWarningClient = false;
+
+    for (const c of clientsList) {
+      if (c.status === 'paused') continue;
+      if (!c.activeUntil) continue;
+      const days = getDaysRemaining(c.activeUntil);
+      if (days <= 7) {
+        hasCriticalClient = true;
+        break;
+      } else if (days <= 10) {
+        hasWarningClient = true;
+      }
+    }
+
+    const isProvCritical = typeof provBal === 'number' && !isNaN(provBal) && provBal <= 3;
+    const isProvWarning = typeof provBal === 'number' && !isNaN(provBal) && provBal <= 5;
+
+    if (hasCriticalClient || isProvCritical) {
+      return 'critical';
+    }
+    if (hasWarningClient || isProvWarning) {
+      return 'warning';
+    }
+    return null;
+  });
+
   openFirstAllowedIptvTab(): void {
     const candidates: AppTabId[] = ['clients', 'accounts', 'budget', 'analytics', 'payments'];
     const first = candidates.find((t) => this.isTabAllowed(t)) || 'clients';
@@ -584,10 +644,34 @@ export class App {
     this.isMobileIptvDrawerOpen.set(false);
   }
 
+  private ensureTabDataLoaded(tab: ActiveTab): void {
+    if (tab === 'accounts') {
+      void this.dataService.fetchAccounts(true);
+      void this.dataService.fetchBudget(true);
+      void this.dataService.fetchClients(true);
+    } else if (tab === 'budget') {
+      void this.dataService.fetchBudget(true);
+      void this.dataService.fetchAccounts(true);
+      void this.dataService.fetchClients(true);
+      void this.dataService.fetchPayments(true);
+    } else if (tab === 'clients') {
+      void this.dataService.fetchClients(true);
+      void this.dataService.fetchAccounts(true);
+    } else if (tab === 'payments') {
+      void this.dataService.fetchPayments(true);
+      void this.dataService.fetchClients(true);
+    } else if (tab === 'analytics') {
+      void this.dataService.fetchStats(true);
+      void this.dataService.fetchBudget(true);
+      void this.dataService.fetchAccounts(true);
+    }
+  }
+
   selectIptvSubTab(tab: ActiveTab): void {
     this.activeTab.set(tab);
     this.isSidebarIptvOpen.set(true);
     this.isMobileIptvDrawerOpen.set(false);
+    this.ensureTabDataLoaded(tab);
     if (typeof window !== 'undefined') {
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
@@ -596,6 +680,7 @@ export class App {
   setTab(tab: ActiveTab): void {
     this.activeTab.set(tab);
     this.isMobileIptvDrawerOpen.set(false);
+    this.ensureTabDataLoaded(tab);
     if (typeof window !== 'undefined') {
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
@@ -624,7 +709,7 @@ export class App {
   readonly selectedClientForPayment = signal<Client | null>(null);
   readonly isProfileModalOpen = signal<boolean>(false);
 
-  // App Release Update Modal (v3.0 -> v4.0)
+  // App Release Update Modal (v4.0 -> v4.2)
   readonly appReleaseInfo = this.dataService.appReleaseInfo;
   readonly isUpdateModalOpen = this.dataService.isUpdateModalOpen;
   readonly isDismissingUpdate = this.dataService.isDismissingUpdate;
@@ -636,6 +721,22 @@ export class App {
     description: string;
     colorClass: string;
   }[] = [
+    {
+      icon: 'send_and_archive',
+      badge: 'ДТЕК ОЕМ Покази (Крок 1)',
+      title: 'Кнопка «Хочу передати покази» та перевірка адреси за особовим рахунком',
+      description:
+        'Прямий запит checkAddress до сервера ДТЕК ОЕМ з автоматичним очищенням нулів після скісної риски (напр. 34023/2729), отриманням моделі й номера лічильника, зон споживання та адреси.',
+      colorClass: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border-emerald-500/30',
+    },
+    {
+      icon: 'timer',
+      badge: 'Системні опції',
+      title: 'Налаштування інтервалу оновлення графіку та чисті поля нового будинку',
+      description:
+        'Можливість у системних налаштуваннях обирати період оновлення кешу графіку відключень (10, 15, 20, 30, 60 хв), а також очищені дефолтні значення населеного пункту і вулиці при створенні нового рахунку.',
+      colorClass: 'bg-purple-500/15 text-purple-600 dark:text-purple-300 border-purple-500/30',
+    },
     {
       icon: 'qr_code_2',
       badge: 'Спільний дім та бюджет',

@@ -189,10 +189,10 @@ export interface OutageRadarWedge {
                   @if (lastDtekFetchAt()) {
                     <span
                       class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-black/25 text-amber-200 text-3xs font-medium backdrop-blur border border-amber-300/25"
-                      title="Графік зберігається у базі даних для всіх користувачів і синхронізується з сайтом ДТЕК кожні 20 хвилин"
+                      [title]="'Графік зберігається у базі даних для всіх користувачів і синхронізується з сайтом ДТЕК кожні ' + dtekSyncIntervalMinutes() + ' хвилин'"
                     >
                       <mat-icon class="text-3xs leading-none">storage</mat-icon>
-                      <span>Запит у БД: <strong>{{ lastDtekFetchAt() }}</strong> (кожні 20 хв)</span>
+                      <span>Запит у БД: <strong>{{ lastDtekFetchAt() }}</strong> (кожні {{ dtekSyncIntervalMinutes() }} хв)</span>
                     </span>
                   }
                 </div>
@@ -2101,6 +2101,7 @@ export class OutageScheduleVariantsComponent {
 
   readonly outageScheduleVariants = OUTAGE_SCHEDULE_VARIANTS;
   readonly activeOutageVariant = this.dataService.outageScheduleViewVariant;
+  readonly dtekSyncIntervalMinutes = this.dataService.dtekSyncIntervalMinutes;
 
   // Background Web Push Notification state for Schedule Changes
   readonly isPushSubscribed = this.dataService.isPushSubscribed;

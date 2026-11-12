@@ -29,6 +29,7 @@ export type SettingsSectionId =
   | 'water_tariffs'
   | 'waste_tariffs'
   | 'water_waste_tariffs'
+  | 'outage_sync_interval'
   | 'billing'
   | 'viber'
   | 'telegram'
@@ -93,6 +94,15 @@ export const ALL_SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     icon: 'delete_outline',
     defaultScope: 'user',
     dbTable: 'user_settings.waste_tariffs',
+  },
+  {
+    id: 'outage_sync_interval',
+    label: 'Час оновлення графіку відключень',
+    subtitle: 'Інтервал автоматичної синхронізації графіку ДТЕК з сайтом у БД (хв)',
+    icon: 'update',
+    defaultScope: 'system',
+    isSystem: true,
+    dbTable: 'settings / system_settings_config',
   },
   {
     id: 'billing',
@@ -675,6 +685,7 @@ export interface AppSettings {
   viberRenewalMessageTemplate?: string;
   viberReminderMessageTemplate?: string;
   outageScheduleViewVariant?: string;
+  dtekSyncIntervalMinutes?: number;
   utilityTariffsSettings?: UtilityTariffsSettings;
 }
 

@@ -77,10 +77,26 @@
             type="button"
             (click)="setTab('electricity')"
             [class]="activeTab() === 'electricity' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-300 hover:bg-slate-900 hover:text-white'"
-            class="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer border-0"
+            class="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer border-0"
           >
-            <mat-icon class="text-lg">bolt</mat-icon>
-            <span>Електроенергія (Покази)</span>
+            <div class="flex items-center gap-3 min-w-0">
+              <div class="relative inline-flex items-center justify-center">
+                <mat-icon class="text-lg">bolt</mat-icon>
+                @if (unpaidElectricityInfo().hasUnpaid) {
+                  <span class="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-400 ring-2 ring-slate-950"></span>
+                }
+              </div>
+              <span class="truncate">Електроенергія (Покази)</span>
+            </div>
+            @if (unpaidElectricityInfo().hasUnpaid) {
+              <span class="ml-2 px-1.5 py-0.5 rounded text-2xs font-extrabold bg-amber-500/25 text-amber-300 border border-amber-500/40 shrink-0">
+                @if (unpaidElectricityInfo().totalAmount > 0) {
+                  {{ unpaidElectricityInfo().totalAmount.toFixed(0) }} грн
+                } @else {
+                  До сплати
+                }
+              </span>
+            }
           </button>
         }
 
@@ -706,9 +722,20 @@
                         <div class="w-10 h-10 rounded-xl bg-emerald-500 text-white flex items-center justify-center shadow-sm">
                           <mat-icon class="text-xl">bolt</mat-icon>
                         </div>
-                        <span class="text-xs font-bold text-emerald-200 bg-slate-950/75 backdrop-blur-xs px-2.5 py-1 rounded-lg border border-emerald-400/30 tabular-nums">
-                          {{ electricityAccounts().length }} об'єктів
-                        </span>
+                        <div class="flex items-center gap-1.5">
+                          @if (unpaidElectricityInfo().hasUnpaid) {
+                            <span class="text-xs font-bold text-amber-300 bg-amber-500/25 backdrop-blur-xs px-2.5 py-1 rounded-lg border border-amber-400/40 tabular-nums">
+                              @if (unpaidElectricityInfo().totalAmount > 0) {
+                                До сплати: {{ unpaidElectricityInfo().totalAmount.toFixed(0) }} грн
+                              } @else {
+                                До сплати
+                              }
+                            </span>
+                          }
+                          <span class="text-xs font-bold text-emerald-200 bg-slate-950/75 backdrop-blur-xs px-2.5 py-1 rounded-lg border border-emerald-400/30 tabular-nums">
+                            {{ electricityAccounts().length }} об'єктів
+                          </span>
+                        </div>
                       </div>
                       <div class="absolute bottom-3.5 left-4 right-4">
                         <div class="text-2xs font-medium text-emerald-300/90">
@@ -1566,7 +1593,14 @@
           [class]="activeTab() === 'outage_schedule' ? 'text-amber-400 bg-amber-500/10' : 'text-slate-400'"
           class="flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5 py-1 px-1 rounded-xl bg-transparent border-0 cursor-pointer transition-colors"
         >
-          <mat-icon class="text-lg leading-none">lightbulb</mat-icon>
+          <div class="inline-flex items-center justify-center gap-1">
+            <mat-icon class="text-lg leading-none">lightbulb</mat-icon>
+            @if (dtekInfo()?.queueGroup) {
+              <span class="px-1 py-0.2 rounded text-3xs font-extrabold bg-amber-500/25 text-amber-300 border border-amber-500/40 leading-tight">
+                {{ dtekInfo()?.queueGroup }}
+              </span>
+            }
+          </div>
           <span class="text-3xs font-semibold truncate max-w-full leading-tight">Світло</span>
         </button>
       }
@@ -1578,7 +1612,12 @@
           [class]="activeTab() === 'electricity' ? 'text-emerald-400 bg-emerald-500/10' : 'text-slate-400'"
           class="flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5 py-1 px-1 rounded-xl bg-transparent border-0 cursor-pointer transition-colors"
         >
-          <mat-icon class="text-lg leading-none">bolt</mat-icon>
+          <div class="relative inline-flex items-center justify-center">
+            <mat-icon class="text-lg leading-none">bolt</mat-icon>
+            @if (unpaidElectricityInfo().hasUnpaid) {
+              <span class="absolute -top-1 -right-1.5 w-2.5 h-2.5 rounded-full bg-amber-400 border-2 border-slate-950 shadow-xs" title="Є несплачений рахунок"></span>
+            }
+          </div>
           <span class="text-3xs font-semibold truncate max-w-full leading-tight">Електро</span>
         </button>
       }
@@ -1614,7 +1653,14 @@
           [class]="isIptvTabActive() ? 'text-indigo-400 bg-indigo-500/10' : 'text-slate-400'"
           class="flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5 py-1 px-1 rounded-xl bg-transparent border-0 cursor-pointer transition-colors"
         >
-          <mat-icon class="text-lg leading-none">live_tv</mat-icon>
+          <div class="relative inline-flex items-center justify-center">
+            <mat-icon class="text-lg leading-none">live_tv</mat-icon>
+            @if (iptvBillingAlertStatus() === 'critical') {
+              <span class="absolute -top-1 -right-1.5 w-2.5 h-2.5 rounded-full bg-rose-500 border-2 border-slate-950 shadow-xs animate-pulse" title="Критичний баланс провайдера (<= 3$) або закінчується підписка (<= 7 дн.)"></span>
+            } @else if (iptvBillingAlertStatus() === 'warning') {
+              <span class="absolute -top-1 -right-1.5 w-2.5 h-2.5 rounded-full bg-amber-400 border-2 border-slate-950 shadow-xs" title="Увага: баланс провайдера (<= 5$) або закінчується підписка (<= 10 дн.)"></span>
+            }
+          </div>
           <span class="text-3xs font-semibold truncate max-w-full leading-tight">ТВ Білінг</span>
         </button>
       }

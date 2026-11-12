@@ -1514,6 +1514,13 @@ export class BudgetView {
   readonly providerAdjustments = this.dataService.providerAdjustments;
   readonly providerBalanceUsd = this.dataService.providerBalanceUsd;
 
+  constructor() {
+    void this.dataService.fetchBudget(true);
+    void this.dataService.fetchAccounts(true);
+    void this.dataService.fetchClients(true);
+    void this.dataService.fetchPayments(true);
+  }
+
   readonly activeViewMode = signal<'ledger' | 'deposits'>('ledger');
   readonly ledgerFilter = signal<LedgerFilter>('all');
   readonly isDepositModalOpen = signal(false);

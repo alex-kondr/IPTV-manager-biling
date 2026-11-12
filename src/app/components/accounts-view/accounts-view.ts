@@ -1149,6 +1149,12 @@ export class AccountsView {
   readonly clients = this.dataService.clients;
   readonly budgetSummary = this.dataService.budgetSummary;
 
+  constructor() {
+    void this.dataService.fetchAccounts(true);
+    void this.dataService.fetchBudget(true);
+    void this.dataService.fetchClients(true);
+  }
+
   // Search in assign modal
   readonly clientSearchControl = new FormControl('');
 

@@ -39,6 +39,7 @@ export type SettingsGroupModalId =
   | 'theme'
   | 'billing'
   | 'outage_display'
+  | 'outage_sync_interval'
   | 'house_visibility'
   | 'telegram'
   | 'viber'
@@ -359,6 +360,42 @@ export type SettingsGroupModalId =
             </button>
           }
 
+          <!-- TILE 1D: ЧАС ОНОВЛЕННЯ ГРАФІКУ ВІДКЛЮЧЕНЬ (СИСТЕМНЕ НАЛАШТУВАННЯ) -->
+          @if (shouldShowTile('outage_sync_interval')) {
+            <button
+              id="settings-tile-outage-sync-interval"
+              type="button"
+              (click)="openSettingsModal('outage_sync_interval')"
+              class="group relative w-full min-h-[115px] sm:min-h-[220px] rounded-2xl sm:rounded-3xl overflow-hidden border-2 border-white/20 hover:border-amber-400 shadow-md hover:shadow-2xl transition-all duration-300 cursor-pointer flex flex-col justify-between p-3.5 sm:p-6 text-left bg-slate-950 focus:outline-none focus:ring-4 focus:ring-amber-400/40"
+            >
+              <img
+                src="/assets/images/tile_outage_schedule_1793997826688.jpg"
+                alt="Час оновлення графіку відключень"
+                class="absolute inset-0 w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-700 opacity-60"
+                referrerpolicy="no-referrer"
+              />
+              <div class="absolute inset-0 bg-gradient-to-t from-slate-950/95 via-amber-950/75 to-slate-950/40 group-hover:from-slate-950/90 transition-colors duration-300"></div>
+
+              <div class="relative z-10 flex items-center justify-between w-full gap-2">
+                <div class="w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-amber-500/25 backdrop-blur-xs border border-amber-400/40 text-amber-300 flex items-center justify-center shadow-sm shrink-0">
+                  <mat-icon class="text-xl sm:text-2xl">update</mat-icon>
+                </div>
+                <span class="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full bg-amber-500/25 backdrop-blur-xs border border-amber-400/40 text-amber-200 text-3xs sm:text-2xs font-mono font-bold">
+                  Кожні {{ form.controls.dtekSyncIntervalMinutes.value || 20 }} хв
+                </span>
+              </div>
+
+              <div class="relative z-10 space-y-1 sm:space-y-1.5 mt-2.5 sm:mt-6">
+                <h3 class="text-base sm:text-2xl font-black text-white tracking-tight drop-shadow-xs">
+                  Час оновлення графіку відключень
+                </h3>
+                <p class="text-2xs sm:text-xs text-slate-200/90 line-clamp-1 sm:line-clamp-2">
+                  Інтервал автоматичної синхронізації графіку світла з сайтом ДТЕК у базу даних та перевірки змін для Web Push
+                </p>
+              </div>
+            </button>
+          }
+
           <!-- TILE 1: ЗАГАЛЬНІ НАЛАШТУВАННЯ БІЛІНГУ ТА РЕКВІЗИТИ -->
           @if (shouldShowTile('billing')) {
             <button
@@ -389,7 +426,7 @@ export type SettingsGroupModalId =
                   Загальні налаштування та реквізити
                 </h3>
                 <p class="text-2xs sm:text-xs text-slate-200/90 line-clamp-1 sm:line-clamp-2">
-                  Стандартний тариф IPTV, картка / IBAN, нагадування та вигляд графіку відключень
+                  Стандартний тариф IPTV, картка / IBAN, нагадування, час оновлення та вигляд графіку відключень
                 </p>
               </div>
             </button>
@@ -735,6 +772,124 @@ export type SettingsGroupModalId =
                             <option [value]="v.id">{{ v.name }} — {{ v.description }}</option>
                           }
                         </select>
+                      </div>
+
+                      <!-- Outage Schedule Refresh Interval inside General Settings -->
+                      <div class="p-4 sm:p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+                        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div>
+                            <label for="settings-billing-dtek-sync-interval" class="text-xs sm:text-sm font-black text-slate-900 flex items-center gap-1.5">
+                              <mat-icon class="text-amber-600 text-base leading-none">update</mat-icon>
+                              <span>Час оновлення графіку відключень з сайту ДТЕК (хвилин)</span>
+                            </label>
+                            <p class="text-2xs text-slate-600 mt-0.5">
+                              Як часто сервер автоматично опитує сайт ДТЕК, оновлює графік у базі даних та перевіряє зміни для Web Push сповіщень
+                            </p>
+                          </div>
+                          <span class="px-2.5 py-1 rounded-full bg-amber-100 text-amber-900 border border-amber-200 text-2xs font-mono font-bold shrink-0">
+                            Кожні {{ form.controls.dtekSyncIntervalMinutes.value || 20 }} хв
+                          </span>
+                        </div>
+
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                          <div>
+                            <input
+                              id="settings-billing-dtek-sync-interval"
+                              type="number"
+                              min="1"
+                              max="360"
+                              step="1"
+                              formControlName="dtekSyncIntervalMinutes"
+                              class="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-mono font-bold text-slate-900 focus:outline-none focus:border-amber-600"
+                            />
+                          </div>
+                          <div class="flex items-center gap-1.5 flex-wrap">
+                            @for (preset of dtekSyncIntervalPresets; track preset) {
+                              <button
+                                type="button"
+                                (click)="setDtekSyncIntervalPreset(preset)"
+                                class="px-2.5 py-1.5 rounded-xl text-xs font-bold border transition-all cursor-pointer"
+                                [class.bg-amber-500]="form.controls.dtekSyncIntervalMinutes.value === preset"
+                                [class.text-white]="form.controls.dtekSyncIntervalMinutes.value === preset"
+                                [class.border-amber-600]="form.controls.dtekSyncIntervalMinutes.value === preset"
+                                [class.bg-white]="form.controls.dtekSyncIntervalMinutes.value !== preset"
+                                [class.text-slate-700]="form.controls.dtekSyncIntervalMinutes.value !== preset"
+                                [class.border-slate-300]="form.controls.dtekSyncIntervalMinutes.value !== preset"
+                              >
+                                {{ preset }} хв
+                              </button>
+                            }
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  }
+
+                  <!-- 1D. DEDICATED OUTAGE SCHEDULE REFRESH INTERVAL MODAL -->
+                  @case ('outage_sync_interval') {
+                    <div class="space-y-5">
+                      <div class="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-slate-900 via-amber-950 to-slate-900 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div class="space-y-1">
+                          <div class="text-2xs font-bold uppercase tracking-wider text-amber-300 flex items-center gap-1.5">
+                            <mat-icon class="text-sm leading-none">update</mat-icon>
+                            <span>Системна синхронізація з ДТЕК ОЕМ</span>
+                          </div>
+                          <h4 class="text-sm sm:text-base font-black text-white">
+                            Поточний інтервал оновлення: кожні {{ form.controls.dtekSyncIntervalMinutes.value || 20 }} хв
+                          </h4>
+                          <p class="text-xs text-slate-300">
+                            Сервер автоматично завантажує актуальний графік з офіційного сайту ДТЕК у спільну базу даних PostgreSQL із заданою періодичністю.
+                          </p>
+                        </div>
+                        <div class="px-4 py-2.5 rounded-2xl bg-white/10 border border-white/15 text-center shrink-0">
+                          <div class="text-2xs text-amber-200 uppercase font-bold">Періодичність</div>
+                          <div class="text-xl font-black font-mono text-white">{{ form.controls.dtekSyncIntervalMinutes.value || 20 }} хв</div>
+                        </div>
+                      </div>
+
+                      <div class="p-4 sm:p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-4">
+                        <div>
+                          <label for="settings-dtek-sync-interval-input" class="block text-xs font-bold text-slate-800 uppercase tracking-wider mb-1.5">
+                            Інтервал оновлення графіку відключень (у хвилинах, від 1 до 360)
+                          </label>
+                          <input
+                            id="settings-dtek-sync-interval-input"
+                            type="number"
+                            min="1"
+                            max="360"
+                            step="1"
+                            formControlName="dtekSyncIntervalMinutes"
+                            class="w-full px-4 py-3 bg-white border border-slate-300 rounded-xl text-base font-mono font-bold text-slate-900 focus:outline-none focus:border-amber-600"
+                          />
+                          <p class="text-xs text-slate-500 mt-1.5">
+                            Рекомендоване значення: <strong>15–20 хвилин</strong>. Менший інтервал забезпечує швидше виявлення змін графіку для фонових Push-сповіщень.
+                          </p>
+                        </div>
+
+                        <div class="space-y-2">
+                          <span class="block text-xs font-bold text-slate-700">
+                            Швидкий вибір інтервалу:
+                          </span>
+                          <div class="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                            @for (preset of dtekSyncIntervalPresets; track preset) {
+                              <button
+                                type="button"
+                                (click)="setDtekSyncIntervalPreset(preset)"
+                                class="px-3 py-2.5 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center justify-center gap-1"
+                                [class.bg-amber-500]="form.controls.dtekSyncIntervalMinutes.value === preset"
+                                [class.text-white]="form.controls.dtekSyncIntervalMinutes.value === preset"
+                                [class.border-amber-600]="form.controls.dtekSyncIntervalMinutes.value === preset"
+                                [class.shadow-sm]="form.controls.dtekSyncIntervalMinutes.value === preset"
+                                [class.bg-white]="form.controls.dtekSyncIntervalMinutes.value !== preset"
+                                [class.text-slate-700]="form.controls.dtekSyncIntervalMinutes.value !== preset"
+                                [class.border-slate-300]="form.controls.dtekSyncIntervalMinutes.value !== preset"
+                              >
+                                <mat-icon class="text-sm leading-none">schedule</mat-icon>
+                                <span>{{ preset }} хв</span>
+                              </button>
+                            }
+                          </div>
+                        </div>
                       </div>
                     </div>
                   }
@@ -2617,6 +2772,7 @@ export class SettingsView implements OnInit {
     return (
       modalId === 'billing' ||
       modalId === 'outage_display' ||
+      modalId === 'outage_sync_interval' ||
       modalId === 'telegram' ||
       modalId === 'viber' ||
       modalId === 'electricity_tariffs' ||
@@ -2645,6 +2801,12 @@ export class SettingsView implements OnInit {
           title: 'Варіанти відображення графіку відключень (11 стилів)',
           subtitle: 'Оберіть зручний візуальний формат погодинного графіку світла ДТЕК',
           icon: 'view_timeline',
+        };
+      case 'outage_sync_interval':
+        return {
+          title: 'Час оновлення графіку відключень ДТЕК',
+          subtitle: 'Налаштування періодичності автоматичної синхронізації графіку з сайтом ДТЕК у базу даних',
+          icon: 'update',
         };
       case 'house_visibility':
         return {
@@ -2716,11 +2878,23 @@ export class SettingsView implements OnInit {
     }
   }
 
+  readonly dtekSyncIntervalPresets: number[] = [5, 10, 15, 20, 30, 60];
+
+  setDtekSyncIntervalPreset(minutes: number): void {
+    this.form.controls.dtekSyncIntervalMinutes.setValue(minutes);
+    this.form.controls.dtekSyncIntervalMinutes.markAsDirty();
+  }
+
   readonly form = new FormGroup({
     defaultMonthlyPrice: new FormControl(100, [Validators.required, Validators.min(0)]),
     cardRequisites: new FormControl(''),
     reminderDaysBefore: new FormControl(7, [Validators.required, Validators.min(1)]),
     outageScheduleViewVariant: new FormControl<OutageScheduleViewVariant>('v10_minimal_pills'),
+    dtekSyncIntervalMinutes: new FormControl<number>(20, [
+      Validators.required,
+      Validators.min(1),
+      Validators.max(360),
+    ]),
     viberReminderMessageTemplate: new FormControl(''),
     viberRenewalMessageTemplate: new FormControl(''),
     telegramBotToken: new FormControl(''),
@@ -2793,12 +2967,19 @@ export class SettingsView implements OnInit {
       (s.outageScheduleViewVariant as OutageScheduleViewVariant) ||
       'v10_minimal_pills';
 
+    const dtekSyncIntervalMinutes =
+      this.dataService.dtekSyncIntervalMinutes() ||
+      s.dtekSyncIntervalMinutes ||
+      tariffs.dtekSyncIntervalMinutes ||
+      20;
+
     this.form.patchValue(
       {
         defaultMonthlyPrice: s.defaultMonthlyPrice ?? 100,
         cardRequisites: s.cardRequisites || '',
         reminderDaysBefore: s.reminderDaysBefore ?? 7,
         outageScheduleViewVariant: outageVariant,
+        dtekSyncIntervalMinutes,
         viberReminderMessageTemplate: reminderTmpl,
         viberRenewalMessageTemplate: renewalTmpl,
         telegramBotToken: s.telegramBotToken || '',
@@ -3092,9 +3273,14 @@ export class SettingsView implements OnInit {
         val.outageScheduleViewVariant ||
         currentTariffs?.outageScheduleViewVariant ||
         'v1_classic_grid';
+      const dtekSyncIntervalMinutes = Math.min(
+        Math.max(Math.round(Number(val.dtekSyncIntervalMinutes) || 20), 1),
+        360
+      );
 
       const tariffs: UtilityTariffsSettings = {
         outageScheduleViewVariant: selectedOutageVariant,
+        dtekSyncIntervalMinutes,
         water: {
           price: waterPrice,
           monthlyFee: waterMonthlyFee,
@@ -3161,6 +3347,16 @@ export class SettingsView implements OnInit {
         );
       } else if (modal === 'outage_display') {
         await this.dataService.setOutageScheduleViewVariant(selectedOutageVariant, true);
+      } else if (modal === 'outage_sync_interval') {
+        await this.dataService.saveSettings({
+          ...current,
+          dtekSyncIntervalMinutes,
+          utilityTariffsSettings: {
+            ...(current.utilityTariffsSettings || tariffs),
+            dtekSyncIntervalMinutes,
+          },
+        });
+        await this.dataService.fetchUserAndSystemSettings();
       } else {
         await this.dataService.saveSettings({
           ...current,
@@ -3168,6 +3364,7 @@ export class SettingsView implements OnInit {
           cardRequisites: val.cardRequisites?.trim() || '',
           reminderDaysBefore: Number(val.reminderDaysBefore),
           outageScheduleViewVariant: selectedOutageVariant,
+          dtekSyncIntervalMinutes,
           viberReminderMessageTemplate:
             val.viberReminderMessageTemplate?.trim() || DEFAULT_VIBER_REMINDER_TEMPLATE,
           viberRenewalMessageTemplate:
@@ -3175,7 +3372,12 @@ export class SettingsView implements OnInit {
           telegramBotToken: val.telegramBotToken?.trim() || '',
           telegramBotUsername: val.telegramBotUsername?.trim() || 'iptv_billing_bot',
           telegramSenderName: val.telegramSenderName?.trim() || 'IPTV Підтримка',
-          utilityTariffsSettings: isSystemEdit ? tariffs : current.utilityTariffsSettings,
+          utilityTariffsSettings: isSystemEdit
+            ? tariffs
+            : {
+                ...(current.utilityTariffsSettings || tariffs),
+                dtekSyncIntervalMinutes,
+              },
         });
       }
       this.patchFormValues(this.dataService.settings());
