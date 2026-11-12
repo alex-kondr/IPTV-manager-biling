@@ -9,7 +9,7 @@
 } @else if (!isAuthenticated()) {
   <app-auth-view />
 } @else {
-  <div class="min-h-screen bg-slate-100 text-slate-900 flex flex-col lg:flex-row relative">
+  <div class="min-h-screen bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col lg:flex-row relative">
     <!-- Left Sidebar (Desktop) -->
     <aside class="hidden lg:flex lg:w-64 xl:w-72 bg-slate-950 text-white flex-col shrink-0 border-r border-slate-800/80 sticky top-0 h-screen overflow-y-auto z-30">
       <!-- Brand Header -->
@@ -297,7 +297,7 @@
     </aside>
 
     <!-- Main Content Column with Thematic Tab Background -->
-    <div class="flex-1 flex flex-col min-w-0 pb-20 lg:pb-8 relative overflow-hidden transition-colors duration-500">
+    <div class="flex-1 flex flex-col min-w-0 pb-20 lg:pb-8 relative transition-colors duration-500">
       <!-- Thematic Background Layer for the Active Tab -->
       @if (activeTab() !== 'home') {
         <div class="absolute inset-0 pointer-events-none z-0 overflow-hidden">
@@ -308,92 +308,149 @@
         </div>
       }
 
-      <!-- Top Header Bar -->
-      <header class="sticky top-0 z-20 bg-white border-b border-slate-200 px-4 sm:px-6 py-3 flex items-center justify-between gap-3 shadow-2xs">
-        <div class="flex items-center gap-2.5 min-w-0">
+      <!-- Top Header Bar (Sticky) -->
+      <header
+        [class.border-rose-500]="!isOnline()"
+        [class.dark:border-rose-500]="!isOnline()"
+        class="sticky top-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-3 sm:px-6 py-2.5 sm:py-3 flex items-center justify-between gap-2 sm:gap-3 shadow-xs transition-colors"
+      >
+        <div class="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
           @if (activeTab() !== 'home') {
             <button
               type="button"
               (click)="setTab('home')"
-              class="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center gap-1 text-xs font-semibold cursor-pointer border-0 shrink-0"
+              title="На головну (Плитки)"
+              class="w-9 h-9 sm:w-auto sm:h-auto sm:px-3 sm:py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center justify-center gap-1 text-xs font-semibold cursor-pointer border-0 shrink-0"
             >
-              <mat-icon class="text-base">arrow_back</mat-icon>
-              <span class="hidden sm:inline">Плитки</span>
+              <mat-icon class="text-base leading-none">arrow_back</mat-icon>
+              <span class="hidden sm:inline whitespace-nowrap">Плитки</span>
             </button>
           }
-          <div class="flex items-center gap-2 min-w-0">
+          <div
+            [title]="activeSectionInfo().category + ' — ' + activeSectionInfo().title"
+            class="flex items-center gap-2 min-w-0 flex-1 overflow-hidden"
+          >
             <mat-icon [class]="'text-xl shrink-0 ' + activeSectionInfo().iconColor">{{ activeSectionInfo().icon }}</mat-icon>
-            <div class="min-w-0">
-              <div class="text-3xs font-bold uppercase tracking-wider text-slate-400 truncate">
+            <div class="hidden sm:block min-w-0 flex-1 overflow-hidden">
+              <div class="text-3xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-400 truncate leading-tight">
                 {{ activeSectionInfo().category }}
               </div>
-              <h1 class="text-sm sm:text-base font-bold text-slate-900 truncate">
+              <h1 class="text-xs sm:text-base font-bold text-slate-900 dark:text-white truncate leading-tight">
                 {{ activeSectionInfo().title }}
               </h1>
             </div>
           </div>
         </div>
 
-        <div class="flex items-center gap-2 shrink-0">
+        <div class="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          <!-- Network Connectivity Visual Indicator (Turns Red when navigator.onLine = false) -->
+          <div
+            id="header-network-status-indicator"
+            role="status"
+            aria-live="polite"
+            [title]="isOnline() ? 'Звʼязок активний — синхронізація з сервером працює' : 'Втрачено звʼязок з мережею (офлайн) — синхронізація неможлива'"
+            [class]="isOnline()
+              ? 'w-9 h-9 lg:w-auto lg:px-2.5 rounded-xl bg-emerald-500/10 dark:bg-emerald-500/15 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 flex items-center justify-center gap-1.5 shrink-0 transition-all select-none'
+              : 'h-9 px-2.5 sm:px-3 rounded-xl bg-rose-600 text-white border border-rose-500 flex items-center justify-center gap-1.5 shrink-0 shadow-sm animate-pulse transition-all select-none'"
+          >
+            <span
+              [class]="isOnline() ? 'w-2 h-2 rounded-full bg-emerald-500 shrink-0' : 'w-2 h-2 rounded-full bg-white shrink-0'"
+            ></span>
+            <mat-icon class="text-base leading-none">
+              {{ isOnline() ? 'wifi' : 'wifi_off' }}
+            </mat-icon>
+            @if (isOnline()) {
+              <span class="hidden lg:inline text-2xs font-bold whitespace-nowrap">Онлайн</span>
+            } @else {
+              <span class="text-2xs sm:text-xs font-extrabold whitespace-nowrap">
+                <span class="sm:hidden">Офлайн</span>
+                <span class="hidden sm:inline">Офлайн (синхронізація неможлива)</span>
+              </span>
+            }
+          </div>
+
+          <!-- Shared Household & Budget Invite Link Quick Button (Icon-only on mobile, text on md+) -->
+          <button
+            id="btn-header-shared-home-invite"
+            type="button"
+            (click)="openSharedHouseholdModal()"
+            title="Спільний дім та Спільний бюджет — QR-код та посилання"
+            class="w-9 h-9 md:w-auto md:h-auto md:px-3 md:py-1.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-xs shrink-0 border-0"
+          >
+            <mat-icon class="text-base leading-none">family_restroom</mat-icon>
+            <span class="hidden md:inline whitespace-nowrap">Спільний дім</span>
+          </button>
+
+          <!-- Prominent PWA Install App Button (Icon-only on mobile, text on sm+) -->
+          @if (!isAppInstalled()) {
+            <button
+              id="btn-header-install-app"
+              type="button"
+              (click)="triggerPwaInstall()"
+              title="Встановити HomeHub на пристрій"
+              class="w-9 h-9 sm:w-auto sm:h-auto sm:px-3 sm:py-1.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors shadow-xs shrink-0 border-0"
+            >
+              <mat-icon class="text-base leading-none">get_app</mat-icon>
+              <span class="hidden sm:inline whitespace-nowrap">Встановити додаток</span>
+            </button>
+          }
+
           @if (isImpersonating()) {
             <button
               id="btn-header-exit-test-mode"
               type="button"
               (click)="exitTestAccountMode()"
-              class="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold flex items-center gap-1.5 cursor-pointer border-0 shadow-xs"
+              title="Повернутись в Адмін"
+              class="w-9 h-9 sm:w-auto sm:h-auto sm:px-3 sm:py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer border-0 shadow-xs shrink-0"
             >
-              <mat-icon class="text-base">admin_panel_settings</mat-icon>
-              <span>Повернутись в Адмін</span>
+              <mat-icon class="text-base leading-none">admin_panel_settings</mat-icon>
+              <span class="hidden sm:inline whitespace-nowrap">Повернутись в Адмін</span>
             </button>
           }
 
-          <!-- Active Database Status Badge (VISIBLE ONLY FOR ADMINISTRATORS) -->
-          @if (isAdmin()) {
-            <button
-              id="btn-header-sync-db"
-              type="button"
-              (click)="setTab('settings')"
-              title="Перейти до налаштувань баз даних (Активна БД: {{ activeDbLabel() }})"
-              class="px-2.5 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 text-2xs sm:text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors shrink-0"
-            >
-              <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              <mat-icon class="text-sm text-indigo-600 leading-none">storage</mat-icon>
-              <span>БД: {{ activeDbLabel() }}</span>
-            </button>
-          }
+          <!-- Quick Theme Mode Toggle Button -->
+          <button
+            id="btn-header-theme-toggle"
+            type="button"
+            (click)="themeService.toggleTheme()"
+            title="Переключити тему (Світла / Темна: поточний режим {{ themeService.isDark() ? 'Темна' : 'Світла' }})"
+            class="w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center justify-center cursor-pointer transition-colors border-0 shrink-0"
+          >
+            <mat-icon class="text-base leading-none">
+              @if (themeService.isDark()) { dark_mode } @else { light_mode }
+            </mat-icon>
+          </button>
 
-          <!-- Prominent Logout Button & User Avatar in Top Bar -->
-          @if (currentUser()) {
-            <div class="flex items-center gap-1.5 shrink-0">
+          <!-- User Profile Button (Opens Profile Modal with Email, Settings/"Опції", Admin Users/"Доступ", Updates, and Logout) -->
+          <button
+            id="btn-header-profile"
+            type="button"
+            (click)="openProfileModal()"
+            title="Профіль користувача ({{ currentUser()?.email }}), налаштування та вихід"
+            class="relative h-9 w-9 xl:w-auto xl:pl-1.5 xl:pr-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 flex items-center justify-center gap-2 cursor-pointer transition-colors shrink-0"
+          >
+            @if (currentUser()?.picture) {
               <img
-                [src]="currentUser()?.picture || 'https://ui-avatars.com/api/?name=' + (currentUser()?.name || 'User') + '&background=0284c7&color=fff'"
-                class="w-7 h-7 rounded-lg object-cover border border-slate-300 shrink-0 shadow-2xs"
-                alt="Аватар користувача"
+                [src]="currentUser()?.picture"
+                class="w-7 h-7 rounded-lg object-cover border border-slate-300 dark:border-slate-600 shrink-0 shadow-2xs"
+                alt="Профіль"
                 referrerpolicy="no-referrer"
               />
-              <button
-                id="btn-header-logout"
-                type="button"
-                (click)="logout()"
-                title="Вийти з облікового запису"
-                class="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
-              >
-                <mat-icon class="text-base">logout</mat-icon>
-                <span>Вийти</span>
-              </button>
-            </div>
-          } @else {
-            <button
-              id="btn-header-logout"
-              type="button"
-              (click)="logout()"
-              title="Вийти з облікового запису"
-              class="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
-            >
-              <mat-icon class="text-base">logout</mat-icon>
-              <span>Вийти</span>
-            </button>
-          }
+            } @else {
+              <div class="w-7 h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0">
+                <mat-icon class="text-base leading-none">account_circle</mat-icon>
+              </div>
+            }
+            <span class="hidden xl:inline text-xs font-bold text-slate-800 dark:text-slate-100 max-w-28 truncate">
+              {{ currentUser()?.name || 'Профіль' }}
+            </span>
+            <mat-icon class="hidden xl:inline text-sm text-slate-500 dark:text-slate-400 leading-none">expand_more</mat-icon>
+            @if (isAdmin() && pendingUsersCount() > 0) {
+              <span class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-rose-500 text-white text-3xs font-extrabold flex items-center justify-center shadow-xs">
+                {{ pendingUsersCount() }}
+              </span>
+            }
+          </button>
         </div>
       </header>
 
@@ -448,26 +505,79 @@
         </div>
       }
 
-      <!-- Toast Notifications -->
-      @if (dataService.successMessage()) {
-        <div class="mx-4 sm:mx-6 mt-3 p-3.5 rounded-xl bg-emerald-600 text-white text-xs sm:text-sm font-semibold shadow-md flex items-center justify-between gap-3 animate-fade-in">
-          <div class="flex items-center gap-2">
-            <mat-icon class="text-lg">check_circle</mat-icon>
-            <span>{{ dataService.successMessage() }}</span>
-          </div>
-        </div>
-      }
-      @if (dataService.errorMessage()) {
-        <div class="mx-4 sm:mx-6 mt-3 p-3.5 rounded-xl bg-rose-600 text-white text-xs sm:text-sm font-semibold shadow-md flex items-center justify-between gap-3 animate-fade-in">
-          <div class="flex items-center gap-2">
-            <mat-icon class="text-lg">error</mat-icon>
-            <span>{{ dataService.errorMessage() }}</span>
-          </div>
+      <!-- Toast Notifications (Fixed Bottom) -->
+      @if (dataService.successMessage() || dataService.errorMessage()) {
+        <div class="fixed bottom-4 sm:bottom-6 inset-x-0 z-100 px-4 sm:px-6 pointer-events-none flex flex-col items-center gap-2.5">
+          @if (dataService.successMessage()) {
+            <div class="pointer-events-auto w-full max-w-2xl p-3.5 rounded-xl bg-emerald-600 text-white text-xs sm:text-sm font-semibold shadow-lg border border-emerald-500/40 flex items-center justify-between gap-3 animate-fade-in">
+              <div class="flex items-center gap-2.5 min-w-0">
+                <mat-icon class="text-lg shrink-0">check_circle</mat-icon>
+                <span class="leading-snug break-words">{{ dataService.successMessage() }}</span>
+              </div>
+              <button
+                type="button"
+                (click)="dataService.successMessage.set(null)"
+                class="w-7 h-7 rounded-lg hover:bg-emerald-700/60 text-white/80 hover:text-white flex items-center justify-center shrink-0 cursor-pointer border-0 bg-transparent transition-colors"
+                title="Закрити"
+              >
+                <mat-icon class="text-base">close</mat-icon>
+              </button>
+            </div>
+          }
+          @if (dataService.errorMessage()) {
+            <div class="pointer-events-auto w-full max-w-2xl p-3.5 rounded-xl bg-rose-600 text-white text-xs sm:text-sm font-semibold shadow-lg border border-rose-500/40 flex items-center justify-between gap-3 animate-fade-in">
+              <div class="flex items-center gap-2.5 min-w-0">
+                <mat-icon class="text-lg shrink-0">error</mat-icon>
+                <span class="leading-snug break-words">{{ dataService.errorMessage() }}</span>
+              </div>
+              <button
+                type="button"
+                (click)="dataService.errorMessage.set(null)"
+                class="w-7 h-7 rounded-lg hover:bg-rose-700/60 text-white/80 hover:text-white flex items-center justify-center shrink-0 cursor-pointer border-0 bg-transparent transition-colors"
+                title="Закрити"
+              >
+                <mat-icon class="text-base">close</mat-icon>
+              </button>
+            </div>
+          }
         </div>
       }
 
       <!-- Main Body Content -->
       <main class="p-4 sm:p-6 flex-1">
+        @if (isUserBlocked()) {
+          <div class="max-w-xl mx-auto my-12 bg-white rounded-3xl border border-rose-200 p-8 text-center shadow-sm space-y-4">
+            <div class="w-16 h-16 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
+              <mat-icon class="text-3xl">block</mat-icon>
+            </div>
+            <div>
+              <h2 class="text-lg font-black text-slate-900">Доступ до застосунку обмежено</h2>
+              <p class="text-xs text-slate-500 mt-1.5 leading-relaxed">
+                Ваш обліковий запис ({{ currentUser()?.email }}) наразі має статус «Неактивний» або очікує підтвердження адміністратором. Зверніться до адміністратора для активації доступу.
+              </p>
+            </div>
+            <div class="pt-2 flex items-center justify-center gap-3">
+              @if (isImpersonating()) {
+                <button
+                  type="button"
+                  (click)="exitTestAccountMode()"
+                  class="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer border-0"
+                >
+                  <mat-icon class="text-sm">exit_to_app</mat-icon>
+                  <span>Повернутись в акаунт Адміністратора</span>
+                </button>
+              }
+              <button
+                type="button"
+                (click)="logout()"
+                class="px-4 py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              >
+                <mat-icon class="text-sm">logout</mat-icon>
+                <span>Вийти з акаунту</span>
+              </button>
+            </div>
+          </div>
+        } @else {
         <!-- IPTV Billing Sub-Navigation Bar when any IPTV tab is active -->
         @if (isIptvTabActive()) {
           <div class="max-w-7xl mx-auto mb-5 bg-white rounded-2xl p-2 border border-slate-200 shadow-2xs flex items-center gap-1.5 overflow-x-auto">
@@ -1046,10 +1156,10 @@
 
                   <div class="grid grid-cols-1 gap-3">
                     @for (group of multiClientGroups(); track group.groupKey) {
-                      <div class="bg-white rounded-2xl border border-indigo-200/80 shadow-xs overflow-hidden">
+                      <div class="bg-white dark:bg-slate-900 rounded-2xl border border-indigo-200/80 dark:border-slate-700 shadow-xs overflow-hidden">
                         <div
                           (click)="toggleClientGroup(group.groupKey)"
-                          class="p-4 bg-gradient-to-r from-indigo-50/70 via-white to-white flex flex-wrap items-center justify-between gap-3 cursor-pointer hover:bg-indigo-50/90 transition-colors"
+                          class="p-4 bg-indigo-50/60 dark:bg-slate-800/90 flex flex-wrap items-center justify-between gap-3 cursor-pointer hover:bg-indigo-100/70 dark:hover:bg-slate-800 transition-colors"
                         >
                           <div class="flex items-center gap-3">
                             <div class="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-bold text-sm">
@@ -1057,13 +1167,13 @@
                             </div>
                             <div>
                               <div class="flex items-center gap-2">
-                                <span class="font-bold text-sm sm:text-base text-slate-900">{{ group.groupName }}</span>
-                                <span class="px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-800 text-2xs font-bold">
+                                <span class="font-bold text-sm sm:text-base text-slate-900 dark:text-slate-100">{{ group.groupName }}</span>
+                                <span class="px-2 py-0.5 rounded-md bg-indigo-100 dark:bg-indigo-950/90 text-indigo-800 dark:text-indigo-200 border border-indigo-200/60 dark:border-indigo-700/60 text-2xs font-bold">
                                   {{ group.clients.length }} підписок
                                 </span>
                               </div>
-                              <div class="text-xs text-slate-500 mt-0.5">
-                                Сумарний тариф: <strong>{{ group.totalMonthlyPrice }} ₴/міс</strong> • Баланс групи: <strong class="text-emerald-700">{{ group.groupBalance }} ₴</strong>
+                              <div class="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
+                                Сумарний тариф: <strong class="text-slate-900 dark:text-white">{{ group.totalMonthlyPrice }} ₴/міс</strong> • Баланс групи: <strong class="text-emerald-700 dark:text-emerald-400">{{ group.groupBalance }} ₴</strong>
                               </div>
                             </div>
                           </div>
@@ -1072,44 +1182,70 @@
                             <button
                               type="button"
                               (click)="openEditGroupModal(group, $event)"
-                              class="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold flex items-center gap-1 border-0 cursor-pointer"
+                              class="px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-700 hover:bg-slate-100 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600 text-xs font-semibold flex items-center gap-1 cursor-pointer"
                             >
                               <mat-icon class="text-sm">edit</mat-icon>
                               <span class="hidden sm:inline">Група</span>
                             </button>
-                            <mat-icon class="text-slate-400">
+                            <mat-icon class="text-slate-400 dark:text-slate-300">
                               {{ isClientGroupExpanded(group.groupKey) ? 'expand_less' : 'expand_more' }}
                             </mat-icon>
                           </div>
                         </div>
 
                         @if (isClientGroupExpanded(group.groupKey)) {
-                          <div class="p-4 border-t border-indigo-100 bg-slate-50/60 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                          <!-- Mobile Card View for Group Clients (< md) -->
+                          <div class="md:hidden p-3.5 border-t border-indigo-100 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-900/60 space-y-3">
                             @for (client of group.clients; track client.id) {
-                              <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-2xs flex flex-col justify-between gap-3">
+                              <div class="bg-white rounded-2xl p-4 border border-slate-200 shadow-2xs space-y-3">
                                 <div class="flex items-start justify-between gap-2">
-                                  <div>
-                                    <div class="font-bold text-sm text-slate-900">{{ client.fullName }}</div>
-                                    <div class="text-xs text-slate-500 font-mono mt-0.5">Логін: {{ client.iptvLogin }}</div>
-                                    @if (client.deviceInfo) {
-                                      <div class="text-2xs text-slate-500 mt-0.5">{{ client.deviceInfo }}</div>
-                                    }
+                                  <div class="min-w-0">
+                                    <div class="font-bold text-sm text-slate-900 truncate">{{ client.fullName }}</div>
+                                    <div class="text-2xs text-slate-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                                      <span>{{ client.phone || 'Без телефону' }}</span>
+                                      @if (client.deviceInfo) {
+                                        <span>•</span>
+                                        <span class="text-slate-600 font-medium">{{ client.deviceInfo }}</span>
+                                      }
+                                    </div>
                                   </div>
                                   <span
-                                    [class]="getClientDays(client.activeUntil) < 0 ? 'bg-rose-100 text-rose-800' : getClientDays(client.activeUntil) <= 7 ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-800'"
-                                    class="px-2 py-0.5 rounded-md text-2xs font-bold shrink-0"
+                                    [class]="getClientDays(client.activeUntil) < 0 ? 'bg-rose-100 text-rose-800 border-rose-200' : getClientDays(client.activeUntil) <= 7 ? 'bg-amber-100 text-amber-900 border-amber-200' : 'bg-emerald-100 text-emerald-800 border-emerald-200'"
+                                    class="px-2.5 py-0.5 rounded-full text-2xs font-bold border shrink-0"
                                   >
-                                    до {{ formatDate(client.activeUntil) }}
+                                    до {{ formatDate(client.activeUntil) }} ({{ getClientDays(client.activeUntil) }} дн.)
                                   </span>
                                 </div>
 
-                                <div class="flex items-center justify-between pt-2 border-t border-slate-100 text-xs">
-                                  <span class="text-slate-600">Тариф: <strong>{{ client.monthlyPrice }} ₴</strong> • Баланс: <strong class="text-emerald-700">{{ client.balance }} ₴</strong></span>
-                                  <div class="flex items-center gap-1">
+                                <div class="grid grid-cols-3 gap-2 bg-slate-50 rounded-xl p-2.5 border border-slate-100 text-xs">
+                                  <div>
+                                    <span class="text-3xs text-slate-400 uppercase font-semibold block">Логін IPTV</span>
+                                    <strong class="font-mono text-slate-900 truncate block">{{ client.iptvLogin }}</strong>
+                                  </div>
+                                  <div class="text-center">
+                                    <span class="text-3xs text-slate-400 uppercase font-semibold block">Тариф</span>
+                                    <strong class="text-slate-900">{{ client.monthlyPrice }} ₴/міс</strong>
+                                  </div>
+                                  <div class="text-right">
+                                    <span class="text-3xs text-slate-400 uppercase font-semibold block">Баланс</span>
+                                    <strong class="text-emerald-700">{{ client.balance }} ₴</strong>
+                                  </div>
+                                </div>
+
+                                <div class="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+                                  <button
+                                    type="button"
+                                    (click)="sendViberReminder(client, $event)"
+                                    class="px-3 py-1.5 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 text-xs font-semibold flex items-center gap-1 cursor-pointer border border-purple-200/70"
+                                  >
+                                    <mat-icon class="text-sm">chat</mat-icon>
+                                    <span>Viber</span>
+                                  </button>
+                                  <div class="flex items-center gap-1.5">
                                     <button
                                       type="button"
                                       (click)="openPaymentModal(client, $event)"
-                                      class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold cursor-pointer border-0 flex items-center gap-1"
+                                      class="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer border-0 flex items-center gap-1"
                                     >
                                       <mat-icon class="text-sm">payments</mat-icon>
                                       <span>Оплата</span>
@@ -1117,7 +1253,8 @@
                                     <button
                                       type="button"
                                       (click)="openEditClient(client, $event)"
-                                      class="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer border-0"
+                                      class="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer border-0"
+                                      title="Редагувати"
                                     >
                                       <mat-icon class="text-base">edit</mat-icon>
                                     </button>
@@ -1126,6 +1263,75 @@
                               </div>
                             }
                           </div>
+
+                          <!-- Desktop Table View for Group Clients (>= md) -->
+                          <div class="hidden md:block border-t border-indigo-100 overflow-x-auto">
+                            <table class="w-full text-left text-xs sm:text-sm">
+                              <thead class="bg-slate-50 text-slate-500 uppercase tracking-wider text-2xs border-b border-slate-200">
+                                <tr>
+                                  <th class="px-4 py-3 font-semibold">Абонент / Пристрій</th>
+                                  <th class="px-4 py-3 font-semibold font-mono">Логін IPTV</th>
+                                  <th class="px-4 py-3 font-semibold">Телефон</th>
+                                  <th class="px-4 py-3 font-semibold">Активний до</th>
+                                  <th class="px-4 py-3 font-semibold text-right">Тариф</th>
+                                  <th class="px-4 py-3 font-semibold text-right">Баланс</th>
+                                  <th class="px-4 py-3 font-semibold text-right">Дії</th>
+                                </tr>
+                              </thead>
+                              <tbody class="divide-y divide-slate-100 bg-white">
+                                @for (client of group.clients; track client.id) {
+                                  <tr class="hover:bg-slate-50/70 transition-colors">
+                                    <td class="px-4 py-3">
+                                      <div class="font-bold text-slate-900">{{ client.fullName }}</div>
+                                      @if (client.deviceInfo) {
+                                        <div class="text-2xs text-slate-500">{{ client.deviceInfo }}</div>
+                                      }
+                                    </td>
+                                    <td class="px-4 py-3 font-mono font-semibold text-slate-800">{{ client.iptvLogin }}</td>
+                                    <td class="px-4 py-3 text-slate-600">{{ client.phone || '—' }}</td>
+                                    <td class="px-4 py-3 whitespace-nowrap">
+                                      <span
+                                        [class]="getClientDays(client.activeUntil) < 0 ? 'bg-rose-100 text-rose-800 border-rose-200' : getClientDays(client.activeUntil) <= 7 ? 'bg-amber-100 text-amber-900 border-amber-200' : 'bg-emerald-100 text-emerald-800 border-emerald-200'"
+                                        class="px-2.5 py-0.5 rounded-full text-2xs font-bold border"
+                                      >
+                                        до {{ formatDate(client.activeUntil) }} ({{ getClientDays(client.activeUntil) }} дн.)
+                                      </span>
+                                    </td>
+                                    <td class="px-4 py-3 text-right font-bold text-slate-900">{{ client.monthlyPrice }} ₴/міс</td>
+                                    <td class="px-4 py-3 text-right font-bold text-emerald-700">{{ client.balance }} ₴</td>
+                                    <td class="px-4 py-3 whitespace-nowrap text-right">
+                                      <div class="flex items-center justify-end gap-1.5">
+                                        <button
+                                          type="button"
+                                          (click)="sendViberReminder(client, $event)"
+                                          class="p-1.5 rounded-lg bg-purple-50 hover:bg-purple-100 text-purple-700 cursor-pointer border border-purple-200/60"
+                                          title="Надіслати нагадування у Viber"
+                                        >
+                                          <mat-icon class="text-sm">chat</mat-icon>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          (click)="openPaymentModal(client, $event)"
+                                          class="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-2xs font-bold cursor-pointer border-0 flex items-center gap-1"
+                                        >
+                                          <mat-icon class="text-sm">payments</mat-icon>
+                                          <span>Оплата</span>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          (click)="openEditClient(client, $event)"
+                                          class="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer border-0"
+                                          title="Редагувати"
+                                        >
+                                          <mat-icon class="text-sm">edit</mat-icon>
+                                        </button>
+                                      </div>
+                                    </td>
+                                  </tr>
+                                }
+                              </tbody>
+                            </table>
+                          </div>
                         }
                       </div>
                     }
@@ -1133,63 +1339,179 @@
                 </div>
               }
 
-              <!-- Individual Clients Grid -->
-              <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                @for (client of singleUngroupedClients(); track client.id) {
-                  <div class="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-xs hover:shadow-md transition-all flex flex-col justify-between gap-4">
-                    <div class="space-y-2">
-                      <div class="flex items-start justify-between gap-2">
-                        <div>
-                          <h4 class="font-bold text-sm sm:text-base text-slate-900">{{ client.fullName }}</h4>
-                          <p class="text-xs text-slate-500">{{ client.phone || 'Без телефону' }}</p>
+              <!-- Individual Clients Section: Mobile Card View (< md) & Desktop Table View (>= md) -->
+              <div class="space-y-3">
+                <div class="flex items-center justify-between px-1">
+                  <h3 class="text-xs font-bold uppercase tracking-wider text-slate-500">
+                    Індивідуальні абоненти ({{ singleUngroupedClients().length }})
+                  </h3>
+                  <span class="text-2xs text-slate-400 md:hidden flex items-center gap-1">
+                    <mat-icon class="text-xs">view_agenda</mat-icon>
+                    <span>Картковий вигляд</span>
+                  </span>
+                </div>
+
+                @if (singleUngroupedClients().length === 0) {
+                  <div class="bg-white rounded-2xl p-8 text-center border border-slate-200 text-slate-500 text-sm">
+                    Абонентів за вашим фільтром не знайдено.
+                  </div>
+                } @else {
+                  <!-- Mobile Card View (< md) -->
+                  <div class="md:hidden grid grid-cols-1 gap-3.5">
+                    @for (client of singleUngroupedClients(); track client.id) {
+                      <div class="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs flex flex-col justify-between gap-3.5 animate-client-card">
+                        <div class="flex items-start justify-between gap-2.5">
+                          <div class="min-w-0">
+                            <h4 class="font-bold text-sm text-slate-900 truncate">{{ client.fullName }}</h4>
+                            <div class="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                              <span>{{ client.phone || 'Без телефону' }}</span>
+                              @if (client.deviceInfo) {
+                                <span>•</span>
+                                <span class="text-2xs bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-medium">{{ client.deviceInfo }}</span>
+                              }
+                            </div>
+                          </div>
+                          <span
+                            [class]="getClientDays(client.activeUntil) < 0 ? 'bg-rose-100 text-rose-800 border-rose-200' : getClientDays(client.activeUntil) <= 7 ? 'bg-amber-100 text-amber-900 border-amber-200' : 'bg-emerald-100 text-emerald-800 border-emerald-200'"
+                            class="px-2.5 py-1 rounded-xl text-2xs font-bold border shrink-0 text-right"
+                          >
+                            {{ formatDate(client.activeUntil) }} ({{ getClientDays(client.activeUntil) }} дн.)
+                          </span>
                         </div>
-                        <span
-                          [class]="getClientDays(client.activeUntil) < 0 ? 'bg-rose-100 text-rose-800' : getClientDays(client.activeUntil) <= 7 ? 'bg-amber-100 text-amber-900' : 'bg-emerald-100 text-emerald-800'"
-                          class="px-2.5 py-1 rounded-lg text-xs font-bold shrink-0"
-                        >
-                          {{ formatDate(client.activeUntil) }} ({{ getClientDays(client.activeUntil) }} дн.)
-                        </span>
-                      </div>
 
-                      <div class="flex flex-wrap items-center gap-2 text-xs text-slate-600 bg-slate-50 p-2.5 rounded-xl border border-slate-100">
-                        <span>Логін: <strong class="font-mono text-slate-900">{{ client.iptvLogin }}</strong></span>
-                        <span>•</span>
-                        <span>Тариф: <strong>{{ client.monthlyPrice }} ₴/міс</strong></span>
-                        <span>•</span>
-                        <span>Баланс: <strong class="text-emerald-700">{{ client.balance }} ₴</strong></span>
-                      </div>
-                    </div>
+                        <div class="grid grid-cols-3 gap-2 text-xs bg-slate-50 p-3 rounded-xl border border-slate-100">
+                          <div>
+                            <span class="text-3xs text-slate-400 uppercase font-semibold block">Логін IPTV</span>
+                            <strong class="font-mono text-slate-900 truncate block mt-0.5">{{ client.iptvLogin }}</strong>
+                          </div>
+                          <div class="text-center border-x border-slate-200/70 px-1">
+                            <span class="text-3xs text-slate-400 uppercase font-semibold block">Тариф</span>
+                            <strong class="text-slate-900 block mt-0.5">{{ client.monthlyPrice }} ₴/міс</strong>
+                          </div>
+                          <div class="text-right">
+                            <span class="text-3xs text-slate-400 uppercase font-semibold block">Баланс</span>
+                            <strong class="text-emerald-700 block mt-0.5">{{ client.balance }} ₴</strong>
+                          </div>
+                        </div>
 
-                    <div class="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
-                      <div class="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          (click)="sendViberReminder(client, $event)"
-                          class="p-1.5 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 cursor-pointer border border-purple-200/60"
-                          title="Надіслати нагадування у Viber"
-                        >
-                          <mat-icon class="text-base">chat</mat-icon>
-                        </button>
-                      </div>
+                        @if (client.notes) {
+                          <div class="text-2xs text-slate-600 bg-amber-50/70 border border-amber-100 px-2.5 py-1.5 rounded-lg italic">
+                            {{ client.notes }}
+                          </div>
+                        }
 
-                      <div class="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          (click)="openPaymentModal(client, $event)"
-                          class="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1 cursor-pointer border-0"
-                        >
-                          <mat-icon class="text-sm">payments</mat-icon>
-                          <span>Оплата</span>
-                        </button>
-                        <button
-                          type="button"
-                          (click)="openEditClient(client, $event)"
-                          class="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer border-0"
-                          title="Редагувати клієнта"
-                        >
-                          <mat-icon class="text-base">edit</mat-icon>
-                        </button>
+                        <div class="flex items-center justify-between gap-2 pt-2 border-t border-slate-100">
+                          <button
+                            type="button"
+                            (click)="sendViberReminder(client, $event)"
+                            class="px-3 py-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 text-xs font-semibold flex items-center gap-1.5 cursor-pointer border border-purple-200/60"
+                            title="Надіслати нагадування у Viber"
+                          >
+                            <mat-icon class="text-base">chat</mat-icon>
+                            <span>Viber</span>
+                          </button>
+
+                          <div class="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              (click)="openPaymentModal(client, $event)"
+                              class="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer border-0 shadow-2xs"
+                            >
+                              <mat-icon class="text-sm">payments</mat-icon>
+                              <span>Оплата</span>
+                            </button>
+                            <button
+                              type="button"
+                              (click)="openEditClient(client, $event)"
+                              class="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer border-0"
+                              title="Редагувати клієнта"
+                            >
+                              <mat-icon class="text-base">edit</mat-icon>
+                            </button>
+                          </div>
+                        </div>
                       </div>
+                    }
+                  </div>
+
+                  <!-- Desktop Table View (>= md) -->
+                  <div class="hidden md:block bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+                    <div class="overflow-x-auto">
+                      <table class="w-full text-left text-xs sm:text-sm">
+                        <thead class="bg-slate-50 text-slate-600 uppercase tracking-wider text-2xs border-b border-slate-200">
+                          <tr>
+                            <th class="px-4 py-3.5 font-semibold">Абонент / Пристрій</th>
+                            <th class="px-4 py-3.5 font-semibold font-mono">Логін IPTV</th>
+                            <th class="px-4 py-3.5 font-semibold">Телефон</th>
+                            <th class="px-4 py-3.5 font-semibold">Активний до (Статус)</th>
+                            <th class="px-4 py-3.5 font-semibold text-right">Тариф</th>
+                            <th class="px-4 py-3.5 font-semibold text-right">Баланс</th>
+                            <th class="px-4 py-3.5 font-semibold text-right">Дії</th>
+                          </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100">
+                          @for (client of singleUngroupedClients(); track client.id) {
+                            <tr class="hover:bg-slate-50/70 transition-colors">
+                              <td class="px-4 py-3.5">
+                                <div class="font-bold text-slate-900">{{ client.fullName }}</div>
+                                @if (client.deviceInfo || client.notes) {
+                                  <div class="text-2xs text-slate-500 mt-0.5">
+                                    {{ client.deviceInfo }}{{ client.deviceInfo && client.notes ? ' • ' : '' }}{{ client.notes }}
+                                  </div>
+                                }
+                              </td>
+                              <td class="px-4 py-3.5 font-mono font-semibold text-slate-800 whitespace-nowrap">
+                                {{ client.iptvLogin }}
+                              </td>
+                              <td class="px-4 py-3.5 text-slate-600 whitespace-nowrap">
+                                {{ client.phone || 'Без телефону' }}
+                              </td>
+                              <td class="px-4 py-3.5 whitespace-nowrap">
+                                <span
+                                  [class]="getClientDays(client.activeUntil) < 0 ? 'bg-rose-100 text-rose-800 border-rose-200' : getClientDays(client.activeUntil) <= 7 ? 'bg-amber-100 text-amber-900 border-amber-200' : 'bg-emerald-100 text-emerald-800 border-emerald-200'"
+                                  class="px-2.5 py-1 rounded-full text-2xs font-bold border"
+                                >
+                                  {{ formatDate(client.activeUntil) }} ({{ getClientDays(client.activeUntil) }} дн.)
+                                </span>
+                              </td>
+                              <td class="px-4 py-3.5 text-right font-bold text-slate-900 whitespace-nowrap">
+                                {{ client.monthlyPrice }} ₴/міс
+                              </td>
+                              <td class="px-4 py-3.5 text-right font-bold text-emerald-700 whitespace-nowrap">
+                                {{ client.balance }} ₴
+                              </td>
+                              <td class="px-4 py-3.5 whitespace-nowrap text-right">
+                                <div class="flex items-center justify-end gap-1.5">
+                                  <button
+                                    type="button"
+                                    (click)="sendViberReminder(client, $event)"
+                                    class="p-1.5 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 cursor-pointer border border-purple-200/60"
+                                    title="Надіслати нагадування у Viber"
+                                  >
+                                    <mat-icon class="text-base">chat</mat-icon>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    (click)="openPaymentModal(client, $event)"
+                                    class="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1 cursor-pointer border-0"
+                                  >
+                                    <mat-icon class="text-sm">payments</mat-icon>
+                                    <span>Оплата</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    (click)="openEditClient(client, $event)"
+                                    class="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer border-0"
+                                    title="Редагувати клієнта"
+                                  >
+                                    <mat-icon class="text-base">edit</mat-icon>
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          }
+                        </tbody>
+                      </table>
                     </div>
                   </div>
                 }
@@ -1221,30 +1543,31 @@
             <app-settings-view />
           }
         }
+        }
       </main>
     </div>
 
-    <!-- Mobile Bottom Navigation -->
-    <nav class="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-slate-950 text-white border-t border-slate-800 px-2 py-1.5 flex items-center justify-around">
+    <!-- Mobile Bottom Navigation (Core Service Tabs Only — Settings & Admin Users moved to Profile Modal) -->
+    <nav class="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-slate-950/95 backdrop-blur-md text-white border-t border-slate-800 px-1.5 py-1.5 flex items-center justify-between gap-0.5">
       <button
         type="button"
         (click)="setTab('home')"
-        [class]="activeTab() === 'home' ? 'text-indigo-400' : 'text-slate-400'"
-        class="flex flex-col items-center gap-0.5 py-1 px-2 bg-transparent border-0 cursor-pointer"
+        [class]="activeTab() === 'home' ? 'text-indigo-400 bg-indigo-500/10' : 'text-slate-400'"
+        class="flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5 py-1 px-1 rounded-xl bg-transparent border-0 cursor-pointer transition-colors"
       >
-        <mat-icon class="text-xl">grid_view</mat-icon>
-        <span class="text-3xs font-semibold">Плитки</span>
+        <mat-icon class="text-lg leading-none">grid_view</mat-icon>
+        <span class="text-3xs font-semibold truncate max-w-full leading-tight">Плитки</span>
       </button>
 
       @if (isTabAllowed('outage_schedule')) {
         <button
           type="button"
           (click)="setTab('outage_schedule')"
-          [class]="activeTab() === 'outage_schedule' ? 'text-amber-400' : 'text-slate-400'"
-          class="flex flex-col items-center gap-0.5 py-1 px-2 bg-transparent border-0 cursor-pointer"
+          [class]="activeTab() === 'outage_schedule' ? 'text-amber-400 bg-amber-500/10' : 'text-slate-400'"
+          class="flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5 py-1 px-1 rounded-xl bg-transparent border-0 cursor-pointer transition-colors"
         >
-          <mat-icon class="text-xl">lightbulb</mat-icon>
-          <span class="text-3xs font-semibold">Світло</span>
+          <mat-icon class="text-lg leading-none">lightbulb</mat-icon>
+          <span class="text-3xs font-semibold truncate max-w-full leading-tight">Світло</span>
         </button>
       }
 
@@ -1252,11 +1575,11 @@
         <button
           type="button"
           (click)="setTab('electricity')"
-          [class]="activeTab() === 'electricity' ? 'text-emerald-400' : 'text-slate-400'"
-          class="flex flex-col items-center gap-0.5 py-1 px-2 bg-transparent border-0 cursor-pointer"
+          [class]="activeTab() === 'electricity' ? 'text-emerald-400 bg-emerald-500/10' : 'text-slate-400'"
+          class="flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5 py-1 px-1 rounded-xl bg-transparent border-0 cursor-pointer transition-colors"
         >
-          <mat-icon class="text-xl">bolt</mat-icon>
-          <span class="text-3xs font-semibold">Електро</span>
+          <mat-icon class="text-lg leading-none">bolt</mat-icon>
+          <span class="text-3xs font-semibold truncate max-w-full leading-tight">Електро</span>
         </button>
       }
 
@@ -1264,11 +1587,11 @@
         <button
           type="button"
           (click)="setTab('water')"
-          [class]="activeTab() === 'water' || activeTab() === 'water_waste' ? 'text-cyan-400' : 'text-slate-400'"
-          class="flex flex-col items-center gap-0.5 py-1 px-2 bg-transparent border-0 cursor-pointer"
+          [class]="activeTab() === 'water' || activeTab() === 'water_waste' ? 'text-cyan-400 bg-cyan-500/10' : 'text-slate-400'"
+          class="flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5 py-1 px-1 rounded-xl bg-transparent border-0 cursor-pointer transition-colors"
         >
-          <mat-icon class="text-xl">water_drop</mat-icon>
-          <span class="text-3xs font-semibold">Вода</span>
+          <mat-icon class="text-lg leading-none">water_drop</mat-icon>
+          <span class="text-3xs font-semibold truncate max-w-full leading-tight">Вода</span>
         </button>
       }
 
@@ -1276,11 +1599,11 @@
         <button
           type="button"
           (click)="setTab('waste')"
-          [class]="activeTab() === 'waste' ? 'text-emerald-400' : 'text-slate-400'"
-          class="flex flex-col items-center gap-0.5 py-1 px-2 bg-transparent border-0 cursor-pointer"
+          [class]="activeTab() === 'waste' ? 'text-emerald-400 bg-emerald-500/10' : 'text-slate-400'"
+          class="flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5 py-1 px-1 rounded-xl bg-transparent border-0 cursor-pointer transition-colors"
         >
-          <mat-icon class="text-xl">delete_outline</mat-icon>
-          <span class="text-3xs font-semibold">Сміття</span>
+          <mat-icon class="text-lg leading-none">delete_outline</mat-icon>
+          <span class="text-3xs font-semibold truncate max-w-full leading-tight">Сміття</span>
         </button>
       }
 
@@ -1288,35 +1611,11 @@
         <button
           type="button"
           (click)="openFirstAllowedIptvTab()"
-          [class]="isIptvTabActive() ? 'text-indigo-400' : 'text-slate-400'"
-          class="flex flex-col items-center gap-0.5 py-1 px-2 bg-transparent border-0 cursor-pointer"
+          [class]="isIptvTabActive() ? 'text-indigo-400 bg-indigo-500/10' : 'text-slate-400'"
+          class="flex-1 min-w-0 flex flex-col items-center justify-center gap-0.5 py-1 px-1 rounded-xl bg-transparent border-0 cursor-pointer transition-colors"
         >
-          <mat-icon class="text-xl">live_tv</mat-icon>
-          <span class="text-3xs font-semibold">ТВ Білінг</span>
-        </button>
-      }
-
-      @if (isAdmin()) {
-        <button
-          type="button"
-          (click)="setTab('users')"
-          [class]="activeTab() === 'users' ? 'text-emerald-400' : 'text-slate-400'"
-          class="flex flex-col items-center gap-0.5 py-1 px-2 bg-transparent border-0 cursor-pointer"
-        >
-          <mat-icon class="text-xl">admin_panel_settings</mat-icon>
-          <span class="text-3xs font-semibold">Доступ</span>
-        </button>
-      }
-
-      @if (isTabAllowed('settings')) {
-        <button
-          type="button"
-          (click)="setTab('settings')"
-          [class]="activeTab() === 'settings' ? 'text-white' : 'text-slate-400'"
-          class="flex flex-col items-center gap-0.5 py-1 px-2 bg-transparent border-0 cursor-pointer"
-        >
-          <mat-icon class="text-xl">settings</mat-icon>
-          <span class="text-3xs font-semibold">Опції</span>
+          <mat-icon class="text-lg leading-none">live_tv</mat-icon>
+          <span class="text-3xs font-semibold truncate max-w-full leading-tight">ТВ Білінг</span>
         </button>
       }
     </nav>
@@ -1434,4 +1733,977 @@
       </div>
     }
   </div>
+
+  <!-- iOS Safari PWA Install Guide Modal -->
+  @if (showIOSInstallGuide()) {
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4 backdrop-blur-xs animate-fadeIn">
+      <div class="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl space-y-4 border border-slate-200">
+        <div class="flex items-center justify-between">
+          <h3 class="text-base font-bold text-slate-900 flex items-center gap-2">
+            <mat-icon class="text-sky-600">phone_iphone</mat-icon>
+            <span>Встановлення на iPhone / iPad</span>
+          </h3>
+          <button
+            type="button"
+            (click)="showIOSInstallGuide.set(false)"
+            class="text-slate-400 hover:text-slate-700 cursor-pointer"
+          >
+            <mat-icon class="text-base">close</mat-icon>
+          </button>
+        </div>
+
+        <div class="text-xs text-slate-600 space-y-2 leading-relaxed">
+          <p class="font-medium text-slate-800">Щоб додати HomeHub на початковий екран вашого пристрою:</p>
+          <ol class="list-decimal list-inside space-y-1.5 pl-1 text-xs text-slate-700">
+            <li>Торкніться кнопки <strong>«Поділитися»</strong> (Share <mat-icon class="text-xs inline leading-none align-middle">ios_share</mat-icon>) в Safari.</li>
+            <li>Прокрутіть меню та оберіть <strong>«На початковий екран»</strong> (Add to Home Screen).</li>
+            <li>Підтвердіть кнопкою <strong>«Додати»</strong> у правому верхньому кутку.</li>
+          </ol>
+        </div>
+
+        <button
+          type="button"
+          (click)="showIOSInstallGuide.set(false)"
+          class="w-full py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold cursor-pointer transition-colors shadow-xs"
+        >
+          Зрозуміло
+        </button>
+      </div>
+    </div>
+  }
+
+  <!-- USER PROFILE MODAL (Email, Settings/"Опції", Admin Users/"Доступ", and Logout) -->
+  @if (isProfileModalOpen()) {
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-xs"
+      (click)="closeProfileModal()"
+    >
+      <div
+        class="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col"
+        (click)="$event.stopPropagation()"
+      >
+        <!-- Profile Modal Header -->
+        <div class="px-5 py-4 bg-gradient-to-r from-slate-950 via-indigo-950 to-slate-950 text-white flex items-center justify-between gap-3">
+          <div class="flex items-center gap-3 min-w-0">
+            <img
+              [src]="currentUser()?.picture || 'https://ui-avatars.com/api/?name=' + (currentUser()?.name || 'User') + '&background=0284c7&color=fff'"
+              [alt]="currentUser()?.name || 'Профіль'"
+              class="w-11 h-11 rounded-2xl object-cover border-2 border-indigo-400/50 shrink-0 shadow-md"
+              referrerpolicy="no-referrer"
+            />
+            <div class="min-w-0">
+              <div class="flex items-center gap-2 flex-wrap">
+                <h3 class="text-sm sm:text-base font-extrabold text-white truncate">
+                  {{ currentUser()?.name || 'Користувач' }}
+                </h3>
+                <span
+                  [class]="isAdmin() ? 'bg-emerald-500/25 text-emerald-300 border-emerald-400/40' : 'bg-indigo-500/25 text-indigo-300 border-indigo-400/40'"
+                  class="px-2 py-0.5 rounded-full text-3xs font-bold border shrink-0"
+                >
+                  {{ isAdmin() ? 'Адміністратор' : 'Користувач' }}
+                </span>
+              </div>
+              <div class="text-xs font-mono text-indigo-200 truncate mt-0.5">
+                {{ currentUser()?.email }}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            (click)="closeProfileModal()"
+            class="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer border-0 bg-transparent shrink-0"
+          >
+            <mat-icon>close</mat-icon>
+          </button>
+        </div>
+
+        <!-- Profile Modal Body -->
+        <div class="p-5 space-y-4">
+          <!-- Email Info Box -->
+          <div class="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3">
+            <div class="flex items-center gap-2.5 min-w-0">
+              <div class="w-9 h-9 rounded-xl bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
+                <mat-icon class="text-lg">mail</mat-icon>
+              </div>
+              <div class="min-w-0">
+                <div class="text-3xs font-bold uppercase tracking-wider text-slate-400">Ваш Email акаунту</div>
+                <div class="text-xs sm:text-sm font-mono font-bold text-slate-900 dark:text-white break-all">
+                  {{ currentUser()?.email }}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick Navigation Actions (Settings / "Опції" & Admin Users / "Доступ") -->
+          <div class="space-y-2">
+            <div class="text-3xs font-bold uppercase tracking-wider text-slate-400 px-1">
+              Керування та розділи
+            </div>
+
+            @if (isTabAllowed('settings')) {
+              <button
+                id="btn-profile-modal-settings"
+                type="button"
+                (click)="openTabFromProfileModal('settings')"
+                class="w-full p-3.5 rounded-2xl bg-slate-100 hover:bg-slate-200/80 dark:bg-slate-800 dark:hover:bg-slate-700/80 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3 cursor-pointer transition-all text-left"
+              >
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-9 h-9 rounded-xl bg-slate-900 dark:bg-slate-700 text-white flex items-center justify-center shrink-0">
+                    <mat-icon class="text-lg">settings</mat-icon>
+                  </div>
+                  <div class="min-w-0">
+                    <div class="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white">
+                      Налаштування («Опції»)
+                    </div>
+                    <div class="text-2xs text-slate-500 dark:text-slate-400 truncate">
+                      Тарифи, особисті рахунки, тема та база даних
+                    </div>
+                  </div>
+                </div>
+                <mat-icon class="text-slate-400 shrink-0">chevron_right</mat-icon>
+              </button>
+            }
+
+            @if (isAdmin()) {
+              <button
+                id="btn-profile-modal-users"
+                type="button"
+                (click)="openTabFromProfileModal('users')"
+                class="w-full p-3.5 rounded-2xl bg-emerald-50 hover:bg-emerald-100/80 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-800/60 flex items-center justify-between gap-3 cursor-pointer transition-all text-left"
+              >
+                <div class="flex items-center gap-3 min-w-0">
+                  <div class="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                    <mat-icon class="text-lg">admin_panel_settings</mat-icon>
+                  </div>
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-2">
+                      <span class="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white">
+                        Доступ («Користувачі»)
+                      </span>
+                      @if (pendingUsersCount() > 0) {
+                        <span class="px-2 py-0.5 rounded-full bg-rose-500 text-white text-3xs font-extrabold">
+                          {{ pendingUsersCount() }} очікує
+                        </span>
+                      }
+                    </div>
+                    <div class="text-2xs text-slate-600 dark:text-slate-400 truncate">
+                      Керування користувачами, ролями та правами доступу
+                    </div>
+                  </div>
+                </div>
+                <mat-icon class="text-emerald-600 dark:text-emerald-400 shrink-0">chevron_right</mat-icon>
+              </button>
+            }
+
+            <button
+              id="btn-profile-modal-shared-home"
+              type="button"
+              (click)="openSharedHouseholdFromProfileModal()"
+              class="w-full p-3.5 rounded-2xl bg-teal-50 hover:bg-teal-100/80 dark:bg-teal-950/40 dark:hover:bg-teal-900/50 border border-teal-200 dark:border-teal-800/60 flex items-center justify-between gap-3 cursor-pointer transition-all text-left"
+            >
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-9 h-9 rounded-xl bg-teal-600 text-white flex items-center justify-center shrink-0">
+                  <mat-icon class="text-lg">qr_code_2</mat-icon>
+                </div>
+                <div class="min-w-0">
+                  <div class="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white">
+                    Спільний дім та QR-код запрошення
+                  </div>
+                  <div class="text-2xs text-slate-600 dark:text-slate-400 truncate">
+                    Приєднання за QR-кодом або чисте посилання на застосунок
+                  </div>
+                </div>
+              </div>
+              <mat-icon class="text-teal-600 dark:text-teal-400 shrink-0">chevron_right</mat-icon>
+            </button>
+
+            <!-- View Updates Button inside Profile Modal -->
+            <button
+              id="btn-profile-modal-view-updates"
+              type="button"
+              (click)="openUpdateModal()"
+              class="w-full p-3.5 rounded-2xl bg-indigo-50 hover:bg-indigo-100/80 dark:bg-indigo-950/40 dark:hover:bg-indigo-900/50 border border-indigo-200 dark:border-indigo-800/60 flex items-center justify-between gap-3 cursor-pointer transition-all text-left"
+            >
+              <div class="flex items-center gap-3 min-w-0">
+                <div class="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0">
+                  <mat-icon class="text-lg">new_releases</mat-icon>
+                </div>
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white">
+                      Переглянути оновлення
+                    </span>
+                    <span class="px-2 py-0.5 rounded-full bg-indigo-600 text-white text-3xs font-extrabold">
+                      {{ appReleaseInfo().previousVersion }} ➔ {{ appReleaseInfo().currentVersion }}
+                    </span>
+                  </div>
+                  <div class="text-2xs text-slate-600 dark:text-slate-400 truncate">
+                    Список головних нових фішок у версії {{ appVersion }}
+                  </div>
+                </div>
+              </div>
+              <mat-icon class="text-indigo-600 dark:text-indigo-400 shrink-0">chevron_right</mat-icon>
+            </button>
+          </div>
+
+          <!-- Logout Button -->
+          <div class="pt-2 border-t border-slate-200 dark:border-slate-800">
+            <button
+              id="btn-profile-modal-logout"
+              type="button"
+              (click)="logoutFromProfileModal()"
+              class="w-full py-3 px-4 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white text-xs sm:text-sm font-extrabold flex items-center justify-center gap-2 cursor-pointer border-0 shadow-sm transition-colors"
+            >
+              <mat-icon class="text-base">logout</mat-icon>
+              <span>{{ isImpersonating() ? 'Вийти з тестового режиму' : 'Вийти з облікового запису' }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  }
+
+  <!-- APP UPDATE RELEASE NOTES MODAL (v3.0 -> v4.0) -->
+  @if (isUpdateModalOpen()) {
+    <div
+      id="modal-app-release-notes"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-3 sm:p-4 backdrop-blur-xs"
+      (click)="closeUpdateModal()"
+    >
+      <div
+        class="w-full max-w-2xl rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[90dvh]"
+        (click)="$event.stopPropagation()"
+      >
+        <!-- Header -->
+        <div class="px-5 py-4 bg-gradient-to-r from-slate-950 via-indigo-950 to-slate-950 text-white flex items-center justify-between gap-3 shrink-0">
+          <div class="flex items-center gap-3 min-w-0">
+            <div class="w-11 h-11 rounded-2xl bg-indigo-500/20 border border-indigo-400/40 text-indigo-300 flex items-center justify-center shrink-0">
+              <mat-icon class="text-2xl">new_releases</mat-icon>
+            </div>
+            <div class="min-w-0">
+              <div class="flex items-center gap-2 flex-wrap">
+                <h3 class="text-sm sm:text-base font-extrabold text-white">
+                  Оновлення застосунку HomeHub {{ appReleaseInfo().currentVersion }}
+                </h3>
+                <span class="px-2.5 py-0.5 rounded-full bg-indigo-500/30 border border-indigo-400/40 text-indigo-200 text-2xs font-extrabold">
+                  Зміни з {{ appReleaseInfo().previousVersion }} ➔ {{ appReleaseInfo().currentVersion }}
+                </span>
+              </div>
+              <p class="text-2xs text-indigo-200/80 truncate mt-0.5">
+                Головні нові можливості, що вже реалізовані у новій версії (відстежується у БД)
+              </p>
+            </div>
+          </div>
+          <button
+            id="btn-close-update-modal-top"
+            type="button"
+            (click)="closeUpdateModal()"
+            class="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer border-0 bg-transparent shrink-0"
+          >
+            <mat-icon>close</mat-icon>
+          </button>
+        </div>
+
+        <!-- Body: List of Main New Features since Previous Version -->
+        <div class="p-4 sm:p-5 overflow-y-auto space-y-3">
+          <div class="p-3 rounded-2xl bg-indigo-50/80 dark:bg-indigo-950/30 border border-indigo-200/80 dark:border-indigo-800/50 flex items-center justify-between gap-3 flex-wrap">
+            <div class="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-200">
+              <mat-icon class="text-base text-indigo-600 dark:text-indigo-400 shrink-0">storage</mat-icon>
+              <span>
+                Попередня версія у БД: <strong class="font-extrabold">{{ appReleaseInfo().previousVersion }}</strong>
+                • Поточна версія: <strong class="font-extrabold text-indigo-600 dark:text-indigo-400">{{ appReleaseInfo().currentVersion }}</strong>
+              </span>
+            </div>
+            @if (appReleaseInfo().dismissedVersion === appReleaseInfo().currentVersion) {
+              <span class="px-2.5 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 text-2xs font-bold flex items-center gap-1">
+                <mat-icon class="text-xs">check_circle</mat-icon>
+                Автопоказ вимкнено для {{ appReleaseInfo().currentVersion }}
+              </span>
+            }
+          </div>
+
+          <div class="grid grid-cols-1 gap-2.5">
+            @for (feature of releaseFeaturesV4; track feature.title) {
+              <div class="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-700/70 flex items-start gap-3">
+                <div class="w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 {{ feature.colorClass }}">
+                  <mat-icon class="text-xl">{{ feature.icon }}</mat-icon>
+                </div>
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2 flex-wrap mb-0.5">
+                    <span class="text-2xs font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-md border {{ feature.colorClass }}">
+                      {{ feature.badge }}
+                    </span>
+                    <h4 class="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white">
+                      {{ feature.title }}
+                    </h4>
+                  </div>
+                  <p class="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                    {{ feature.description }}
+                  </p>
+                </div>
+              </div>
+            }
+          </div>
+        </div>
+
+        <!-- Footer Actions -->
+        <div class="px-5 py-3.5 bg-slate-50 dark:bg-slate-950/80 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 shrink-0">
+          <button
+            id="btn-update-modal-dont-show-again"
+            type="button"
+            [disabled]="isDismissingUpdate()"
+            (click)="dismissUpdateForever()"
+            class="py-2.5 px-4 rounded-xl bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-extrabold flex items-center justify-center gap-2 cursor-pointer border-0 transition-colors disabled:opacity-50"
+          >
+            <mat-icon class="text-base">visibility_off</mat-icon>
+            <span>
+              @if (isDismissingUpdate()) {
+                Збереження у БД...
+              } @else {
+                Не показувати більше (для {{ appReleaseInfo().currentVersion }})
+              }
+            </span>
+          </button>
+
+          <button
+            id="btn-update-modal-close"
+            type="button"
+            (click)="closeUpdateModal()"
+            class="py-2.5 px-5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 cursor-pointer border-0 shadow-xs transition-colors"
+          >
+            <mat-icon class="text-base">check</mat-icon>
+            <span>Зрозуміло, закрити</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  }
+
+  <!-- SHARED HOUSEHOLD & BUDGET INVITE LINK MODAL -->
+  @if (isSharedHouseholdModalOpen()) {
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-3 sm:p-4 backdrop-blur-xs"
+      (click)="closeSharedHouseholdModal()"
+    >
+      <div
+        class="w-full max-w-3xl rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh]"
+        (click)="$event.stopPropagation()"
+      >
+        <!-- Modal Header -->
+        <div class="px-5 py-4 bg-gradient-to-r from-slate-950 via-teal-950 to-slate-950 text-white flex items-center justify-between gap-3 shrink-0">
+          <div class="flex items-center gap-3 min-w-0">
+            <div class="w-10 h-10 rounded-2xl bg-teal-500/20 border border-teal-400/40 text-teal-300 flex items-center justify-center shrink-0">
+              <mat-icon class="text-xl">qr_code_2</mat-icon>
+            </div>
+            <div class="min-w-0">
+              <h3 class="text-sm sm:text-base font-extrabold text-white truncate">
+                Приєднатися за QR-кодом / Поділитися застосунком
+              </h3>
+              <p class="text-2xs text-teal-200/80 truncate">
+                Спільне використання бюджету та будинку або чисте посилання https://homehub3.ai.studio/
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            (click)="closeSharedHouseholdModal()"
+            class="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer border-0 bg-transparent shrink-0"
+          >
+            <mat-icon>close</mat-icon>
+          </button>
+        </div>
+
+        <!-- Modal Scrollable Content -->
+        <div class="p-4 sm:p-6 overflow-y-auto flex-1 space-y-5">
+          <!-- Incoming Invite Preview Banner (when opened via ?invite=... or code lookup) -->
+          @if (pendingInvitePreview(); as incoming) {
+            <div class="p-4 sm:p-5 rounded-2xl bg-gradient-to-br from-teal-950 via-slate-900 to-indigo-950 text-white border-2 border-teal-400 shadow-lg space-y-3">
+              <div class="flex items-start justify-between gap-3">
+                <div class="flex items-center gap-3">
+                  <div class="w-11 h-11 rounded-2xl bg-teal-500/20 border border-teal-400/40 text-teal-300 flex items-center justify-center shrink-0">
+                    <mat-icon class="text-2xl">mark_email_read</mat-icon>
+                  </div>
+                  <div>
+                    <div class="text-2xs font-extrabold uppercase tracking-wider text-teal-300">
+                      Запрошення до спільного дому та бюджету
+                    </div>
+                    <h4 class="text-sm sm:text-base font-black text-white">
+                      {{ incoming.ownerName }} ({{ incoming.ownerEmail }}) запрошує вас!
+                    </h4>
+                  </div>
+                </div>
+                @if (incoming.accessLevel === 'full') {
+                  <span class="px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 text-2xs font-bold inline-flex items-center gap-1 shrink-0">
+                    <mat-icon class="text-xs">edit_note</mat-icon>
+                    <span>Повний доступ</span>
+                  </span>
+                } @else {
+                  <span class="px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-400/40 text-2xs font-bold inline-flex items-center gap-1 shrink-0">
+                    <mat-icon class="text-xs">visibility</mat-icon>
+                    <span>Тільки для перегляду</span>
+                  </span>
+                }
+              </div>
+
+              <div class="text-xs text-slate-200 space-y-1">
+                <div>
+                  Будинки: <strong>{{ incoming.houseNames.length ? incoming.houseNames.join(', ') : 'Спільний будинок власника' }}</strong>
+                </div>
+                @if (incoming.includeSharedBudget) {
+                  <div class="text-teal-300 font-semibold">
+                    + Включено доступ до спільного бюджету ($ / ₴)
+                  </div>
+                }
+              </div>
+
+              <div class="flex items-center gap-1.5 flex-wrap">
+                @for (tagId of incoming.memberTags || []; track tagId) {
+                  @if (getRelationTagMeta(tagId); as tMeta) {
+                    <span class="px-2.5 py-0.5 rounded-full bg-white/15 text-white text-2xs font-bold inline-flex items-center gap-1">
+                      <mat-icon class="text-xs">{{ tMeta.icon }}</mat-icon>
+                      <span>{{ tMeta.label }}</span>
+                    </span>
+                  }
+                }
+              </div>
+
+              <div class="pt-1 flex items-center gap-2.5">
+                <button
+                  type="button"
+                  (click)="confirmAcceptInvite(incoming.code)"
+                  [disabled]="isAcceptingInvite()"
+                  class="px-5 py-2.5 rounded-xl bg-teal-400 hover:bg-teal-300 text-slate-950 font-extrabold text-xs flex items-center gap-1.5 cursor-pointer border-0 shadow-md"
+                >
+                  <mat-icon class="text-base">check_circle</mat-icon>
+                  <span>{{ isAcceptingInvite() ? 'Приєднання...' : 'Прийняти запрошення та приєднатися' }}</span>
+                </button>
+                <button
+                  type="button"
+                  (click)="pendingInvitePreview.set(null)"
+                  class="px-3.5 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-semibold cursor-pointer border-0"
+                >
+                  Закрити превʼю
+                </button>
+              </div>
+            </div>
+          }
+
+          <!-- TOP QR CODE CARDS: 1) Join Shared House & Budget with User Type, 2) Clean App Share Link -->
+          <div class="grid grid-cols-1 md:grid-cols-12 gap-4">
+            <!-- Card 1: QR Code for Joining Shared Household & Budget + Immediate User Type Selector -->
+            <div class="md:col-span-7 p-4 sm:p-5 rounded-2xl bg-gradient-to-br from-teal-950 via-slate-900 to-slate-950 text-white border border-teal-500/40 shadow-md flex flex-col justify-between space-y-4">
+              <div class="space-y-3">
+                <div class="flex items-center justify-between gap-2 flex-wrap">
+                  <div class="flex items-center gap-2">
+                    <mat-icon class="text-teal-400">qr_code_scanner</mat-icon>
+                    <h4 class="text-xs sm:text-sm font-extrabold text-white">
+                      QR-код для приєднання (Спільний дім та бюджет)
+                    </h4>
+                  </div>
+                  @if (qrInviteCode()) {
+                    <span class="px-2 py-0.5 rounded-lg bg-teal-500/20 border border-teal-400/40 text-teal-300 text-3xs font-mono font-bold">
+                      Код: {{ qrInviteCode() }}
+                    </span>
+                  }
+                </div>
+
+                <div class="flex flex-col sm:flex-row items-center gap-4">
+                  <!-- QR Code Image -->
+                  <div class="w-40 h-40 rounded-2xl bg-white p-2.5 shadow-lg border-2 border-teal-400 flex items-center justify-center shrink-0">
+                    @if (qrInviteDataUrl()) {
+                      <img
+                        [src]="qrInviteDataUrl()"
+                        alt="QR-код для приєднання до спільного будинку та бюджету"
+                        class="w-full h-full object-contain"
+                      />
+                    } @else {
+                      <div class="text-center text-slate-400 text-2xs px-2">
+                        <mat-icon class="text-2xl animate-spin text-teal-600">sync</mat-icon>
+                        <div>Генерація QR...</div>
+                      </div>
+                    }
+                  </div>
+
+                  <!-- Immediate User Type Selector & Access Level -->
+                  <div class="flex-1 w-full space-y-3">
+                    <div class="space-y-1.5">
+                      <label for="qr-invite-user-type-select" class="block text-2xs font-extrabold uppercase tracking-wider text-teal-300">
+                        Тип користувача (ким доводиться):
+                      </label>
+                      @let qrRelMeta = getRelationTagMeta(qrInviteUserType());
+                      <select
+                        id="qr-invite-user-type-select"
+                        [value]="qrInviteUserType()"
+                        (change)="setQrInviteUserType($any($event.target).value)"
+                        class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-teal-400/50 text-xs font-extrabold text-white focus:outline-none focus:ring-2 focus:ring-teal-400 cursor-pointer"
+                      >
+                        @for (tag of relationTagsCatalog; track tag.id) {
+                          <option [value]="tag.id" [selected]="qrInviteUserType() === tag.id" class="bg-slate-900 text-white">
+                            {{ tag.label }}
+                          </option>
+                        }
+                      </select>
+                      @if (qrRelMeta) {
+                        <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/10 text-teal-200 text-2xs font-bold">
+                          <mat-icon class="text-xs leading-none">{{ qrRelMeta.icon }}</mat-icon>
+                          <span>При приєднанні: {{ qrRelMeta.label }}</span>
+                        </div>
+                      }
+                    </div>
+
+                    <div class="space-y-1">
+                      <span class="block text-3xs font-bold uppercase tracking-wider text-slate-400">
+                        Рівень доступу за QR-кодом:
+                      </span>
+                      <div class="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          (click)="setQrInviteAccessLevel('view_only')"
+                          [class]="qrInviteAccessLevel() === 'view_only' ? 'bg-amber-400 text-slate-950 font-extrabold' : 'bg-white/10 text-slate-300 hover:bg-white/15'"
+                          class="py-1.5 px-2 rounded-lg text-2xs flex items-center justify-center gap-1 cursor-pointer border-0 transition-colors"
+                        >
+                          <mat-icon class="text-xs leading-none">visibility</mat-icon>
+                          <span>Перегляд</span>
+                        </button>
+                        <button
+                          type="button"
+                          (click)="setQrInviteAccessLevel('full')"
+                          [class]="qrInviteAccessLevel() === 'full' ? 'bg-emerald-400 text-slate-950 font-extrabold' : 'bg-white/10 text-slate-300 hover:bg-white/15'"
+                          class="py-1.5 px-2 rounded-lg text-2xs flex items-center justify-center gap-1 cursor-pointer border-0 transition-colors"
+                        >
+                          <mat-icon class="text-xs leading-none">edit_note</mat-icon>
+                          <span>Повний</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="p-2.5 rounded-xl bg-slate-950/80 border border-white/10 font-mono text-2xs text-teal-200 break-all">
+                  {{ qrInviteFullUrl() }}
+                </div>
+              </div>
+
+              <div class="flex items-center gap-2 flex-wrap pt-1">
+                <button
+                  type="button"
+                  (click)="copyHouseholdInviteLink(qrInviteCode())"
+                  [disabled]="!qrInviteCode()"
+                  class="flex-1 py-2 px-3 rounded-xl bg-teal-400 hover:bg-teal-300 text-slate-950 font-extrabold text-xs inline-flex items-center justify-center gap-1.5 cursor-pointer border-0 shadow-sm disabled:opacity-50"
+                >
+                  <mat-icon class="text-sm leading-none">{{ copiedHouseholdInviteCode() === qrInviteCode() ? 'check' : 'content_copy' }}</mat-icon>
+                  <span>{{ copiedHouseholdInviteCode() === qrInviteCode() ? 'Скопійовано!' : 'Копіювати код-посилання' }}</span>
+                </button>
+                <button
+                  type="button"
+                  (click)="shareQrInviteUrl()"
+                  [disabled]="!qrInviteCode()"
+                  class="py-2 px-3 rounded-xl bg-white/15 hover:bg-white/25 text-white font-bold text-xs inline-flex items-center justify-center gap-1.5 cursor-pointer border border-white/15"
+                >
+                  <mat-icon class="text-sm leading-none">share</mat-icon>
+                  <span>Поділитися</span>
+                </button>
+                <button
+                  type="button"
+                  (click)="generateNewQrInviteCode()"
+                  [disabled]="isGeneratingQrInvite()"
+                  title="Згенерувати новий унікальний код"
+                  class="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-slate-200 cursor-pointer border-0"
+                >
+                  <mat-icon class="text-sm leading-none" [class.animate-spin]="isGeneratingQrInvite()">refresh</mat-icon>
+                </button>
+              </div>
+            </div>
+
+            <!-- Card 2: Clean Share App Card (Without Joining Household/Budget — https://homehub3.ai.studio/) -->
+            <div class="md:col-span-5 p-4 sm:p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 flex flex-col justify-between space-y-4">
+              <div class="space-y-3">
+                <div class="flex items-center gap-2">
+                  <mat-icon class="text-indigo-600 dark:text-indigo-400">ios_share</mat-icon>
+                  <h4 class="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white">
+                    Просто поділитись застосунком (без приєднання)
+                  </h4>
+                </div>
+                <p class="text-2xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                  Чисте посилання на застосунок <strong>HomeHub</strong> без надання доступу до вашого будинку чи бюджету:
+                </p>
+
+                <div class="flex flex-col items-center justify-center py-1">
+                  @if (cleanAppQrDataUrl()) {
+                    <div class="w-32 h-32 rounded-2xl bg-white p-2 shadow-sm border border-slate-200 flex items-center justify-center">
+                      <img
+                        [src]="cleanAppQrDataUrl()"
+                        alt="QR-код чистого посилання https://homehub3.ai.studio/"
+                        class="w-full h-full object-contain"
+                      />
+                    </div>
+                  }
+                </div>
+
+                <div class="p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 font-mono text-xs font-bold text-indigo-600 dark:text-indigo-300 text-center break-all select-all">
+                  {{ publicAppBaseUrl }}
+                </div>
+              </div>
+
+              <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                <button
+                  type="button"
+                  (click)="copyCleanAppUrl()"
+                  class="flex-1 py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xs inline-flex items-center justify-center gap-1.5 cursor-pointer border-0 shadow-xs"
+                >
+                  <mat-icon class="text-sm leading-none">{{ copiedCleanAppLink() ? 'check' : 'content_copy' }}</mat-icon>
+                  <span>{{ copiedCleanAppLink() ? 'Скопійовано!' : 'Копіювати посилання' }}</span>
+                </button>
+                <button
+                  type="button"
+                  (click)="shareCleanAppUrl()"
+                  class="py-2 px-3 rounded-xl bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-900 dark:text-white font-bold text-xs inline-flex items-center justify-center gap-1.5 cursor-pointer border-0"
+                >
+                  <mat-icon class="text-sm leading-none">share</mat-icon>
+                  <span>Поділитись</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Section 1: Create New Invite Link -->
+          <div class="p-4 sm:p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-4">
+            <div class="flex items-center justify-between flex-wrap gap-2">
+              <div class="flex items-center gap-2">
+                <mat-icon class="text-teal-600">add_link</mat-icon>
+                <h4 class="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white">
+                  Створити Invite Link для іншого зареєстрованого користувача
+                </h4>
+              </div>
+              <span class="text-2xs text-slate-500">
+                Посилання надає доступ до вашого будинку та бюджету
+              </span>
+            </div>
+
+            <!-- 1. Access Level ("Тільки для перегляду" default vs "Повний доступ") -->
+            <div class="space-y-2">
+              <span class="block text-xs font-bold text-slate-700 dark:text-slate-200">
+                1. Оберіть рівень доступу для запрошеного користувача:
+              </span>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  (click)="modalInviteAccessLevel.set('view_only')"
+                  class="p-3 rounded-xl border text-left flex items-start gap-2.5 transition-all cursor-pointer"
+                  [class.bg-amber-50]="modalInviteAccessLevel() === 'view_only'"
+                  [class.border-amber-400]="modalInviteAccessLevel() === 'view_only'"
+                  [class.bg-white]="modalInviteAccessLevel() !== 'view_only'"
+                  [class.border-slate-200]="modalInviteAccessLevel() !== 'view_only'"
+                >
+                  <div
+                    class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+                    [class.bg-amber-500]="modalInviteAccessLevel() === 'view_only'"
+                    [class.text-white]="modalInviteAccessLevel() === 'view_only'"
+                    [class.bg-slate-100]="modalInviteAccessLevel() !== 'view_only'"
+                    [class.text-slate-500]="modalInviteAccessLevel() !== 'view_only'"
+                  >
+                    <mat-icon class="text-base">visibility</mat-icon>
+                  </div>
+                  <div>
+                    <div class="flex items-center gap-1.5 flex-wrap">
+                      <span class="text-xs font-extrabold text-slate-900">Тільки для перегляду</span>
+                      <span class="px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 text-3xs font-bold">За замовчуванням</span>
+                    </div>
+                    <p class="text-2xs text-slate-500 mt-0.5">
+                      Дозволяє переглядати графік відключень, покази, пристрої та спільний бюджет без редагування.
+                    </p>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  (click)="modalInviteAccessLevel.set('full')"
+                  class="p-3 rounded-xl border text-left flex items-start gap-2.5 transition-all cursor-pointer"
+                  [class.bg-emerald-50]="modalInviteAccessLevel() === 'full'"
+                  [class.border-emerald-500]="modalInviteAccessLevel() === 'full'"
+                  [class.bg-white]="modalInviteAccessLevel() !== 'full'"
+                  [class.border-slate-200]="modalInviteAccessLevel() !== 'full'"
+                >
+                  <div
+                    class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+                    [class.bg-emerald-600]="modalInviteAccessLevel() === 'full'"
+                    [class.text-white]="modalInviteAccessLevel() === 'full'"
+                    [class.bg-slate-100]="modalInviteAccessLevel() !== 'full'"
+                    [class.text-slate-500]="modalInviteAccessLevel() !== 'full'"
+                  >
+                    <mat-icon class="text-base">edit_note</mat-icon>
+                  </div>
+                  <div>
+                    <div class="text-xs font-extrabold text-slate-900">Повний доступ</div>
+                    <p class="text-2xs text-slate-500 mt-0.5">
+                      Дозволяє вносити покази лічильників, керувати пристроями та додавати записи у спільний бюджет.
+                    </p>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            <!-- 2. Single-Select User Relation Dropdown -->
+            <div class="space-y-2">
+              <label for="modal-invite-relation-select" class="block text-xs font-bold text-slate-700 dark:text-slate-200">
+                2. Призначте статус (роль у родині / колі близьких):
+              </label>
+              @let selectedRelationId = getSelectedModalInviteRelation();
+              @let selectedRelationMeta = getRelationTagMeta(selectedRelationId);
+              <div class="flex flex-col sm:flex-row sm:items-center gap-2.5">
+                <div class="relative flex-1">
+                  <select
+                    id="modal-invite-relation-select"
+                    [value]="selectedRelationId"
+                    (change)="setModalInviteRelation($any($event.target).value)"
+                    class="w-full px-3.5 py-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-extrabold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-teal-500 cursor-pointer"
+                  >
+                    @for (tag of relationTagsCatalog; track tag.id) {
+                      <option [value]="tag.id" [selected]="selectedRelationId === tag.id">
+                        {{ tag.label }}
+                      </option>
+                    }
+                  </select>
+                </div>
+                @if (selectedRelationMeta) {
+                  <div
+                    [class]="'px-3.5 py-2 rounded-xl border text-xs font-extrabold inline-flex items-center gap-2 shrink-0 ' + selectedRelationMeta.badgeClass"
+                  >
+                    <mat-icon [class]="'text-base leading-none ' + selectedRelationMeta.iconColorClass">{{ selectedRelationMeta.icon }}</mat-icon>
+                    <span>Обрано: {{ selectedRelationMeta.label }}</span>
+                  </div>
+                }
+              </div>
+            </div>
+
+            <!-- 3. Houses & Shared Budget -->
+            <div class="space-y-2">
+              <div class="flex items-center justify-between flex-wrap gap-2">
+                <span class="text-xs font-bold text-slate-700 dark:text-slate-200">
+                  3. Доступ до будинків та спільного бюджету:
+                </span>
+                <label class="inline-flex items-center gap-2 text-xs font-bold text-teal-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    [checked]="modalInviteIncludeBudget()"
+                    (change)="modalInviteIncludeBudget.set($any($event.target).checked)"
+                    class="w-4 h-4 rounded accent-teal-600 cursor-pointer"
+                  />
+                  <span>Надати доступ до Спільного бюджету</span>
+                </label>
+              </div>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                @for (house of dataService.utilityAccounts(); track house.id) {
+                  @let checked = isModalInviteHouseChecked(house.id);
+                  <button
+                    type="button"
+                    (click)="toggleModalInviteHouse(house.id)"
+                    class="p-2.5 rounded-xl border text-left flex items-center justify-between gap-2 transition-all cursor-pointer"
+                    [class.bg-teal-50]="checked"
+                    [class.border-teal-400]="checked"
+                    [class.bg-white]="!checked"
+                    [class.border-slate-200]="!checked"
+                  >
+                    <div class="flex items-center gap-2 min-w-0">
+                      <mat-icon class="text-base text-teal-600 shrink-0">home_work</mat-icon>
+                      <div class="min-w-0">
+                        <div class="text-xs font-bold text-slate-900 truncate">{{ house.name || house.address }}</div>
+                        <div class="text-3xs text-slate-500 truncate">{{ house.address || house.accountNumber }}</div>
+                      </div>
+                    </div>
+                    <mat-icon class="text-base shrink-0" [class.text-teal-600]="checked" [class.text-slate-300]="!checked">
+                      {{ checked ? 'check_box' : 'check_box_outline_blank' }}
+                    </mat-icon>
+                  </button>
+                }
+              </div>
+            </div>
+
+            <div class="pt-1 flex items-center justify-between flex-wrap gap-3">
+              <button
+                type="button"
+                (click)="createHouseholdInviteFromModal()"
+                [disabled]="isCreatingInvite()"
+                class="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-extrabold text-xs flex items-center gap-2 cursor-pointer border-0 shadow-sm disabled:opacity-50"
+              >
+                <mat-icon class="text-base">add_link</mat-icon>
+                <span>{{ isCreatingInvite() ? 'Створення...' : 'Створити та скопіювати Invite Link' }}</span>
+              </button>
+            </div>
+
+            <!-- Active Invites List -->
+            @if (householdInvites().length > 0) {
+              <div class="pt-3 border-t border-slate-200 space-y-2">
+                <div class="text-2xs font-extrabold uppercase tracking-wider text-slate-500">
+                  Активні посилання-запрошення ({{ householdInvites().length }})
+                </div>
+                <div class="space-y-2 max-h-48 overflow-y-auto pr-1">
+                  @for (inv of householdInvites(); track inv.id) {
+                    <div class="p-3 rounded-xl bg-white border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                      <div class="min-w-0 space-y-1">
+                        <div class="flex items-center gap-1.5 flex-wrap">
+                          @if (inv.accessLevel === 'full') {
+                            <span class="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 text-3xs font-bold inline-flex items-center gap-1">
+                              <mat-icon class="text-3xs">edit_note</mat-icon>
+                              <span>Повний доступ</span>
+                            </span>
+                          } @else {
+                            <span class="px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-300 text-3xs font-bold inline-flex items-center gap-1">
+                              <mat-icon class="text-3xs">visibility</mat-icon>
+                              <span>Тільки для перегляду</span>
+                            </span>
+                          }
+                          @for (tagId of inv.memberTags || []; track tagId) {
+                            @if (getRelationTagMeta(tagId); as tMeta) {
+                              <span [class]="'px-2 py-0.5 rounded-full border text-3xs font-bold inline-flex items-center gap-1 ' + tMeta.badgeClass">
+                                <mat-icon [class]="'text-3xs ' + tMeta.iconColorClass">{{ tMeta.icon }}</mat-icon>
+                                <span>{{ tMeta.label }}</span>
+                              </span>
+                            }
+                          }
+                        </div>
+                        <div class="text-2xs text-slate-500 font-mono truncate">{{ getHouseholdInviteUrl(inv.code) }}</div>
+                      </div>
+                      <div class="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          (click)="copyHouseholdInviteLink(inv.code)"
+                          class="px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-2xs font-bold inline-flex items-center gap-1 cursor-pointer border-0"
+                        >
+                          <mat-icon class="text-xs">{{ copiedHouseholdInviteCode() === inv.code ? 'check' : 'content_copy' }}</mat-icon>
+                          <span>{{ copiedHouseholdInviteCode() === inv.code ? 'Скопійовано' : 'Копіювати' }}</span>
+                        </button>
+                        <button
+                          type="button"
+                          (click)="deleteHouseholdInviteFromModal(inv.id)"
+                          class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer border-0 bg-transparent"
+                          title="Видалити посилання"
+                        >
+                          <mat-icon class="text-base">delete_outline</mat-icon>
+                        </button>
+                      </div>
+                    </div>
+                  }
+                </div>
+              </div>
+            }
+          </div>
+
+          <!-- Section 2: Connected Household Members & Tag/Access Management -->
+          @if (sharedHouseholdMembers().length > 0) {
+            <div class="p-4 sm:p-5 rounded-2xl bg-white dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-3">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                  <mat-icon class="text-indigo-600">diversity_3</mat-icon>
+                  <h4 class="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white">
+                    Учасники вашого спільного дому та бюджету ({{ sharedHouseholdMembers().length }})
+                  </h4>
+                </div>
+              </div>
+
+              <div class="divide-y divide-slate-100">
+                @for (member of sharedHouseholdMembers(); track member.id) {
+                  @let memberAccess = getMemberAccessLevel(member);
+                  <div class="py-3 first:pt-0 last:pb-0 space-y-2.5">
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div class="flex items-center gap-2.5 min-w-0">
+                        <img
+                          [src]="member.picture || 'https://ui-avatars.com/api/?name=' + member.name + '&background=0284c7&color=fff'"
+                          [alt]="member.name"
+                          class="w-9 h-9 rounded-xl object-cover border border-slate-200 shrink-0"
+                          referrerpolicy="no-referrer"
+                        />
+                        <div class="min-w-0">
+                          <div class="text-xs font-bold text-slate-900 truncate">{{ member.name }}</div>
+                          <div class="text-2xs text-slate-500 font-mono truncate">{{ member.email }}</div>
+                        </div>
+                      </div>
+
+                      <!-- Quick Switcher: Тільки для перегляду vs Повний доступ -->
+                      <div class="inline-flex rounded-xl p-1 bg-slate-100 border border-slate-200 self-start sm:self-auto">
+                        <button
+                          type="button"
+                          (click)="toggleSharedMemberAccessLevel(member, 'view_only')"
+                          class="px-2.5 py-1 rounded-lg text-2xs font-bold inline-flex items-center gap-1 cursor-pointer border-0 transition-all"
+                          [class.bg-amber-500]="memberAccess === 'view_only'"
+                          [class.text-white]="memberAccess === 'view_only'"
+                          [class.bg-transparent]="memberAccess !== 'view_only'"
+                          [class.text-slate-600]="memberAccess !== 'view_only'"
+                        >
+                          <mat-icon class="text-xs">visibility</mat-icon>
+                          <span>Тільки для перегляду</span>
+                        </button>
+                        <button
+                          type="button"
+                          (click)="toggleSharedMemberAccessLevel(member, 'full')"
+                          class="px-2.5 py-1 rounded-lg text-2xs font-bold inline-flex items-center gap-1 cursor-pointer border-0 transition-all"
+                          [class.bg-emerald-600]="memberAccess === 'full'"
+                          [class.text-white]="memberAccess === 'full'"
+                          [class.bg-transparent]="memberAccess !== 'full'"
+                          [class.text-slate-600]="memberAccess !== 'full'"
+                        >
+                          <mat-icon class="text-xs">edit_note</mat-icon>
+                          <span>Повний доступ</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <!-- Single-Choice Member Relation Dropdown -->
+                    @let primaryRel = getMemberPrimaryRelation(member);
+                    @let primaryRelMeta = getRelationTagMeta(primaryRel);
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <span class="text-3xs font-bold uppercase text-slate-400">Статус учасника:</span>
+                      <select
+                        [value]="primaryRel"
+                        (change)="setSharedMemberRelation(member, $any($event.target).value)"
+                        class="px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-extrabold text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-teal-500 cursor-pointer"
+                      >
+                        @for (tag of relationTagsCatalog; track tag.id) {
+                          <option [value]="tag.id" [selected]="primaryRel === tag.id">
+                            {{ tag.label }}
+                          </option>
+                        }
+                      </select>
+                      @if (primaryRelMeta) {
+                        <span [class]="'px-2.5 py-1 rounded-full border text-3xs font-extrabold inline-flex items-center gap-1 ' + primaryRelMeta.badgeClass">
+                          <mat-icon [class]="'text-xs leading-none ' + primaryRelMeta.iconColorClass">{{ primaryRelMeta.icon }}</mat-icon>
+                          <span>{{ primaryRelMeta.label }}</span>
+                        </span>
+                      }
+                    </div>
+                  </div>
+                }
+              </div>
+            </div>
+          }
+
+          <!-- Section 3: Join Another User's Shared Household by Invite Link or Code -->
+          <div class="p-4 sm:p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2.5">
+            <div class="flex items-center gap-2">
+              <mat-icon class="text-indigo-600">qr_code_2</mat-icon>
+              <h4 class="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white">
+                Маєте Invite-посилання або код запрошення від іншого користувача?
+              </h4>
+            </div>
+            <div class="flex flex-col sm:flex-row gap-2">
+              <input
+                type="text"
+                [formControl]="joinInviteInputControl"
+                placeholder="Вставте посилання або код запрошення (напр. inv_...)"
+                class="flex-1 px-3.5 py-2 rounded-xl bg-white border border-slate-300 text-xs font-mono text-slate-900"
+              />
+              <button
+                type="button"
+                (click)="previewOrJoinInviteByCode()"
+                class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer border-0 shrink-0"
+              >
+                <mat-icon class="text-sm">login</mat-icon>
+                <span>Перевірити та приєднатися</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  }
 }

@@ -20,7 +20,7 @@ import { IptvData } from '../../services/iptv-data';
           </div>
           <div class="flex items-center justify-center gap-2">
             <h1 class="text-2xl font-black tracking-tight text-white">HomeHub: Сервіси та Облік</h1>
-            <span class="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-400 text-xs font-mono font-bold border border-emerald-500/30">v3.0</span>
+            <span class="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-400 text-xs font-mono font-bold border border-emerald-500/30">v4.0</span>
           </div>
           <p class="text-xs text-slate-400 mt-1">Єдина система обліку електроенергії (ДТЕК, ООЕК), водопостачання та вивозу сміття</p>
         </div>

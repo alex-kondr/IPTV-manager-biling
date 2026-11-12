@@ -536,14 +536,14 @@ import { getGoogleCalendarUrl, generateIcsFile } from '../../utils/calendar-even
                   <div class="space-y-1.5 min-w-0">
                     @if (acc.clients && acc.clients.length > 0) {
                       @for (c of acc.clients; track c.id; let idx = $index) {
-                        <div class="p-2 sm:p-2.5 bg-slate-50/90 rounded-xl border border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2 text-xs min-w-0">
+                        <div class="p-2 sm:p-2.5 bg-slate-50 dark:bg-slate-800/90 rounded-xl border border-slate-200/80 dark:border-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2 text-xs min-w-0">
                           <div class="flex items-center gap-2 min-w-0 flex-1">
-                            <span class="w-5 h-5 rounded-full bg-emerald-200 text-emerald-800 font-bold text-3xs flex items-center justify-center shrink-0">
+                            <span class="w-5 h-5 rounded-full bg-emerald-600 text-white font-bold text-3xs flex items-center justify-center shrink-0">
                               #{{ idx + 1 }}
                             </span>
                             <div class="min-w-0 flex-1">
-                              <strong class="text-slate-900 font-semibold block truncate leading-tight">{{ c.fullName }}</strong>
-                              <div class="flex items-center gap-1.5 text-3xs text-slate-500 truncate mt-0.5">
+                              <strong class="text-slate-900 dark:text-slate-100 font-semibold block truncate leading-tight">{{ c.fullName }}</strong>
+                              <div class="flex items-center gap-1.5 text-3xs text-slate-500 dark:text-slate-400 truncate mt-0.5">
                                 <span class="truncate">{{ c.phone }}</span>
                                 <span>•</span>
                                 <span class="font-mono truncate">{{ c.iptvLogin }}</span>
@@ -551,7 +551,7 @@ import { getGoogleCalendarUrl, generateIcsFile } from '../../utils/calendar-even
                             </div>
                           </div>
 
-                          <div class="flex items-center justify-between sm:justify-end gap-1.5 shrink-0 pt-1 sm:pt-0 border-t sm:border-t-0 border-slate-200/60">
+                          <div class="flex items-center justify-between sm:justify-end gap-1.5 shrink-0 pt-1 sm:pt-0 border-t sm:border-t-0 border-slate-200/60 dark:border-slate-700">
                             <!-- Plan badge -->
                             <span
                               class="px-1.5 py-0.5 rounded text-3xs font-bold shrink-0"
@@ -567,7 +567,7 @@ import { getGoogleCalendarUrl, generateIcsFile } from '../../utils/calendar-even
                             <button
                               type="button"
                               (click)="unassignClient(acc.id, c.id, c.fullName)"
-                              class="px-2 py-0.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200/80 rounded-md text-3xs font-bold inline-flex items-center gap-1 transition-colors cursor-pointer shrink-0"
+                              class="px-2 py-0.5 bg-rose-50 dark:bg-rose-950/80 hover:bg-rose-100 dark:hover:bg-rose-900 text-rose-700 dark:text-rose-200 border border-rose-200/80 dark:border-rose-800 rounded-md text-3xs font-bold inline-flex items-center gap-1 transition-colors cursor-pointer shrink-0"
                               title="Відкріпити абонента від цього акаунту"
                             >
                               <mat-icon class="text-xs leading-none">link_off</mat-icon>
@@ -584,15 +584,15 @@ import { getGoogleCalendarUrl, generateIcsFile } from '../../utils/calendar-even
                         <button
                           type="button"
                           (click)="openAssignClientDialog(acc)"
-                          class="w-full p-2 sm:p-2.5 rounded-xl border border-dashed border-slate-300 bg-slate-50/50 hover:bg-emerald-50/50 hover:border-emerald-300 flex items-center justify-between gap-2 text-xs text-slate-500 transition-colors cursor-pointer text-left min-w-0"
+                          class="w-full p-2 sm:p-2.5 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 hover:bg-emerald-50/50 dark:hover:bg-emerald-950/40 hover:border-emerald-300 dark:hover:border-emerald-700 flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400 transition-colors cursor-pointer text-left min-w-0"
                         >
                           <div class="flex items-center gap-2 min-w-0 flex-1">
-                            <span class="w-5 h-5 rounded-full bg-slate-200 text-slate-600 font-bold text-3xs flex items-center justify-center shrink-0">
+                            <span class="w-5 h-5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 font-bold text-3xs flex items-center justify-center shrink-0">
                               #{{ occupied + $index + 1 }}
                             </span>
                             <span class="italic text-2xs truncate">Вільний слот IPTV</span>
                           </div>
-                          <span class="text-3xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200/90 px-2 py-0.5 rounded-md inline-flex items-center gap-0.5 shrink-0">
+                          <span class="text-3xs font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-200/90 dark:border-emerald-800 px-2 py-0.5 rounded-md inline-flex items-center gap-0.5 shrink-0">
                             <mat-icon class="text-xs leading-none">add</mat-icon>
                             <span>Прив'язати</span>
                           </span>

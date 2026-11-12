@@ -1,6 +1,7 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
+import * as QRCode from 'qrcode';
 import { triggerFirebaseGooglePopup, triggerFirebaseSignOut } from '../firebase-client';
 import {
   Client,
@@ -18,10 +19,19 @@ import {
   BudgetApiResponse,
   ProviderBalanceAdjustment,
   UserRole,
+  UserAccountStatus,
+  HouseholdAccessLevel,
+  MemberRelationTag,
+  MEMBER_RELATION_TAGS,
+  HouseholdInvite,
   AppUser,
   AppTabId,
   SettingsSectionId,
+  SettingScopeType,
+  UserPersonalSettings,
+  SystemSettingsConfig,
   ALL_SETTINGS_SECTIONS,
+  getDefaultUserSettingsSections,
   extractAllowedSettingsFromUser,
   DEFAULT_USER_TABS,
   ALL_ADMIN_TABS,
@@ -39,6 +49,7 @@ import {
   DEFAULT_UTILITY_TARIFFS,
   ElectricityDevice,
   ElectricityScreenshotAnalysisResult,
+  UtilityWeatherResponse,
   OutageScheduleViewVariant,
 } from '../models/utility.model';
 
@@ -333,6 +344,15 @@ export interface DtekShutdownInfo {
   updateFact?: string;
   dtekJsonUpdatedAt?: string;
   fetchedAt?: string;
+  lastDtekFetchAt?: string;
+  lastDtekFetchAtIso?: string;
+  lastDtekFetchAtMs?: number;
+  nextAllowedFetchAtMs?: number;
+  minutesUntilNextRefresh?: number;
+  syncIntervalMinutes?: number;
+  servedFromDatabase?: boolean;
+  didFetchLiveFromDtek?: boolean;
+  refreshSkippedByCooldown?: boolean;
   startDate?: string | null;
   endDate?: string | null;
   subType?: string | null;
@@ -403,28 +423,46 @@ export class IptvData {
   readonly isRealAdmin = computed<boolean>(() => this.isAdmin() || this.realAdminUser()?.role === 'admin');
   readonly isViewer = computed<boolean>(() => this.currentUser()?.role === 'user');
   readonly isNewUser = computed<boolean>(() => this.currentUser()?.role === 'new');
+  readonly isUserBlocked = computed<boolean>(() => {
+    const user = this.currentUser();
+    if (!user) return false;
+    return user.status === 'inactive' || user.role === 'new';
+  });
   readonly canEdit = computed<boolean>(() => {
     const user = this.currentUser();
     if (!user) return false;
-    if (user.role === 'admin') return true;
-    if (user.role === 'user' || user.role === 'new') return user.canManageOwnData !== false;
+    if (user.status === 'inactive' || user.role === 'new') return false;
+    if (user.householdAccessLevel === 'view_only') return false;
+    if (user.role === 'admin' || user.role === 'user') return user.canManageOwnData !== false;
     return false;
   });
-  readonly canView = computed<boolean>(() => !!this.currentUser());
-  readonly pendingUsersCount = computed<number>(() => this.usersList().filter((u) => u.role === 'new').length);
+  readonly canView = computed<boolean>(() => !!this.currentUser() && !this.isUserBlocked());
+  readonly pendingUsersCount = computed<number>(
+    () => this.usersList().filter((u) => u.role === 'new' || u.status === 'inactive').length
+  );
 
   readonly allowedTabs = computed<AppTabId[]>(() => {
     const user = this.currentUser();
-    if (!user) {
+    if (!user || user.status === 'inactive' || user.role === 'new') {
       return [];
     }
-    if (user.role === 'admin') {
-      return ALL_ADMIN_TABS;
-    }
+    const cleanUserTabs = Array.isArray(user.allowedTabs)
+      ? (user.allowedTabs.filter(
+          (t) =>
+            typeof t === 'string' &&
+            !t.startsWith('settings:') &&
+            !t.startsWith('tag:') &&
+            !t.startsWith('access:') &&
+            !t.startsWith('invitedBy:') &&
+            !t.startsWith('invitedByName:')
+        ) as AppTabId[])
+      : [];
     const rawTabs =
-      Array.isArray(user.allowedTabs) && user.allowedTabs.length > 0
-        ? (user.allowedTabs.filter((t) => typeof t === 'string' && !t.startsWith('settings:')) as AppTabId[])
-        : [...DEFAULT_USER_TABS];
+      cleanUserTabs.length > 0
+        ? cleanUserTabs
+        : user.role === 'admin'
+          ? [...ALL_ADMIN_TABS]
+          : [...DEFAULT_USER_TABS];
     const expanded = new Set<AppTabId>(rawTabs);
     if (expanded.has('electricity')) {
       expanded.add('outage_schedule');
@@ -433,34 +471,93 @@ export class IptvData {
       expanded.add('water');
       expanded.add('waste');
     }
+    if (user.role === 'admin') {
+      expanded.add('users');
+      expanded.add('settings');
+    } else if (this.allowedSettingsSections().length > 0) {
+      expanded.add('settings');
+    }
     return Array.from(expanded);
   });
 
+  // Per-User Settings (`user_settings` table) & System Settings Config (`system_settings_config` table)
+  readonly userPersonalSettings = signal<UserPersonalSettings>({
+    userId: 'anonymous',
+    themeMode: 'light',
+    outageScheduleViewVariant: 'v10_minimal_pills',
+    hiddenHouseTabs: {},
+    electricityTariffs: null,
+    waterTariffs: null,
+    wasteTariffs: null,
+    customPreferences: {},
+  });
+
+  readonly allUsersPersonalSettings = signal<Record<string, UserPersonalSettings>>({});
+
+  readonly systemSettingsConfig = signal<SystemSettingsConfig>({
+    id: 'global',
+    scopesConfig: {
+      theme: 'user',
+      outage_display: 'user',
+      house_visibility: 'user',
+      electricity_tariffs: 'user',
+      water_tariffs: 'user',
+      waste_tariffs: 'user',
+      billing: 'system',
+      viber: 'system',
+      telegram: 'system',
+      database: 'system',
+      backup: 'system',
+    },
+    systemValues: {},
+  });
+
+  getSettingScope(sectionId: SettingsSectionId): SettingScopeType {
+    const normalizedId = sectionId === 'water_waste_tariffs' ? 'water_tariffs' : sectionId;
+    const fromConfig = this.systemSettingsConfig().scopesConfig?.[normalizedId];
+    if (fromConfig === 'user' || fromConfig === 'system') {
+      return fromConfig;
+    }
+    const meta = ALL_SETTINGS_SECTIONS.find((s) => s.id === normalizedId);
+    return meta?.defaultScope || 'user';
+  }
+
+  getUserScopedSettingsSections(): SettingsSectionId[] {
+    const scopes = this.systemSettingsConfig().scopesConfig || {};
+    return getDefaultUserSettingsSections(scopes);
+  }
+
   readonly allowedSettingsSections = computed<SettingsSectionId[]>(() => {
     const user = this.currentUser();
-    if (!user) {
+    if (!user || user.status === 'inactive' || user.role === 'new') {
       return [];
     }
     if (user.role === 'admin') {
       return ALL_SETTINGS_SECTIONS.map((s) => s.id);
     }
-    return extractAllowedSettingsFromUser(user);
+    const scopes = this.systemSettingsConfig().scopesConfig || {};
+    return extractAllowedSettingsFromUser(user, scopes);
   });
 
   isSettingsSectionAllowed(sectionId: SettingsSectionId): boolean {
     const user = this.currentUser();
     if (!user) return false;
     if (user.role === 'admin') return true;
+    if (sectionId === 'water_waste_tariffs') {
+      return (
+        this.allowedSettingsSections().includes('water_tariffs') ||
+        this.allowedSettingsSections().includes('waste_tariffs')
+      );
+    }
     return this.allowedSettingsSections().includes(sectionId);
   }
 
   isTabAllowed(tab: AppTabId): boolean {
     const user = this.currentUser();
     if (!user) return false;
-    if (user.role === 'admin') return true;
-    if (tab === 'users') return false;
+    if (tab === 'users') return user.role === 'admin';
     if (tab === 'settings') {
-      return this.allowedSettingsSections().length > 0;
+      return user.role === 'admin' || this.allowedSettingsSections().length > 0;
     }
     const tabs = this.allowedTabs();
     if (tab === 'outage_schedule') {
@@ -490,25 +587,25 @@ export class IptvData {
 
   readonly scheduleAccounts = computed(() =>
     this.utilityAccounts().filter(
-      (a) => this.isElectricityGroupHouse(a) && !isAccountHiddenInTab(a, 'outage_schedule')
+      (a) => this.isElectricityGroupHouse(a) && !this.isHouseHiddenInTab(a, 'outage_schedule')
     )
   );
 
   readonly electricityAccounts = computed(() =>
     this.utilityAccounts().filter(
-      (a) => this.isElectricityGroupHouse(a) && !isAccountHiddenInTab(a, 'electricity')
+      (a) => this.isElectricityGroupHouse(a) && !this.isHouseHiddenInTab(a, 'electricity')
     )
   );
 
   readonly waterAccounts = computed(() =>
     this.utilityAccounts().filter(
-      (a) => this.isWaterWasteGroupHouse(a) && !isAccountHiddenInTab(a, 'water')
+      (a) => this.isWaterWasteGroupHouse(a) && !this.isHouseHiddenInTab(a, 'water')
     )
   );
 
   readonly wasteAccounts = computed(() =>
     this.utilityAccounts().filter(
-      (a) => this.isWaterWasteGroupHouse(a) && !isAccountHiddenInTab(a, 'waste')
+      (a) => this.isWaterWasteGroupHouse(a) && !this.isHouseHiddenInTab(a, 'waste')
     )
   );
 
@@ -516,7 +613,7 @@ export class IptvData {
     this.utilityAccounts().filter(
       (a) =>
         this.isWaterWasteGroupHouse(a) &&
-        (!isAccountHiddenInTab(a, 'water') || !isAccountHiddenInTab(a, 'waste'))
+        (!this.isHouseHiddenInTab(a, 'water') || !this.isHouseHiddenInTab(a, 'waste'))
     )
   );
 
@@ -524,7 +621,7 @@ export class IptvData {
     const isElecGroup = tab === 'outage_schedule' || tab === 'electricity';
     return this.utilityAccounts().filter((a) => {
       const inGroup = isElecGroup ? this.isElectricityGroupHouse(a) : this.isWaterWasteGroupHouse(a);
-      return inGroup && !isAccountHiddenInTab(a, tab);
+      return inGroup && !this.isHouseHiddenInTab(a, tab);
     });
   }
 
@@ -532,11 +629,34 @@ export class IptvData {
     const isElecGroup = tab === 'outage_schedule' || tab === 'electricity';
     return this.utilityAccounts().filter((a) => {
       const inGroup = isElecGroup ? this.isElectricityGroupHouse(a) : this.isWaterWasteGroupHouse(a);
-      return inGroup && isAccountHiddenInTab(a, tab);
+      return inGroup && this.isHouseHiddenInTab(a, tab);
     });
   }
 
   isHouseHiddenInTab(acc: UtilityAccount | null | undefined, tab: UtilityServiceTabId): boolean {
+    if (!acc) return false;
+    const scope = this.getSettingScope('house_visibility');
+    if (scope === 'user') {
+      const personalMap = this.userPersonalSettings().hiddenHouseTabs;
+      if (personalMap && Array.isArray(personalMap[acc.id])) {
+        return personalMap[acc.id].includes(tab);
+      }
+    }
+    return isAccountHiddenInTab(acc, tab);
+  }
+
+  isHouseHiddenInTabForUser(
+    userId: string,
+    acc: UtilityAccount | null | undefined,
+    tab: UtilityServiceTabId
+  ): boolean {
+    if (!acc) return false;
+    const allMap = this.allUsersPersonalSettings();
+    const userEntry =
+      userId === this.currentUser()?.id ? this.userPersonalSettings() : allMap[userId];
+    if (userEntry?.hiddenHouseTabs && Array.isArray(userEntry.hiddenHouseTabs[acc.id])) {
+      return userEntry.hiddenHouseTabs[acc.id].includes(tab);
+    }
     return isAccountHiddenInTab(acc, tab);
   }
 
@@ -547,6 +667,26 @@ export class IptvData {
     const allowedTabsForGroup: UtilityServiceTabId[] = isElecGroup
       ? ['outage_schedule', 'electricity']
       : ['water', 'waste'];
+
+    const scope = this.getSettingScope('house_visibility');
+    if (scope === 'user') {
+      const currentMap = { ...(this.userPersonalSettings().hiddenHouseTabs || {}) };
+      const existingList = Array.isArray(currentMap[accountId])
+        ? currentMap[accountId]
+        : extractHiddenTabsFromAccount(acc);
+      const currentHidden = new Set<UtilityServiceTabId>(
+        (existingList as UtilityServiceTabId[]).filter((t) => allowedTabsForGroup.includes(t))
+      );
+      if (currentHidden.has(tab)) {
+        currentHidden.delete(tab);
+      } else {
+        currentHidden.add(tab);
+      }
+      currentMap[accountId] = Array.from(currentHidden);
+      await this.saveUserPersonalSettings({ hiddenHouseTabs: currentMap });
+      return;
+    }
+
     const currentHidden = new Set<UtilityServiceTabId>(
       extractHiddenTabsFromAccount(acc).filter((t) => allowedTabsForGroup.includes(t))
     );
@@ -569,9 +709,76 @@ export class IptvData {
     });
   }
 
-  readonly utilityTariffs = computed<UtilityTariffsSettings>(() =>
-    this.settings().utilityTariffsSettings || DEFAULT_UTILITY_TARIFFS
+  async toggleHouseVisibilityInTabForUser(
+    userId: string,
+    accountId: string,
+    tab: UtilityServiceTabId
+  ): Promise<void> {
+    const allHouses =
+      this.adminUtilityAccounts().length > 0 ? this.adminUtilityAccounts() : this.utilityAccounts();
+    const acc = allHouses.find((a) => a.id === accountId);
+    if (!acc) return;
+    const isElecGroup = this.isElectricityGroupHouse(acc);
+    const allowedTabsForGroup: UtilityServiceTabId[] = isElecGroup
+      ? ['outage_schedule', 'electricity']
+      : ['water', 'waste'];
+
+    const allMap = this.allUsersPersonalSettings();
+    const userEntry =
+      userId === this.currentUser()?.id
+        ? this.userPersonalSettings()
+        : allMap[userId] || {
+            userId,
+            themeMode: 'light',
+            outageScheduleViewVariant: 'v10_minimal_pills',
+            hiddenHouseTabs: {},
+          };
+    const currentMap = { ...(userEntry.hiddenHouseTabs || {}) };
+    const existingList = Array.isArray(currentMap[accountId])
+      ? currentMap[accountId]
+      : extractHiddenTabsFromAccount(acc);
+    const currentHidden = new Set<UtilityServiceTabId>(
+      (existingList as UtilityServiceTabId[]).filter((t) => allowedTabsForGroup.includes(t))
+    );
+    if (currentHidden.has(tab)) {
+      currentHidden.delete(tab);
+    } else {
+      currentHidden.add(tab);
+    }
+    currentMap[accountId] = Array.from(currentHidden);
+    await this.saveUserPersonalSettings({ hiddenHouseTabs: currentMap }, userId);
+  }
+
+  readonly systemUtilityTariffs = computed<UtilityTariffsSettings>(() =>
+    normalizeUtilityTariffs(this.settings().utilityTariffsSettings || DEFAULT_UTILITY_TARIFFS)
   );
+
+  readonly utilityTariffs = computed<UtilityTariffsSettings>(() => {
+    const sys = this.systemUtilityTariffs();
+    const usr = this.userPersonalSettings();
+    const elecScope = this.getSettingScope('electricity_tariffs');
+    const waterScope = this.getSettingScope('water_tariffs');
+    const wasteScope = this.getSettingScope('waste_tariffs');
+
+    const electricitySingle =
+      elecScope === 'user' && usr.electricityTariffs?.electricitySingle
+        ? usr.electricityTariffs.electricitySingle
+        : sys.electricitySingle;
+    const electricityDual =
+      elecScope === 'user' && usr.electricityTariffs?.electricityDual
+        ? usr.electricityTariffs.electricityDual
+        : sys.electricityDual;
+    const water = waterScope === 'user' && usr.waterTariffs ? usr.waterTariffs : sys.water;
+    const waste = wasteScope === 'user' && usr.wasteTariffs ? usr.wasteTariffs : sys.waste;
+
+    return normalizeUtilityTariffs({
+      ...sys,
+      electricitySingle,
+      electricityDual,
+      water,
+      waste,
+    });
+  });
 
   // Active & Default Electricity House for Outage Schedule
   readonly selectedDtekAccountId = signal<string>('');
@@ -615,9 +822,30 @@ export class IptvData {
   private broadcastChannel: BroadcastChannel | null = null;
   private autoSyncInterval: ReturnType<typeof setInterval> | null = null;
   private inFlightSettingsPromise: Promise<void> | null = null;
+  private inFlightRefreshAllPromise: Promise<void> | null = null;
+  private inFlightStatsPromise: Promise<void> | null = null;
+  private inFlightBudgetPromise: Promise<void> | null = null;
+  private inFlightAccountsPromise: Promise<void> | null = null;
+  private inFlightClientsPromise: Promise<void> | null = null;
+  private inFlightPaymentsPromise: Promise<void> | null = null;
+  private inFlightUtilityPromise: Promise<void> | null = null;
   private lastSettingsFetchTime = 0;
   private settingsCooldownUntil = 0;
+  private apiRateLimitCooldownUntil = 0;
   private lastVersionCheckTime = 0;
+
+  private isRateLimitError(err: unknown): boolean {
+    const httpErr = err as { status?: number; message?: string; error?: unknown };
+    if (httpErr?.status === 429) return true;
+    const msg = String(httpErr?.message || httpErr?.error || '');
+    return msg.includes('429') || msg.toLowerCase().includes('rate exceeded');
+  }
+
+  private activateRateLimitCooldown(): void {
+    const until = Date.now() + 30000;
+    this.apiRateLimitCooldownUntil = Math.max(this.apiRateLimitCooldownUntil, until);
+    this.settingsCooldownUntil = Math.max(this.settingsCooldownUntil, until);
+  }
 
   // Provider Balance USD & Low Balance Alert (< $5.00)
   readonly providerBalanceUsd = computed<number>(() => {
@@ -951,7 +1179,7 @@ export class IptvData {
         createdAt: new Date().toISOString(),
         lastLoginAt: new Date().toISOString(),
         allowedTabs: [...DEFAULT_USER_TABS],
-        allowedSettings: [],
+        allowedSettings: this.getUserScopedSettingsSections(),
         assignedUtilityAccountIds: [],
         assignedClientIds: [],
         canManageOwnData: true,
@@ -963,10 +1191,12 @@ export class IptvData {
         (testTarget.allowedTabs.length === 1 && testTarget.allowedTabs[0] === 'electricity')
           ? [...DEFAULT_USER_TABS]
           : testTarget.allowedTabs;
+      const scopes = this.systemSettingsConfig().scopesConfig || {};
       testTarget = {
         ...testTarget,
         role: testTarget.role === 'new' ? 'user' : testTarget.role,
         allowedTabs: normalizedTabs,
+        allowedSettings: extractAllowedSettingsFromUser(testTarget, scopes),
         canManageOwnData: testTarget.canManageOwnData !== false,
       };
     }
@@ -1064,6 +1294,13 @@ export class IptvData {
           realAdminUser?: AppUser | null;
           googleClientId: string;
           totalUsersCount: number;
+          appReleaseInfo?: {
+            currentVersion: string;
+            previousVersion: string;
+            userLastSeenVersion: string;
+            dismissedVersion: string;
+            shouldShowModal: boolean;
+          };
         }>('/api/auth/me', this.getAuthHeaders())
       );
 
@@ -1073,6 +1310,13 @@ export class IptvData {
 
       if (res.realAdminUser) {
         this.realAdminUser.set(res.realAdminUser);
+      }
+
+      if (res.appReleaseInfo) {
+        this.appReleaseInfo.set(res.appReleaseInfo);
+        if (res.appReleaseInfo.shouldShowModal) {
+          this.isUpdateModalOpen.set(true);
+        }
       }
 
       if (res.authenticated && res.user) {
@@ -1123,6 +1367,70 @@ export class IptvData {
     }
   }
 
+  readonly appReleaseInfo = signal<{
+    currentVersion: string;
+    previousVersion: string;
+    userLastSeenVersion: string;
+    dismissedVersion: string;
+    shouldShowModal: boolean;
+  }>({
+    currentVersion: 'v4.0',
+    previousVersion: 'v3.0',
+    userLastSeenVersion: 'v3.0',
+    dismissedVersion: '',
+    shouldShowModal: false,
+  });
+
+  readonly isUpdateModalOpen = signal<boolean>(false);
+  readonly isDismissingUpdate = signal<boolean>(false);
+
+  openUpdateModal(): void {
+    this.isUpdateModalOpen.set(true);
+  }
+
+  closeUpdateModal(): void {
+    this.isUpdateModalOpen.set(false);
+  }
+
+  async dismissAppReleaseForUser(version = 'v4.0'): Promise<void> {
+    this.isDismissingUpdate.set(true);
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{
+          success: boolean;
+          appReleaseInfo?: {
+            currentVersion: string;
+            previousVersion: string;
+            userLastSeenVersion: string;
+            dismissedVersion: string;
+            shouldShowModal: boolean;
+          };
+          message?: string;
+        }>('/api/app-release/dismiss', { version }, this.getAuthHeaders())
+      );
+      if (res.appReleaseInfo) {
+        this.appReleaseInfo.set(res.appReleaseInfo);
+      } else {
+        this.appReleaseInfo.update((prev) => ({
+          ...prev,
+          userLastSeenVersion: version,
+          dismissedVersion: version,
+          shouldShowModal: false,
+        }));
+      }
+      this.isUpdateModalOpen.set(false);
+      this.triggerSuccess(
+        res.message || `Оновлення ${version} відмічено як переглянуте. Більше не показуватиметься.`
+      );
+    } catch (err: unknown) {
+      const httpErr = err as { error?: { error?: string }; message?: string };
+      const msg = httpErr?.error?.error || httpErr?.message || 'Не вдалося зберегти налаштування оновлення у БД';
+      this.triggerError(msg);
+    } finally {
+      this.isDismissingUpdate.set(false);
+    }
+  }
+
   async signInWithGooglePopup(): Promise<AppUser | null> {
     if (typeof window === 'undefined') {
       return null;
@@ -1161,8 +1469,27 @@ export class IptvData {
     this.isLoading.set(true);
     try {
       const res = await firstValueFrom(
-        this.http.post<{ success: boolean; user: AppUser; token: string; message: string }>('/api/auth/google', payload)
+        this.http.post<{
+          success: boolean;
+          user: AppUser;
+          token: string;
+          message: string;
+          appReleaseInfo?: {
+            currentVersion: string;
+            previousVersion: string;
+            userLastSeenVersion: string;
+            dismissedVersion: string;
+            shouldShowModal: boolean;
+          };
+        }>('/api/auth/google', payload)
       );
+
+      if (res.appReleaseInfo) {
+        this.appReleaseInfo.set(res.appReleaseInfo);
+        if (res.appReleaseInfo.shouldShowModal) {
+          this.isUpdateModalOpen.set(true);
+        }
+      }
 
       if (res.success && res.user) {
         this.impersonatedUser.set(null);
@@ -1297,16 +1624,63 @@ export class IptvData {
     }
   }
 
+  async toggleUserAccessStatus(userId: string, status: UserAccountStatus): Promise<boolean> {
+    const previousUsers = this.usersList();
+    this.usersList.update((list) =>
+      list.map((u) => {
+        if (u.id !== userId) return u;
+        return {
+          ...u,
+          status,
+          role: status === 'active' && u.role === 'new' ? 'user' : u.role,
+        };
+      })
+    );
+
+    try {
+      const res = await firstValueFrom(
+        this.http.put<{ success?: boolean; user?: AppUser }>(
+          `/api/users/${userId}/status`,
+          { status },
+          this.getAuthHeaders()
+        )
+      );
+      const updatedUser: Partial<AppUser> = res?.user || { status };
+      this.usersList.update((list) =>
+        list.map((u) => (u.id === userId ? { ...u, ...updatedUser } : u))
+      );
+      if (this.impersonatedUser()?.id === userId) {
+        const merged = { ...this.impersonatedUser()!, ...updatedUser };
+        this.impersonatedUser.set(merged);
+        this.currentUser.set(merged);
+      }
+      this.triggerSuccess(
+        status === 'active'
+          ? 'Доступ до застосунку увімкнено (Користувач активний)!'
+          : 'Доступ користувача до застосунку миттєво заблоковано!'
+      );
+      return true;
+    } catch (err: unknown) {
+      this.usersList.set(previousUsers);
+      const msg = err instanceof Error ? err.message : 'Помилка зміни стану доступу користувача';
+      this.triggerError(msg);
+      return false;
+    }
+  }
+
   async updateUserPermissions(
     userId: string,
     payload: {
       role?: UserRole;
+      status?: UserAccountStatus;
       name?: string;
       allowedTabs?: AppTabId[];
       allowedSettings?: SettingsSectionId[];
       assignedUtilityAccountIds?: string[];
       assignedClientIds?: string[];
       canManageOwnData?: boolean;
+      householdAccessLevel?: HouseholdAccessLevel;
+      memberTags?: MemberRelationTag[];
     }
   ): Promise<boolean> {
     const previousUsers = this.usersList();
@@ -1317,6 +1691,7 @@ export class IptvData {
         return {
           ...u,
           ...(payload.role !== undefined ? { role: payload.role } : {}),
+          ...(payload.status !== undefined ? { status: payload.status } : {}),
           ...(payload.name !== undefined ? { name: payload.name } : {}),
           ...(payload.allowedTabs !== undefined ? { allowedTabs: [...payload.allowedTabs] } : {}),
           ...(payload.allowedSettings !== undefined
@@ -1331,6 +1706,13 @@ export class IptvData {
           ...(payload.canManageOwnData !== undefined
             ? { canManageOwnData: payload.canManageOwnData }
             : {}),
+          ...(payload.householdAccessLevel !== undefined
+            ? {
+                householdAccessLevel: payload.householdAccessLevel,
+                canManageOwnData: payload.householdAccessLevel === 'full',
+              }
+            : {}),
+          ...(payload.memberTags !== undefined ? { memberTags: [...payload.memberTags] } : {}),
         };
       })
     );
@@ -1428,30 +1810,534 @@ export class IptvData {
     }
   }
 
+  // ============================================================================
+  // SHARED HOUSEHOLD & BUDGET INVITE LINKS + QR CODES (https://homehub3.ai.studio/)
+  // ============================================================================
+  readonly publicAppBaseUrl = 'https://homehub3.ai.studio/';
+  readonly memberRelationTagsCatalog = MEMBER_RELATION_TAGS;
+  readonly householdInvites = signal<HouseholdInvite[]>([]);
+  readonly sharedHouseholdMembers = signal<AppUser[]>([]);
+  readonly pendingInvitePreview = signal<HouseholdInvite | null>(null);
+  readonly isSharedHouseholdModalOpen = signal<boolean>(false);
+  readonly isCreatingInvite = signal<boolean>(false);
+  readonly isAcceptingInvite = signal<boolean>(false);
+
+  // Instant QR Code & User Type state for "Приєднатись за кодом" window
+  readonly qrInviteCode = signal<string>('');
+  readonly qrInviteUserType = signal<MemberRelationTag>('family');
+  readonly qrInviteAccessLevel = signal<HouseholdAccessLevel>('view_only');
+  readonly qrInviteIncludeBudget = signal<boolean>(true);
+  readonly qrInviteDataUrl = signal<string>('');
+  readonly cleanAppQrDataUrl = signal<string>('');
+  readonly isGeneratingQrInvite = signal<boolean>(false);
+
+  readonly qrInviteFullUrl = computed<string>(() => {
+    const code = this.qrInviteCode();
+    return code ? this.buildInviteUrl(code) : this.publicAppBaseUrl;
+  });
+
+  openSharedHouseholdModal(): void {
+    this.isSharedHouseholdModalOpen.set(true);
+    void this.initQrInviteModalState();
+  }
+
+  closeSharedHouseholdModal(): void {
+    this.isSharedHouseholdModalOpen.set(false);
+  }
+
+  async renderUrlToQrDataUrl(url: string): Promise<string> {
+    if (typeof window === 'undefined' || !url) return '';
+    try {
+      return await QRCode.toDataURL(url, {
+        width: 280,
+        margin: 2,
+        color: {
+          dark: '#0f172a',
+          light: '#ffffff',
+        },
+      });
+    } catch {
+      return '';
+    }
+  }
+
+  async initQrInviteModalState(): Promise<void> {
+    // 1. Always generate QR for clean app link https://homehub3.ai.studio/
+    if (!this.cleanAppQrDataUrl()) {
+      const cleanQr = await this.renderUrlToQrDataUrl(this.publicAppBaseUrl);
+      this.cleanAppQrDataUrl.set(cleanQr);
+    }
+
+    // 2. Fetch existing invites; if an active invite owned by current user exists, use it, otherwise create a fresh unique code
+    await this.fetchHouseholdInvites();
+    const myInvites = this.householdInvites();
+    if (myInvites.length > 0 && myInvites[0]?.code) {
+      const latest = myInvites[0];
+      this.qrInviteCode.set(latest.code);
+      if (Array.isArray(latest.memberTags) && latest.memberTags.length > 0) {
+        this.qrInviteUserType.set(latest.memberTags[0]);
+      }
+      if (latest.accessLevel === 'full' || latest.accessLevel === 'view_only') {
+        this.qrInviteAccessLevel.set(latest.accessLevel);
+      }
+      this.qrInviteIncludeBudget.set(latest.includeSharedBudget !== false);
+      const qr = await this.renderUrlToQrDataUrl(this.buildInviteUrl(latest.code));
+      this.qrInviteDataUrl.set(qr);
+    } else {
+      await this.generateFreshQrInvite(true);
+    }
+  }
+
+  async generateFreshQrInvite(silent = false): Promise<HouseholdInvite | null> {
+    this.isGeneratingQrInvite.set(true);
+    try {
+      const allIds = this.utilityAccounts().map((a) => a.id);
+      const inv = await this.createHouseholdInvite(
+        {
+          houseIds: allIds,
+          accessLevel: this.qrInviteAccessLevel(),
+          includeSharedBudget: this.qrInviteIncludeBudget(),
+          memberTags: [this.qrInviteUserType()],
+        },
+        silent
+      );
+      if (inv?.code) {
+        this.qrInviteCode.set(inv.code);
+        const qr = await this.renderUrlToQrDataUrl(this.buildInviteUrl(inv.code));
+        this.qrInviteDataUrl.set(qr);
+      }
+      return inv;
+    } finally {
+      this.isGeneratingQrInvite.set(false);
+    }
+  }
+
+  async updateQrInviteOptions(patch: {
+    userType?: MemberRelationTag;
+    accessLevel?: HouseholdAccessLevel;
+    includeSharedBudget?: boolean;
+  }): Promise<void> {
+    if (patch.userType) {
+      this.qrInviteUserType.set(patch.userType);
+    }
+    if (patch.accessLevel) {
+      this.qrInviteAccessLevel.set(patch.accessLevel);
+    }
+    if (patch.includeSharedBudget !== undefined) {
+      this.qrInviteIncludeBudget.set(patch.includeSharedBudget);
+    }
+
+    const code = this.qrInviteCode();
+    if (!code) {
+      await this.generateFreshQrInvite(true);
+      return;
+    }
+
+    try {
+      const res = await firstValueFrom(
+        this.http.put<{ success: boolean; invite: HouseholdInvite }>(
+          `/api/household/invites/${encodeURIComponent(code)}`,
+          {
+            memberTags: [this.qrInviteUserType()],
+            accessLevel: this.qrInviteAccessLevel(),
+            includeSharedBudget: this.qrInviteIncludeBudget(),
+          },
+          this.getAuthHeaders()
+        )
+      );
+      if (res?.invite) {
+        this.householdInvites.update((list) =>
+          list.map((item) => (item.code === code ? res.invite : item))
+        );
+      }
+    } catch {
+      // Fallback: generate a new invite if code was not found
+      await this.generateFreshQrInvite(true);
+    }
+  }
+
+  async fetchHouseholdInvites(): Promise<void> {
+    try {
+      const res = await firstValueFrom(
+        this.http.get<{ invites: HouseholdInvite[]; sharedMembers: AppUser[] }>(
+          '/api/household/invites',
+          this.getAuthHeaders()
+        )
+      );
+      this.householdInvites.set(Array.isArray(res?.invites) ? res.invites : []);
+      this.sharedHouseholdMembers.set(Array.isArray(res?.sharedMembers) ? res.sharedMembers : []);
+    } catch {
+      // ignore
+    }
+  }
+
+  async createHouseholdInvite(
+    payload: {
+      houseIds: string[];
+      accessLevel: HouseholdAccessLevel;
+      includeSharedBudget: boolean;
+      memberTags: MemberRelationTag[];
+      label?: string;
+    },
+    silent = false
+  ): Promise<HouseholdInvite | null> {
+    this.isCreatingInvite.set(true);
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{ success: boolean; invite: HouseholdInvite }>(
+          '/api/household/invites',
+          payload,
+          this.getAuthHeaders()
+        )
+      );
+      if (res?.invite) {
+        this.householdInvites.update((list) => [res.invite, ...list]);
+        this.qrInviteCode.set(res.invite.code);
+        void this.renderUrlToQrDataUrl(this.buildInviteUrl(res.invite.code)).then((qr) => {
+          if (qr) this.qrInviteDataUrl.set(qr);
+        });
+        if (!silent) {
+          this.triggerSuccess('Invite-посилання та QR-код для спільного дому та бюджету створено!');
+        }
+        return res.invite;
+      }
+      return null;
+    } catch (err: unknown) {
+      if (!silent) {
+        const httpErr = err as { error?: { error?: string }; message?: string };
+        this.triggerError(httpErr?.error?.error || httpErr?.message || 'Помилка створення Invite-посилання');
+      }
+      return null;
+    } finally {
+      this.isCreatingInvite.set(false);
+    }
+  }
+
+  async deleteHouseholdInvite(inviteId: string): Promise<boolean> {
+    try {
+      await firstValueFrom(
+        this.http.delete(`/api/household/invites/${inviteId}`, this.getAuthHeaders())
+      );
+      this.householdInvites.update((list) =>
+        list.filter((i) => i.id !== inviteId && i.code !== inviteId)
+      );
+      this.triggerSuccess('Запрошення видалено');
+      return true;
+    } catch {
+      this.triggerError('Не вдалося видалити запрошення');
+      return false;
+    }
+  }
+
+  async fetchInvitePreview(rawCodeOrUrl: string): Promise<HouseholdInvite | null> {
+    const cleaned = this.extractInviteCode(rawCodeOrUrl);
+    if (!cleaned) return null;
+    try {
+      const res = await firstValueFrom(
+        this.http.get<{ success: boolean; invite: HouseholdInvite }>(
+          `/api/household/invites/${encodeURIComponent(cleaned)}`,
+          this.getAuthHeaders()
+        )
+      );
+      if (res?.invite) {
+        this.pendingInvitePreview.set(res.invite);
+        return res.invite;
+      }
+      return null;
+    } catch (err: unknown) {
+      const httpErr = err as { error?: { error?: string }; message?: string };
+      this.triggerError(httpErr?.error?.error || 'Запрошення не знайдено або вже недійсне');
+      return null;
+    }
+  }
+
+  async acceptHouseholdInvite(rawCodeOrUrl: string): Promise<boolean> {
+    const cleaned = this.extractInviteCode(rawCodeOrUrl);
+    if (!cleaned) return false;
+    this.isAcceptingInvite.set(true);
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{ success: boolean; user: AppUser; invite: HouseholdInvite }>(
+          `/api/household/invites/${encodeURIComponent(cleaned)}/accept`,
+          {},
+          this.getAuthHeaders()
+        )
+      );
+      if (res?.user) {
+        this.currentUser.set({ ...this.currentUser()!, ...res.user });
+        this.pendingInvitePreview.set(null);
+        await Promise.all([
+          this.fetchUtilityData(),
+          this.fetchBudget(),
+          this.fetchUsers(),
+          this.fetchHouseholdInvites(),
+        ]);
+        this.triggerSuccess(
+          `Ви успішно приєдналися до спільного дому (${res.invite?.houseNames?.join(', ') || 'Будинок'})!`
+        );
+        return true;
+      }
+      return false;
+    } catch (err: unknown) {
+      const httpErr = err as { error?: { error?: string }; message?: string };
+      this.triggerError(httpErr?.error?.error || 'Не вдалося прийняти запрошення');
+      return false;
+    } finally {
+      this.isAcceptingInvite.set(false);
+    }
+  }
+
+  extractInviteCode(raw: string): string {
+    const trimmed = (raw || '').trim();
+    if (!trimmed) return '';
+    try {
+      if (trimmed.includes('invite=')) {
+        const match = trimmed.match(/[?&]invite=([^&#]+)/);
+        if (match?.[1]) return decodeURIComponent(match[1]);
+      }
+    } catch {
+      // ignore
+    }
+    return trimmed;
+  }
+
+  buildInviteUrl(code: string): string {
+    return `${this.publicAppBaseUrl}?invite=${encodeURIComponent(code)}`;
+  }
+
+  getCleanAppShareUrl(): string {
+    return this.publicAppBaseUrl;
+  }
+
+  // ============================================================================
+  // WEB PUSH NOTIFICATIONS (VAPID) FOR DTEK SCHEDULE CHANGES
+  // ============================================================================
+  readonly isPushSupported = signal<boolean>(false);
+  readonly isPushSubscribed = signal<boolean>(false);
+  readonly isPushLoading = signal<boolean>(false);
+  readonly pushStatusMessage = signal<string>('');
+  readonly pushMonitoredQueue = signal<string>('GPV4.1');
+  readonly pushCountdownSeconds = signal<number>(0);
+  private currentPushEndpoint: string | null = null;
+
+  private urlBase64ToUint8Array(base64String: string): Uint8Array {
+    const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) {
+      outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+  }
+
+  async initWebPushState(): Promise<void> {
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+      this.isPushSupported.set(false);
+      return;
+    }
+    this.isPushSupported.set(true);
+    try {
+      const reg = await navigator.serviceWorker.register('/sw.js');
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        this.currentPushEndpoint = sub.endpoint;
+        this.isPushSubscribed.set(true);
+        const q = this.dtekShutdownInfo()?.queueGroup || 'GPV4.1';
+        this.pushMonitoredQueue.set(q);
+      } else {
+        this.isPushSubscribed.set(false);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  async enableWebPushNotifications(customQueue?: string): Promise<boolean> {
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+      this.triggerError('Ваш браузер не підтримує Web Push. На iPhone додайте додаток на Початковий екран (iOS 16.4+).');
+      return false;
+    }
+    this.isPushLoading.set(true);
+    this.pushStatusMessage.set('');
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        this.triggerError('Дозвіл на сповіщення відхилено у налаштуваннях браузера');
+        return false;
+      }
+
+      const reg = await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.ready;
+
+      const vapidRes = await firstValueFrom(
+        this.http.get<{ publicKey: string }>('/api/push/vapid-public-key', this.getAuthHeaders())
+      );
+      if (!vapidRes?.publicKey) {
+        this.triggerError('Не вдалося отримати VAPID-ключ сервера');
+        return false;
+      }
+
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        const convertedKey = this.urlBase64ToUint8Array(vapidRes.publicKey);
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: convertedKey.buffer as ArrayBuffer,
+        });
+      }
+
+      const dtek = this.dtekShutdownInfo();
+      const activeHouse = this.activeDtekAccount();
+      const queueGroup =
+        customQueue ||
+        dtek?.queueGroup ||
+        activeHouse?.dtekQueueGroup ||
+        this.pushMonitoredQueue() ||
+        'GPV4.1';
+
+      this.pushMonitoredQueue.set(queueGroup);
+      this.currentPushEndpoint = sub.endpoint;
+
+      await firstValueFrom(
+        this.http.post(
+          '/api/push/subscribe',
+          {
+            subscription: sub.toJSON(),
+            queueGroup,
+            city: dtek?.city || activeHouse?.city,
+            street: dtek?.street || activeHouse?.street,
+            houseNum: dtek?.houseNum || activeHouse?.houseNum,
+            deviceLabel: navigator.userAgent.includes('Mobile') ? 'Смартфон' : 'Компʼютер / Браузер',
+          },
+          this.getAuthHeaders()
+        )
+      );
+
+      this.isPushSubscribed.set(true);
+      this.pushStatusMessage.set(`Підписано на зміни графіку (${queueGroup.replace('GPV', 'Черга ')})`);
+      this.triggerSuccess(`Фонові Web Push-сповіщення увімкнено для ${queueGroup.replace('GPV', 'Черги ')}!`);
+      return true;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Помилка підписки на Web Push';
+      this.triggerError(msg);
+      return false;
+    } finally {
+      this.isPushLoading.set(false);
+    }
+  }
+
+  async disableWebPushNotifications(): Promise<boolean> {
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return false;
+    this.isPushLoading.set(true);
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      const sub = await reg?.pushManager.getSubscription();
+      const endpoint = sub?.endpoint || this.currentPushEndpoint;
+      if (sub) {
+        await sub.unsubscribe();
+      }
+      if (endpoint) {
+        await firstValueFrom(
+          this.http.post('/api/push/unsubscribe', { endpoint }, this.getAuthHeaders())
+        );
+      }
+      this.isPushSubscribed.set(false);
+      this.currentPushEndpoint = null;
+      this.pushStatusMessage.set('Фонові сповіщення вимкнено');
+      this.triggerSuccess('Фонові Web Push-сповіщення вимкнено');
+      return true;
+    } catch {
+      return false;
+    } finally {
+      this.isPushLoading.set(false);
+    }
+  }
+
+  async triggerDelayedWebPushTest(delaySeconds = 5, simulateScheduleDiff = true): Promise<boolean> {
+    if (!this.isPushSubscribed()) {
+      const ok = await this.enableWebPushNotifications();
+      if (!ok) return false;
+    }
+    this.pushCountdownSeconds.set(delaySeconds);
+    this.pushStatusMessage.set(
+      `Згорніть браузер або заблокуйте телефон! Сповіщення надійде через ${delaySeconds} сек...`
+    );
+
+    const timer = setInterval(() => {
+      const cur = this.pushCountdownSeconds();
+      if (cur <= 1) {
+        clearInterval(timer);
+        this.pushCountdownSeconds.set(0);
+        this.pushStatusMessage.set('Push-пакет про зміну графіку відправлено на пристрій!');
+      } else {
+        this.pushCountdownSeconds.set(cur - 1);
+      }
+    }, 1000);
+
+    try {
+      await firstValueFrom(
+        this.http.post(
+          '/api/push/test-delayed',
+          {
+            endpoint: this.currentPushEndpoint,
+            delaySeconds,
+            queueGroup: this.dtekShutdownInfo()?.queueGroup || this.pushMonitoredQueue() || 'GPV4.1',
+            simulateScheduleDiff,
+          },
+          this.getAuthHeaders()
+        )
+      );
+      return true;
+    } catch (err: unknown) {
+      clearInterval(timer);
+      this.pushCountdownSeconds.set(0);
+      const httpErr = err as { error?: { error?: string }; message?: string };
+      this.triggerError(httpErr?.error?.error || httpErr?.message || 'Помилка відправки тестового Push');
+      return false;
+    }
+  }
+
   async refreshAllData(silent = false): Promise<void> {
+    if (this.inFlightRefreshAllPromise) {
+      return this.inFlightRefreshAllPromise;
+    }
     if (!silent) {
       this.isLoading.set(true);
     }
-    try {
-      await Promise.all([
-        this.fetchClients(),
-        this.fetchPayments(),
-        this.fetchSettings(),
-        this.fetchStats(),
-        this.fetchAccounts(),
-        this.fetchBudget(),
-        this.fetchDbStatus(),
-        this.fetchUtilityData(),
-        this.fetchDtekShutdowns(),
-      ]);
-      this.lastAutoSyncTime.set(new Date().toISOString());
-    } catch (err) {
-      console.warn('Error refreshing all application data:', err);
-    } finally {
-      if (!silent) {
-        this.isLoading.set(false);
+    this.inFlightRefreshAllPromise = (async () => {
+      try {
+        // Stagger requests into two small waves to avoid Cloud Run 429 burst rate-limiting
+        await Promise.all([
+          this.fetchSettings(),
+          this.fetchUtilityData(),
+          this.fetchClients(),
+          this.fetchPayments(),
+        ]);
+        if (Date.now() >= this.apiRateLimitCooldownUntil) {
+          await Promise.all([
+            this.fetchAccounts(),
+            this.fetchBudget(),
+            this.fetchStats(),
+            this.fetchDbStatus(),
+          ]);
+        }
+        if (!this.dtekShutdownInfo() && Date.now() >= this.apiRateLimitCooldownUntil) {
+          await this.fetchDtekShutdowns();
+        }
+        this.lastAutoSyncTime.set(new Date().toISOString());
+      } catch (err) {
+        if (!this.isRateLimitError(err)) {
+          console.warn('Error refreshing application data:', err);
+        }
+      } finally {
+        this.inFlightRefreshAllPromise = null;
+        if (!silent) {
+          this.isLoading.set(false);
+        }
       }
-    }
+    })();
+    return this.inFlightRefreshAllPromise;
   }
 
   async initData(): Promise<void> {
@@ -1475,22 +2361,9 @@ export class IptvData {
     }
 
     try {
-      await Promise.all([
-        this.fetchSettings(),
-        this.fetchDtekShutdowns(),
-      ]);
-    } catch (e) {
-      console.debug('Direct fetch settings or DTEK error on init:', e);
-    }
-
-    try {
-      await this.syncCloudDatabase(true);
+      await this.refreshAllData(true);
     } catch {
-      try {
-        await this.refreshAllData(true);
-      } catch {
-        this.loadFromLocalStorage();
-      }
+      this.loadFromLocalStorage();
     } finally {
       this.isLoading.set(false);
     }
@@ -1691,6 +2564,18 @@ export class IptvData {
       );
       if (info && Array.isArray(info.hourlySchedule)) {
         this.dtekShutdownInfo.set(info);
+        if (forceRefresh) {
+          if (info.didFetchLiveFromDtek) {
+            this.triggerSuccess(
+              `Графік ДТЕК оновлено з сайту та збережено в БД (${info.lastDtekFetchAt || info.fetchedAt || 'щойно'})!`
+            );
+          } else if (info.refreshSkippedByCooldown) {
+            const mins = info.minutesUntilNextRefresh || 1;
+            this.triggerSuccess(
+              `Графік завантажено з БД (останній запит до ДТЕК: ${info.lastDtekFetchAt || info.fetchedAt || 'нещодавно'}). Наступний запит на сайт ДТЕК можливий через ${mins} хв (інтервал 20 хв).`
+            );
+          }
+        }
         return info;
       }
       const fallback = this.buildLocalFallbackDtekInfo(resolvedCity, resolvedStreet, resolvedHouse);
@@ -1766,13 +2651,13 @@ export class IptvData {
     }
   }
 
-  async switchDatabaseMode(mode: 'sqlite_local' | 'cloudsql' | 'external'): Promise<boolean> {
+  async switchDatabaseMode(mode: string): Promise<boolean> {
     this.isSwitchingDb.set(true);
     try {
       const res = await firstValueFrom(
         this.http.post<{
           success: boolean;
-          activeMode: 'sqlite_local' | 'cloudsql' | 'external';
+          activeMode: string;
           provider: string;
           databaseId: string;
           message: string;
@@ -1782,12 +2667,7 @@ export class IptvData {
       await this.refreshAllData(true);
       await this.fetchDbStatus();
       this.triggerSuccess(
-        res.message ||
-          (mode === 'sqlite_local'
-            ? 'Перемкнуто на SQLite / In-Memory Local Cache!'
-            : mode === 'cloudsql'
-            ? 'Перемкнуто на Google Cloud SQL!'
-            : 'Перемкнуто на зовнішню PostgreSQL (Aiven Cloud)!')
+        res.message || `Перемкнуто активну базу даних: ${res.provider || mode}`
       );
       this.broadcastDataChange();
       return true;
@@ -1862,10 +2742,8 @@ export class IptvData {
 
   async addCustomDatabase(payload: {
     name: string;
-    type: 'postgresql' | 'sqlite' | 'firestore' | 'mysql';
-    host?: string;
-    database: string;
-    description?: string;
+    connectionUrl: string;
+    type?: string;
     connectionString?: string;
   }): Promise<boolean> {
     try {
@@ -1935,33 +2813,55 @@ export class IptvData {
   }
 
   async fetchClients(): Promise<void> {
-    try {
-      const data = await firstValueFrom(this.http.get<Client[]>('/api/clients', this.getAuthHeaders()));
-      if (Array.isArray(data)) {
-        const mapped = data.map((c) => ({
-          ...c,
-          subscriptionPlan: c.subscriptionPlan || (c.monthlyPrice >= 150 ? '2usd' : '1usd'),
-          costUsd: c.costUsd || (c.subscriptionPlan === '2usd' ? 2 : 1),
-          status: computeClientStatus(c),
-        }));
-        this.clients.set(mapped);
-        this.saveClientsLocal(mapped);
+    if (Date.now() < this.apiRateLimitCooldownUntil) return;
+    if (this.inFlightClientsPromise) return this.inFlightClientsPromise;
+    this.inFlightClientsPromise = (async () => {
+      try {
+        const data = await firstValueFrom(this.http.get<Client[]>('/api/clients', this.getAuthHeaders()));
+        if (Array.isArray(data)) {
+          const mapped = data.map((c) => ({
+            ...c,
+            subscriptionPlan: c.subscriptionPlan || (c.monthlyPrice >= 150 ? '2usd' : '1usd'),
+            costUsd: c.costUsd || (c.subscriptionPlan === '2usd' ? 2 : 1),
+            status: computeClientStatus(c),
+          }));
+          this.clients.set(mapped);
+          this.saveClientsLocal(mapped);
+        }
+      } catch (err) {
+        if (this.isRateLimitError(err)) {
+          this.activateRateLimitCooldown();
+        } else {
+          console.warn('Notice: could not fetch clients:', err);
+        }
+      } finally {
+        this.inFlightClientsPromise = null;
       }
-    } catch (err) {
-      console.error('Error fetching clients:', err);
-    }
+    })();
+    return this.inFlightClientsPromise;
   }
 
   async fetchPayments(): Promise<void> {
-    try {
-      const data = await firstValueFrom(this.http.get<PaymentTransaction[]>('/api/payments', this.getAuthHeaders()));
-      if (Array.isArray(data)) {
-        this.payments.set(data);
-        this.savePaymentsLocal(data);
+    if (Date.now() < this.apiRateLimitCooldownUntil) return;
+    if (this.inFlightPaymentsPromise) return this.inFlightPaymentsPromise;
+    this.inFlightPaymentsPromise = (async () => {
+      try {
+        const data = await firstValueFrom(this.http.get<PaymentTransaction[]>('/api/payments', this.getAuthHeaders()));
+        if (Array.isArray(data)) {
+          this.payments.set(data);
+          this.savePaymentsLocal(data);
+        }
+      } catch (err) {
+        if (this.isRateLimitError(err)) {
+          this.activateRateLimitCooldown();
+        } else {
+          console.warn('Notice: could not fetch payments:', err);
+        }
+      } finally {
+        this.inFlightPaymentsPromise = null;
       }
-    } catch (err) {
-      console.error('Error fetching payments:', err);
-    }
+    })();
+    return this.inFlightPaymentsPromise;
   }
 
   async fetchSettings(force = false): Promise<void> {
@@ -1990,6 +2890,7 @@ export class IptvData {
           this.lastSettingsFetchTime = Date.now();
           this.settingsCooldownUntil = 0;
         }
+        await this.fetchUserAndSystemSettings();
       } catch (err: unknown) {
         const httpErr = err as { status?: number; message?: string };
         if (httpErr?.status === 429) {
@@ -2007,42 +2908,163 @@ export class IptvData {
     return this.inFlightSettingsPromise;
   }
 
-  async fetchStats(): Promise<void> {
+  async fetchUserAndSystemSettings(): Promise<void> {
     try {
-      const data = await firstValueFrom(
-        this.http.get<{ summary: StatsSummary; monthlyBreakdown: MonthRevenueStat[] }>('/api/stats', this.getAuthHeaders())
+      const res = await firstValueFrom(
+        this.http.get<{
+          userSettings?: UserPersonalSettings;
+          allUserSettings?: Record<string, UserPersonalSettings>;
+          systemSettingsConfig?: SystemSettingsConfig;
+        }>('/api/user-settings', this.getAuthHeaders())
       );
-      if (data && data.monthlyBreakdown) {
-        this.monthlyStats.set(data.monthlyBreakdown);
+      if (res?.userSettings) {
+        this.userPersonalSettings.set(res.userSettings);
+      }
+      if (res?.allUserSettings) {
+        this.allUsersPersonalSettings.set(res.allUserSettings);
+      }
+      if (res?.systemSettingsConfig) {
+        this.systemSettingsConfig.set(res.systemSettingsConfig);
       }
     } catch (err) {
-      console.error('Error fetching stats:', err);
+      console.warn('Notice: could not fetch user/system settings:', err);
     }
+  }
+
+  async saveUserPersonalSettings(
+    patch: Partial<UserPersonalSettings>,
+    targetUserId?: string
+  ): Promise<boolean> {
+    try {
+      const payload = { ...patch, ...(targetUserId ? { targetUserId } : {}) };
+      const res = await firstValueFrom(
+        this.http.post<{
+          success: boolean;
+          userSettings: UserPersonalSettings;
+          allUserSettings?: Record<string, UserPersonalSettings>;
+          message?: string;
+        }>('/api/user-settings', payload, this.getAuthHeaders())
+      );
+      if (res?.userSettings) {
+        const currentUid = this.currentUser()?.id || 'anonymous';
+        if (!targetUserId || targetUserId === currentUid) {
+          this.userPersonalSettings.set(res.userSettings);
+        }
+        if (res.allUserSettings) {
+          this.allUsersPersonalSettings.set(res.allUserSettings);
+        } else {
+          this.allUsersPersonalSettings.update((prev) => ({
+            ...prev,
+            [res.userSettings.userId]: res.userSettings,
+          }));
+        }
+      }
+      this.triggerSuccess(res?.message || 'Індивідуальні налаштування збережено!');
+      return true;
+    } catch (err) {
+      console.error('Error saving user personal settings:', err);
+      this.triggerError('Помилка збереження користувацьких налаштувань');
+      return false;
+    }
+  }
+
+  async saveSystemSettingsScopes(
+    scopesConfig: Record<string, SettingScopeType>,
+    systemValues?: Record<string, unknown>
+  ): Promise<boolean> {
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{
+          success: boolean;
+          systemSettingsConfig: SystemSettingsConfig;
+          message?: string;
+        }>(
+          '/api/system-settings-config',
+          { scopesConfig, systemValues },
+          this.getAuthHeaders()
+        )
+      );
+      if (res?.systemSettingsConfig) {
+        this.systemSettingsConfig.set(res.systemSettingsConfig);
+      }
+      this.triggerSuccess(res?.message || 'Системні налаштування збережено!');
+      return true;
+    } catch (err) {
+      console.error('Error saving system settings scopes:', err);
+      this.triggerError('Помилка збереження системних налаштувань');
+      return false;
+    }
+  }
+
+  async fetchStats(): Promise<void> {
+    if (Date.now() < this.apiRateLimitCooldownUntil) return;
+    if (this.inFlightStatsPromise) return this.inFlightStatsPromise;
+    this.inFlightStatsPromise = (async () => {
+      try {
+        const data = await firstValueFrom(
+          this.http.get<{ summary: StatsSummary; monthlyBreakdown: MonthRevenueStat[] }>('/api/stats', this.getAuthHeaders())
+        );
+        if (data && data.monthlyBreakdown) {
+          this.monthlyStats.set(data.monthlyBreakdown);
+        }
+      } catch (err) {
+        if (this.isRateLimitError(err)) {
+          this.activateRateLimitCooldown();
+        } else {
+          console.warn('Notice: could not fetch stats:', err);
+        }
+      } finally {
+        this.inFlightStatsPromise = null;
+      }
+    })();
+    return this.inFlightStatsPromise;
   }
 
   async fetchAccounts(): Promise<void> {
-    try {
-      const data = await firstValueFrom(this.http.get<ProviderAccountDetailed[]>('/api/accounts', this.getAuthHeaders()));
-      if (Array.isArray(data)) {
-        this.accounts.set(data);
+    if (Date.now() < this.apiRateLimitCooldownUntil) return;
+    if (this.inFlightAccountsPromise) return this.inFlightAccountsPromise;
+    this.inFlightAccountsPromise = (async () => {
+      try {
+        const data = await firstValueFrom(this.http.get<ProviderAccountDetailed[]>('/api/accounts', this.getAuthHeaders()));
+        if (Array.isArray(data)) {
+          this.accounts.set(data);
+        }
+      } catch (err) {
+        if (this.isRateLimitError(err)) {
+          this.activateRateLimitCooldown();
+        } else {
+          console.warn('Notice: could not fetch accounts:', err);
+        }
+      } finally {
+        this.inFlightAccountsPromise = null;
       }
-    } catch (err) {
-      console.error('Error fetching accounts:', err);
-    }
+    })();
+    return this.inFlightAccountsPromise;
   }
 
   async fetchBudget(): Promise<void> {
-    try {
-      const res = await firstValueFrom(this.http.get<BudgetApiResponse>('/api/budget', this.getAuthHeaders()));
-      if (res) {
-        this.budgetSummary.set(res.summary);
-        this.deposits.set(res.deposits || []);
-        this.providerAdjustments.set(res.adjustments || []);
-        this.ledger.set(res.ledger || []);
+    if (Date.now() < this.apiRateLimitCooldownUntil) return;
+    if (this.inFlightBudgetPromise) return this.inFlightBudgetPromise;
+    this.inFlightBudgetPromise = (async () => {
+      try {
+        const res = await firstValueFrom(this.http.get<BudgetApiResponse>('/api/budget', this.getAuthHeaders()));
+        if (res) {
+          this.budgetSummary.set(res.summary);
+          this.deposits.set(res.deposits || []);
+          this.providerAdjustments.set(res.adjustments || []);
+          this.ledger.set(res.ledger || []);
+        }
+      } catch (err) {
+        if (this.isRateLimitError(err)) {
+          this.activateRateLimitCooldown();
+        } else {
+          console.warn('Notice: could not fetch budget:', err);
+        }
+      } finally {
+        this.inFlightBudgetPromise = null;
       }
-    } catch (err) {
-      console.error('Error fetching budget:', err);
-    }
+    })();
+    return this.inFlightBudgetPromise;
   }
 
   async addAccount(accountData: Partial<ProviderAccount>): Promise<ProviderAccount | null> {
@@ -2744,54 +3766,62 @@ export class IptvData {
 
   // Utility APIs (Electricity, Water, Waste)
   async fetchUtilityData(): Promise<void> {
-    try {
-      const data = await firstValueFrom(
-        this.http.get<{ accounts: UtilityAccount[]; readings: UtilityReading[] }>('/api/utility/data', this.getAuthHeaders())
-      );
-      if (data) {
-        if (Array.isArray(data.accounts)) {
-          this.utilityAccounts.set(data.accounts);
-          this.saveUtilityAccountsLocal(data.accounts);
+    if (Date.now() < this.apiRateLimitCooldownUntil) return;
+    if (this.inFlightUtilityPromise) return this.inFlightUtilityPromise;
+    this.inFlightUtilityPromise = (async () => {
+      try {
+        const data = await firstValueFrom(
+          this.http.get<{ accounts: UtilityAccount[]; readings: UtilityReading[] }>('/api/utility/data', this.getAuthHeaders())
+        );
+        if (data) {
+          if (Array.isArray(data.accounts)) {
+            this.utilityAccounts.set(data.accounts);
+            this.saveUtilityAccountsLocal(data.accounts);
 
-          // Automatically resolve single or default house and fetch DTEK schedule for its address
-          const elecAccs = data.accounts.filter((a) => a.type === 'electricity');
-          if (elecAccs.length > 0) {
-            const userDefaultId = this.currentUser()?.defaultUtilityAccountId;
-            const currentSelectedId = this.selectedDtekAccountId();
-            let resolvedAcc = elecAccs[0];
-            if (elecAccs.length === 1) {
-              resolvedAcc = elecAccs[0];
-            } else if (currentSelectedId && elecAccs.some((a) => a.id === currentSelectedId)) {
-              resolvedAcc = elecAccs.find((a) => a.id === currentSelectedId)!;
-            } else if (userDefaultId && elecAccs.some((a) => a.id === userDefaultId)) {
-              resolvedAcc = elecAccs.find((a) => a.id === userDefaultId)!;
-            }
-            this.selectedDtekAccountId.set(resolvedAcc.id);
-            const city = resolvedAcc.city || 'с-ще Окни';
-            const street = resolvedAcc.street || 'вул. Шкільна';
-            const house = resolvedAcc.houseNum || '11';
-            const currentInfo = this.dtekShutdownInfo();
-            if (
-              !currentInfo ||
-              currentInfo.city !== city ||
-              currentInfo.street !== street ||
-              currentInfo.houseNum !== house
-            ) {
-              this.fetchDtekShutdowns(city, street, house);
+            // Automatically resolve single or default house and fetch DTEK schedule for its address
+            const elecAccs = data.accounts.filter((a) => a.type === 'electricity');
+            if (elecAccs.length > 0) {
+              const userDefaultId = this.currentUser()?.defaultUtilityAccountId;
+              const currentSelectedId = this.selectedDtekAccountId();
+              let resolvedAcc = elecAccs[0];
+              if (elecAccs.length === 1) {
+                resolvedAcc = elecAccs[0];
+              } else if (currentSelectedId && elecAccs.some((a) => a.id === currentSelectedId)) {
+                resolvedAcc = elecAccs.find((a) => a.id === currentSelectedId)!;
+              } else if (userDefaultId && elecAccs.some((a) => a.id === userDefaultId)) {
+                resolvedAcc = elecAccs.find((a) => a.id === userDefaultId)!;
+              }
+              this.selectedDtekAccountId.set(resolvedAcc.id);
+              const city = resolvedAcc.city || 'с-ще Окни';
+              const street = resolvedAcc.street || 'вул. Шкільна';
+              const house = resolvedAcc.houseNum || '11';
+              const currentInfo = this.dtekShutdownInfo();
+              if (
+                !currentInfo ||
+                currentInfo.city !== city ||
+                currentInfo.street !== street ||
+                currentInfo.houseNum !== house
+              ) {
+                void this.fetchDtekShutdowns(city, street, house);
+              }
             }
           }
+          if (Array.isArray(data.readings)) {
+            this.utilityReadings.set(data.readings);
+            this.saveUtilityReadingsLocal(data.readings);
+          }
         }
-        if (Array.isArray(data.readings)) {
-          this.utilityReadings.set(data.readings);
-          this.saveUtilityReadingsLocal(data.readings);
+      } catch (err) {
+        if (this.isRateLimitError(err)) {
+          this.activateRateLimitCooldown();
+        } else {
+          console.warn('Error fetching utility data:', err);
         }
+      } finally {
+        this.inFlightUtilityPromise = null;
       }
-      if (this.isAdmin()) {
-        await this.fetchAdminUtilityAccounts();
-      }
-    } catch (err) {
-      console.warn('Error fetching utility data:', err);
-    }
+    })();
+    return this.inFlightUtilityPromise;
   }
 
   async selectDtekAccountForSchedule(accountId: string): Promise<void> {
@@ -3207,15 +4237,87 @@ export class IptvData {
     }
   }
 
-  async updateUtilityTariffs(tariffs: Partial<UtilityTariffsSettings>): Promise<void> {
-    const current = this.settings();
-    const currentTariffs = current.utilityTariffsSettings || DEFAULT_UTILITY_TARIFFS;
-    const mergedTariffs: UtilityTariffsSettings = {
-      ...currentTariffs,
+  async updateUtilityTariffs(
+    tariffs: Partial<UtilityTariffsSettings>,
+    options?: { forceSystem?: boolean; targetUserId?: string }
+  ): Promise<void> {
+    const forceSystem = Boolean(options?.forceSystem);
+    const targetUserId = options?.targetUserId;
+
+    if (forceSystem && this.isAdmin()) {
+      const current = this.settings();
+      const currentTariffs = current.utilityTariffsSettings || DEFAULT_UTILITY_TARIFFS;
+      const mergedTariffs: UtilityTariffsSettings = {
+        ...currentTariffs,
+        ...tariffs,
+      };
+      await this.saveSettings({
+        utilityTariffsSettings: mergedTariffs,
+      });
+      return;
+    }
+
+    const baseTariffs = targetUserId
+      ? this.getUserEffectiveTariffs(targetUserId)
+      : this.utilityTariffs();
+    const merged = normalizeUtilityTariffs({
+      ...baseTariffs,
       ...tariffs,
-    };
-    await this.saveSettings({
-      utilityTariffsSettings: mergedTariffs,
+    });
+
+    const userPatch: Partial<UserPersonalSettings> = {};
+    if (tariffs.electricitySingle !== undefined || tariffs.electricityDual !== undefined) {
+      userPatch.electricityTariffs = {
+        electricitySingle: merged.electricitySingle,
+        electricityDual: merged.electricityDual,
+      };
+    }
+    if (tariffs.water !== undefined) {
+      userPatch.waterTariffs = merged.water;
+    }
+    if (tariffs.waste !== undefined) {
+      userPatch.wasteTariffs = merged.waste;
+    }
+
+    await this.saveUserPersonalSettings(userPatch, targetUserId);
+
+    // If admin is editing and a section is configured as 'system', also persist to global settings
+    if (this.isAdmin() && !targetUserId) {
+      const elecSys = this.getSettingScope('electricity_tariffs') === 'system';
+      const waterSys = this.getSettingScope('water_tariffs') === 'system';
+      const wasteSys = this.getSettingScope('waste_tariffs') === 'system';
+      if (elecSys || waterSys || wasteSys) {
+        const current = this.settings();
+        const sysTariffs = current.utilityTariffsSettings || DEFAULT_UTILITY_TARIFFS;
+        await this.saveSettings({
+          utilityTariffsSettings: {
+            ...sysTariffs,
+            ...(elecSys
+              ? {
+                  electricitySingle: merged.electricitySingle,
+                  electricityDual: merged.electricityDual,
+                }
+              : {}),
+            ...(waterSys ? { water: merged.water } : {}),
+            ...(wasteSys ? { waste: merged.waste } : {}),
+          },
+        });
+      }
+    }
+  }
+
+  getUserEffectiveTariffs(userId: string): UtilityTariffsSettings {
+    const sys = this.systemUtilityTariffs();
+    const allMap = this.allUsersPersonalSettings();
+    const usr =
+      userId === this.currentUser()?.id ? this.userPersonalSettings() : allMap[userId];
+    if (!usr) return sys;
+    return normalizeUtilityTariffs({
+      ...sys,
+      electricitySingle: usr.electricityTariffs?.electricitySingle || sys.electricitySingle,
+      electricityDual: usr.electricityTariffs?.electricityDual || sys.electricityDual,
+      water: usr.waterTariffs || sys.water,
+      waste: usr.wasteTariffs || sys.waste,
     });
   }
 
@@ -3257,14 +4359,25 @@ export class IptvData {
   ): Promise<boolean> {
     if (typeof window === 'undefined') return false;
 
+    const currentUser = this.currentUser();
+    const currentUserId = currentUser?.id || '';
+
+    const taggedHouseDevices: ElectricityDevice[] = devices.map((d) => ({
+      ...d,
+      accountId,
+      ownerUserId: d.ownerUserId || currentUserId,
+    }));
+
     const existingAcc = this.utilityAccounts().find((a) => a.id === accountId);
-    // Immediate optimistic update in signal state
+
+    // Immediate optimistic update in signal state for this house
     this.utilityAccounts.update((list) =>
-      list.map((acc) => (acc.id === accountId ? { ...acc, devices } : acc))
+      list.map((acc) => (acc.id === accountId ? { ...acc, devices: taggedHouseDevices } : acc))
     );
 
     const payload = {
-      devices,
+      userId: currentUserId,
+      devices: taggedHouseDevices,
       accountName: existingAcc?.name,
       accountNumber: existingAcc?.accountNumber,
       address: existingAcc?.address,
@@ -3320,6 +4433,28 @@ export class IptvData {
         this.triggerSuccess(successNotice);
       }
       return true;
+    }
+  }
+
+  async fetchUtilityWeather(
+    city: string,
+    month?: string,
+    date?: string
+  ): Promise<UtilityWeatherResponse | null> {
+    if (typeof window === 'undefined') return null;
+    try {
+      const params = new URLSearchParams();
+      if (city) params.set('city', city);
+      if (month) params.set('month', month);
+      if (date) params.set('date', date);
+      return await firstValueFrom(
+        this.http.get<UtilityWeatherResponse>(
+          `/api/utility/weather?${params.toString()}`,
+          this.getAuthHeaders()
+        )
+      );
+    } catch {
+      return null;
     }
   }
 

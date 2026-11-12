@@ -215,4 +215,21 @@ export const users = pgTable('users', {
   lastLoginAt: text('last_login_at'),
 });
 
+export const userSettings = pgTable('user_settings', {
+  userId: text('user_id').primaryKey(),
+  themeMode: text('theme_mode').notNull().default('light'),
+  outageScheduleViewVariant: text('outage_schedule_view_variant').notNull().default('v10_minimal_pills'),
+  hiddenHouseTabs: jsonb('hidden_house_tabs').$type<Record<string, string[]>>().notNull().default({}),
+  electricityTariffs: jsonb('electricity_tariffs').$type<Record<string, unknown>>(),
+  waterTariffs: jsonb('water_tariffs').$type<Record<string, unknown>>(),
+  wasteTariffs: jsonb('waste_tariffs').$type<Record<string, unknown>>(),
+  customPreferences: jsonb('custom_preferences').$type<Record<string, unknown>>().notNull().default({}),
+  updatedAt: text('updated_at').notNull(),
+});
 
+export const systemSettingsConfig = pgTable('system_settings_config', {
+  id: text('id').primaryKey(),
+  scopesConfig: jsonb('scopes_config').$type<Record<string, 'user' | 'system'>>().notNull().default({}),
+  systemValues: jsonb('system_values').$type<Record<string, unknown>>().notNull().default({}),
+  updatedAt: text('updated_at').notNull(),
+});

@@ -2,7 +2,7 @@
   "id": "/",
   "name": "HomeHub: Сервіси та Облік v3.0",
   "short_name": "HomeHub 3.0",
-  "description": "HomeHub v3.0 — облік комунальних послуг (ДТЕК, ООЕК, Вода), бюджету та IPTV білінгу.",
+  "description": "HomeHub v3.0 — облік комунальних послуг (ДТЕК, ООЕК, Вода), спільного дому та бюджету і IPTV білінгу.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -11,10 +11,28 @@
   "theme_color": "#0284c7",
   "icons": [
     {
+      "src": "/icons/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
       "src": "/icons/icon.svg",
       "sizes": "192x192 512x512",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
     }
   ]
 }

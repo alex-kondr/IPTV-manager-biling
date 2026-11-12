@@ -11,6 +11,13 @@ import { IptvData } from '../../services/iptv-data';
 import {
   AppUser,
   UserRole,
+  UserAccountStatus,
+  HouseholdAccessLevel,
+  MemberRelationTag,
+  MemberRelationTagMeta,
+  MEMBER_RELATION_TAGS,
+  HouseholdInvite,
+  isUserAccountActive,
   AppTabId,
   SettingsSectionId,
   ALL_USER_ASSIGNABLE_TABS,
@@ -20,9 +27,9 @@ import {
   formatDateUa,
   Client,
 } from '../../models/client.model';
-import { UtilityAccount } from '../../models/utility.model';
+import { UtilityAccount, UtilityServiceTabId } from '../../models/utility.model';
 
-type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
+type UserFilterRole = 'all' | 'new' | 'user' | 'admin' | 'inactive';
 
 @Component({
   selector: 'app-users-view',
@@ -34,13 +41,13 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
         <div>
           <div class="flex items-center gap-2">
-            <h2 class="text-lg font-bold text-slate-900">Користувачі, Привʼязка Будинків та Доступ до Вкладок</h2>
+            <h2 class="text-lg font-bold text-slate-900">Доступ та Користувачі</h2>
             <span class="px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-slate-700 text-xs font-bold font-mono">
               {{ users().length }}
             </span>
           </div>
           <p class="text-xs text-slate-500 mt-1">
-            Кожен користувач бачить лише власні дані та будинки, привʼязані адміністратором. Адміністратор може вмикати та вимикати доступ до окремих вкладок для кожного користувача.
+            Натисніть на користувача зі списку, щоб відкрити модальне вікно з усіма індивідуальними налаштуваннями, вкладками, будинками та тарифами.
           </p>
         </div>
 
@@ -69,6 +76,15 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
 
           <button
             type="button"
+            (click)="openInvitePanel()"
+            class="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 active:bg-teal-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+          >
+            <mat-icon class="text-sm">add_link</mat-icon>
+            <span>Створити Invite Link (Спільний дім)</span>
+          </button>
+
+          <button
+            type="button"
             (click)="isAddModalOpen.set(true)"
             class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
           >
@@ -76,6 +92,309 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
             <span>+ Додати користувача</span>
           </button>
         </div>
+      </div>
+
+      <!-- SHARED HOUSEHOLD & BUDGET INVITE LINK PANEL -->
+      <div class="bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white rounded-3xl p-5 sm:p-6 border border-indigo-500/30 shadow-md space-y-4">
+        <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div class="flex items-start gap-3.5">
+            <div class="w-12 h-12 rounded-2xl bg-teal-500/20 border border-teal-400/40 text-teal-300 flex items-center justify-center shrink-0">
+              <mat-icon class="text-2xl">cottage</mat-icon>
+            </div>
+            <div>
+              <div class="flex items-center gap-2 flex-wrap">
+                <h3 class="text-base sm:text-lg font-extrabold text-white">
+                  Спільний дім та Спільний бюджет (Invite Link)
+                </h3>
+                <span class="px-2.5 py-0.5 rounded-full bg-teal-500/20 border border-teal-400/30 text-teal-300 text-2xs font-bold">
+                  Запрошення за посиланням
+                </span>
+              </div>
+              <p class="text-xs text-slate-300 mt-1 max-w-3xl">
+                Створюйте персональне посилання-запрошення для інших зареєстрованих користувачів, щоб надати їм доступ до вашого будинку та спільного бюджету. За замовчуванням встановлюється режим <strong>«Тільки для перегляду»</strong> або <strong>«Повний доступ»</strong>, а також тематичні теги (Сім'я, Друг, Подруга, Донька, Син, Знайомий).
+              </p>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2 shrink-0 flex-wrap">
+            <button
+              type="button"
+              (click)="isInviteCreatorExpanded.set(!isInviteCreatorExpanded())"
+              class="px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-extrabold text-xs flex items-center gap-1.5 cursor-pointer transition-all shadow-sm"
+            >
+              <mat-icon class="text-base">{{ isInviteCreatorExpanded() ? 'expand_less' : 'add_link' }}</mat-icon>
+              <span>{{ isInviteCreatorExpanded() ? 'Згорнути конструктор' : 'Створити Invite-посилання' }}</span>
+            </button>
+            <button
+              type="button"
+              (click)="openGlobalHouseholdModal()"
+              class="px-3.5 py-2.5 rounded-xl bg-white/15 hover:bg-white/25 text-white border border-white/20 font-extrabold text-xs flex items-center gap-1.5 cursor-pointer transition-all"
+            >
+              <mat-icon class="text-base">qr_code_2</mat-icon>
+              <span>Приєднатися за кодом</span>
+            </button>
+            <button
+              type="button"
+              (click)="shareCleanAppFromUsersView()"
+              title="Поділитися чистим посиланням на застосунок https://homehub3.ai.studio/ без приєднання"
+              class="px-3.5 py-2.5 rounded-xl bg-indigo-500/25 hover:bg-indigo-500/35 text-indigo-200 border border-indigo-400/30 font-bold text-xs flex items-center gap-1.5 cursor-pointer transition-all"
+            >
+              <mat-icon class="text-base">{{ copiedCleanApp() ? 'check' : 'ios_share' }}</mat-icon>
+              <span>{{ copiedCleanApp() ? 'Скопійовано https://homehub3.ai.studio/' : 'Поділитись застосунком' }}</span>
+            </button>
+          </div>
+        </div>
+
+        @if (isInviteCreatorExpanded()) {
+          <div class="pt-4 border-t border-white/15 grid grid-cols-1 lg:grid-cols-12 gap-5">
+            <!-- Left: Invite Configuration Form -->
+            <div class="lg:col-span-7 bg-slate-950/60 rounded-2xl p-4 sm:p-5 border border-white/10 space-y-4">
+              <div class="text-xs font-extrabold uppercase tracking-wider text-teal-300 flex items-center gap-1.5">
+                <mat-icon class="text-base">tune</mat-icon>
+                <span>Параметри нового Invite-посилання</span>
+              </div>
+
+              <!-- 1. Access Level Selector ("Тільки для перегляду" default vs "Повний доступ") -->
+              <div class="space-y-2">
+                <span class="block text-xs font-bold text-slate-200">
+                  1. Рівень доступу до будинку та бюджету:
+                </span>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    (click)="inviteAccessLevel.set('view_only')"
+                    class="p-3 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5"
+                    [class.bg-amber-500/20]="inviteAccessLevel() === 'view_only'"
+                    [class.border-amber-400]="inviteAccessLevel() === 'view_only'"
+                    [class.bg-slate-900/80]="inviteAccessLevel() !== 'view_only'"
+                    [class.border-white/10]="inviteAccessLevel() !== 'view_only'"
+                  >
+                    <div
+                      class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5"
+                      [class.bg-amber-400]="inviteAccessLevel() === 'view_only'"
+                      [class.text-slate-950]="inviteAccessLevel() === 'view_only'"
+                      [class.bg-slate-800]="inviteAccessLevel() !== 'view_only'"
+                      [class.text-slate-400]="inviteAccessLevel() !== 'view_only'"
+                    >
+                      <mat-icon class="text-base">visibility</mat-icon>
+                    </div>
+                    <div>
+                      <div class="flex items-center gap-1.5 flex-wrap">
+                        <span class="text-xs font-extrabold text-white">Тільки для перегляду</span>
+                        <span class="px-1.5 py-0.2 rounded bg-amber-400/25 text-amber-300 text-3xs font-bold">За замовчуванням</span>
+                      </div>
+                      <p class="text-2xs text-slate-300 mt-0.5">
+                        Перегляд графіку світла, показів лічильників, пристроїв та спільного бюджету без права редагування.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    (click)="inviteAccessLevel.set('full')"
+                    class="p-3 rounded-xl border text-left transition-all cursor-pointer flex items-start gap-2.5"
+                    [class.bg-emerald-500/20]="inviteAccessLevel() === 'full'"
+                    [class.border-emerald-400]="inviteAccessLevel() === 'full'"
+                    [class.bg-slate-900/80]="inviteAccessLevel() !== 'full'"
+                    [class.border-white/10]="inviteAccessLevel() !== 'full'"
+                  >
+                    <div
+                      class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5"
+                      [class.bg-emerald-500]="inviteAccessLevel() === 'full'"
+                      [class.text-white]="inviteAccessLevel() === 'full'"
+                      [class.bg-slate-800]="inviteAccessLevel() !== 'full'"
+                      [class.text-slate-400]="inviteAccessLevel() !== 'full'"
+                    >
+                      <mat-icon class="text-base">edit_note</mat-icon>
+                    </div>
+                    <div>
+                      <div class="text-xs font-extrabold text-white">Повний доступ</div>
+                      <p class="text-2xs text-slate-300 mt-0.5">
+                        Повне право вносити покази лічильників, керувати пристроями та вести спільний бюджет.
+                      </p>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              <!-- 2. Single-Select Relationship Dropdown -->
+              <div class="space-y-2">
+                <label for="users-invite-relation-select" class="block text-xs font-bold text-slate-200">
+                  2. Статус запрошеного учасника (однозначний вибір):
+                </label>
+                @let selectedInviteRel = getSelectedInviteRelation();
+                @let selectedInviteRelMeta = getRelationTagMeta(selectedInviteRel);
+                <div class="flex flex-col sm:flex-row sm:items-center gap-2.5">
+                  <div class="relative flex-1">
+                    <select
+                      id="users-invite-relation-select"
+                      [value]="selectedInviteRel"
+                      (change)="setInviteRelation($any($event.target).value)"
+                      class="w-full px-3.5 py-2.5 rounded-xl bg-slate-900 border border-white/20 text-xs font-extrabold text-white focus:outline-none focus:ring-2 focus:ring-teal-400 cursor-pointer"
+                    >
+                      @for (tag of relationTagsCatalog; track tag.id) {
+                        <option [value]="tag.id" [selected]="selectedInviteRel === tag.id" class="bg-slate-900 text-white">
+                          {{ tag.label }}
+                        </option>
+                      }
+                    </select>
+                  </div>
+                  @if (selectedInviteRelMeta) {
+                    <div
+                      [class]="'px-3.5 py-2 rounded-xl border text-xs font-extrabold inline-flex items-center gap-2 shrink-0 ' + selectedInviteRelMeta.activeClass"
+                    >
+                      <mat-icon class="text-base leading-none">{{ selectedInviteRelMeta.icon }}</mat-icon>
+                      <span>{{ selectedInviteRelMeta.label }}</span>
+                    </div>
+                  }
+                </div>
+              </div>
+
+              <!-- 3. Select Houses & Shared Budget -->
+              <div class="space-y-2">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-xs font-bold text-slate-200">3. Будинки для спільного доступу:</span>
+                  <label class="inline-flex items-center gap-2 text-xs font-semibold text-teal-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      [checked]="inviteIncludeSharedBudget()"
+                      (change)="inviteIncludeSharedBudget.set($any($event.target).checked)"
+                      class="w-4 h-4 rounded accent-teal-500 cursor-pointer"
+                    />
+                    <span>Спільний бюджет ($ / ₴)</span>
+                  </label>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-36 overflow-y-auto pr-1">
+                  @for (house of allUtilityAccounts(); track house.id) {
+                    @let hChecked = isInviteHouseSelected(house.id);
+                    <button
+                      type="button"
+                      (click)="toggleInviteHouse(house.id)"
+                      class="p-2.5 rounded-xl border text-left flex items-center justify-between gap-2 transition-all cursor-pointer"
+                      [class.bg-teal-500/20]="hChecked"
+                      [class.border-teal-400]="hChecked"
+                      [class.bg-slate-900/70]="!hChecked"
+                      [class.border-white/10]="!hChecked"
+                    >
+                      <div class="flex items-center gap-2 min-w-0">
+                        <mat-icon class="text-base text-teal-300 shrink-0">home_work</mat-icon>
+                        <div class="min-w-0">
+                          <div class="text-xs font-bold text-white truncate">{{ house.name || house.address }}</div>
+                          <div class="text-3xs text-slate-400 truncate">{{ house.address || house.accountNumber }}</div>
+                        </div>
+                      </div>
+                      <mat-icon class="text-base shrink-0" [class.text-teal-300]="hChecked" [class.text-slate-600]="!hChecked">
+                        {{ hChecked ? 'check_box' : 'check_box_outline_blank' }}
+                      </mat-icon>
+                    </button>
+                  }
+                </div>
+              </div>
+
+              <div class="pt-1 flex items-center gap-2.5 flex-wrap">
+                <button
+                  type="button"
+                  (click)="generateNewInviteLink()"
+                  [disabled]="isCreatingInvite()"
+                  class="px-5 py-2.5 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-slate-950 font-extrabold text-xs flex items-center gap-2 cursor-pointer shadow-md transition-all disabled:opacity-50"
+                >
+                  <mat-icon class="text-base">link</mat-icon>
+                  <span>{{ isCreatingInvite() ? 'Генерація посилання...' : 'Згенерувати Invite Link' }}</span>
+                </button>
+                @if (lastCreatedInviteUrl()) {
+                  <button
+                    type="button"
+                    (click)="copyInviteLink(lastCreatedInviteCode())"
+                    class="px-4 py-2.5 rounded-xl bg-white/15 hover:bg-white/25 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer border border-white/20"
+                  >
+                    <mat-icon class="text-sm">{{ copiedInviteCode() === lastCreatedInviteCode() ? 'check' : 'content_copy' }}</mat-icon>
+                    <span>{{ copiedInviteCode() === lastCreatedInviteCode() ? 'Скопійовано!' : 'Скопіювати посилання' }}</span>
+                  </button>
+                }
+              </div>
+            </div>
+
+            <!-- Right: Active Invites List -->
+            <div class="lg:col-span-5 bg-slate-950/60 rounded-2xl p-4 sm:p-5 border border-white/10 flex flex-col justify-between space-y-3">
+              <div class="space-y-3">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-extrabold uppercase tracking-wider text-indigo-300 flex items-center gap-1.5">
+                    <mat-icon class="text-base">share</mat-icon>
+                    <span>Активні Invite-посилання ({{ householdInvites().length }})</span>
+                  </span>
+                </div>
+
+                <div class="space-y-2.5 max-h-64 overflow-y-auto pr-1">
+                  @for (inv of householdInvites(); track inv.id) {
+                    <div class="p-3 rounded-xl bg-slate-900/90 border border-white/10 space-y-2">
+                      <div class="flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-1.5 flex-wrap">
+                          @if (inv.accessLevel === 'full') {
+                            <span class="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 text-3xs font-bold inline-flex items-center gap-1">
+                              <mat-icon class="text-3xs">edit_note</mat-icon>
+                              <span>Повний доступ</span>
+                            </span>
+                          } @else {
+                            <span class="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-400/30 text-3xs font-bold inline-flex items-center gap-1">
+                              <mat-icon class="text-3xs">visibility</mat-icon>
+                              <span>Тільки для перегляду</span>
+                            </span>
+                          }
+                          @for (tagId of inv.memberTags || []; track tagId) {
+                            @if (getRelationTagMeta(tagId); as tMeta) {
+                              <span class="px-2 py-0.5 rounded-full bg-white/10 text-white text-3xs font-bold inline-flex items-center gap-1">
+                                <mat-icon class="text-3xs">{{ tMeta.icon }}</mat-icon>
+                                <span>{{ tMeta.label }}</span>
+                              </span>
+                            }
+                          }
+                        </div>
+                        <button
+                          type="button"
+                          (click)="removeInvite(inv.id)"
+                          class="text-slate-400 hover:text-rose-400 bg-transparent border-0 p-1 cursor-pointer"
+                          title="Видалити запрошення"
+                        >
+                          <mat-icon class="text-sm">delete_outline</mat-icon>
+                        </button>
+                      </div>
+
+                      <div class="text-2xs text-slate-300 truncate">
+                        Будинки: <strong>{{ inv.houseNames.length ? inv.houseNames.join(', ') : 'Всі будинки' }}</strong>
+                        @if (inv.includeSharedBudget) {
+                          <span class="text-teal-300"> • + Спільний бюджет</span>
+                        }
+                      </div>
+
+                      <div class="flex items-center gap-2">
+                        <input
+                          type="text"
+                          readonly
+                          [value]="getInviteUrl(inv.code)"
+                          class="flex-1 px-2.5 py-1.5 rounded-lg bg-slate-950 border border-white/10 text-2xs font-mono text-slate-300 select-all"
+                        />
+                        <button
+                          type="button"
+                          (click)="copyInviteLink(inv.code)"
+                          class="px-3 py-1.5 rounded-lg bg-teal-500 hover:bg-teal-400 text-slate-950 font-extrabold text-2xs inline-flex items-center gap-1 cursor-pointer shrink-0"
+                        >
+                          <mat-icon class="text-xs">{{ copiedInviteCode() === inv.code ? 'check' : 'content_copy' }}</mat-icon>
+                          <span>{{ copiedInviteCode() === inv.code ? 'Скопійовано' : 'Копіювати' }}</span>
+                        </button>
+                      </div>
+                    </div>
+                  } @empty {
+                    <div class="p-6 rounded-xl bg-slate-900/50 border border-dashed border-white/15 text-center space-y-1">
+                      <mat-icon class="text-2xl text-slate-400">add_link</mat-icon>
+                      <div class="text-xs font-bold text-slate-300">Ще немає створених запрошень</div>
+                      <div class="text-2xs text-slate-400">Оберіть параметри ліворуч та натисніть «Згенерувати Invite Link»</div>
+                    </div>
+                  }
+                </div>
+              </div>
+            </div>
+          </div>
+        }
       </div>
 
       <!-- Stats Grid -->
@@ -101,7 +420,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
             </div>
           </div>
           <div class="text-2xl font-black text-emerald-700 mt-2">{{ adminCount() }}</div>
-          <div class="text-3xs text-emerald-600 font-medium mt-0.5">👑 Повний доступ (всі вкладки і будинки)</div>
+          <div class="text-3xs text-emerald-600 font-medium mt-0.5">Повний доступ (всі вкладки і будинки)</div>
         </div>
 
         <!-- Users -->
@@ -113,7 +432,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
             </div>
           </div>
           <div class="text-2xl font-black text-sky-700 mt-2">{{ viewerCount() }}</div>
-          <div class="text-3xs text-sky-600 font-medium mt-0.5">👤 Власні дані + привʼязані будинки</div>
+          <div class="text-3xs text-sky-600 font-medium mt-0.5">Індивідуальні налаштування та будинки</div>
         </div>
 
         <!-- Pending New Users -->
@@ -134,7 +453,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
             </div>
           </div>
           <div class="text-2xl font-black text-amber-700 mt-2">{{ pendingCount() }}</div>
-          <div class="text-3xs text-amber-700 font-medium mt-0.5">⏳ Нові запити (без доступу)</div>
+          <div class="text-3xs text-amber-700 font-medium mt-0.5">Нові запити (без доступу)</div>
         </div>
       </div>
 
@@ -150,7 +469,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
                 Є {{ pendingCount() }} новий(х) запит(ів) на доступ до застосунку!
               </div>
               <div class="text-2xs text-amber-700 mt-0.5">
-                Надайте користувачам роль «Користувач» (та оберіть дозволені вкладки й будинки) або «Адміністратор».
+                Натисніть на користувача у списку нижче, щоб налаштувати його роль, дозволені вкладки та прив'язані будинки.
               </div>
             </div>
           </div>
@@ -190,7 +509,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
             [class.shadow-xs]="selectedRoleFilter() === 'new'"
             [class.text-slate-600]="selectedRoleFilter() !== 'new'"
           >
-            <span>⏳ Очікують</span>
+            <span>Очікують</span>
             @if (pendingCount() > 0) {
               <span class="px-1.5 py-0.2 rounded-full text-3xs font-bold" [class.bg-white]="selectedRoleFilter() === 'new'" [class.text-amber-700]="selectedRoleFilter() === 'new'" [class.bg-amber-100]="selectedRoleFilter() !== 'new'" [class.text-amber-800]="selectedRoleFilter() !== 'new'">
                 {{ pendingCount() }}
@@ -207,7 +526,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
             [class.shadow-xs]="selectedRoleFilter() === 'user'"
             [class.text-slate-600]="selectedRoleFilter() !== 'user'"
           >
-            👤 Користувачі ({{ viewerCount() }})
+            Користувачі ({{ viewerCount() }})
           </button>
 
           <button
@@ -219,7 +538,19 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
             [class.shadow-xs]="selectedRoleFilter() === 'admin'"
             [class.text-slate-600]="selectedRoleFilter() !== 'admin'"
           >
-            👑 Адміни ({{ adminCount() }})
+            Адміни ({{ adminCount() }})
+          </button>
+
+          <button
+            type="button"
+            (click)="selectedRoleFilter.set('inactive')"
+            class="px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-colors whitespace-nowrap flex items-center gap-1"
+            [class.bg-rose-600]="selectedRoleFilter() === 'inactive'"
+            [class.text-white]="selectedRoleFilter() === 'inactive'"
+            [class.shadow-xs]="selectedRoleFilter() === 'inactive'"
+            [class.text-slate-600]="selectedRoleFilter() !== 'inactive'"
+          >
+            <span>Неактивні ({{ inactiveCount() }})</span>
           </button>
         </div>
 
@@ -235,135 +566,204 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
         </div>
       </div>
 
-      <!-- Users List Cards -->
-      <div class="space-y-4">
+      <!-- Compact Users List (Click user to open settings modal) -->
+      <div class="bg-white rounded-2xl border border-slate-200/80 shadow-xs divide-y divide-slate-100 overflow-hidden">
         @for (user of filteredUsers(); track user.id) {
+          @let userActive = isUserActive(user);
           <div
-            class="bg-white rounded-2xl border p-4 sm:p-5 shadow-xs transition-all space-y-4"
-            [class.border-amber-300]="user.role === 'new'"
-            [class.bg-amber-50/20]="user.role === 'new'"
-            [class.border-slate-200]="user.role !== 'new'"
+            (click)="openPermissionsModal(user)"
+            class="p-4 sm:px-5 hover:bg-slate-50/90 active:bg-slate-100/80 transition-colors cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3 group"
+            [class.bg-rose-50/25]="!userActive"
           >
-            <!-- Top Row: User Info + Role Actions -->
-            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
-              <!-- User Info -->
-              <div class="flex items-start sm:items-center gap-3.5 min-w-0">
+            <!-- Left: Avatar with Status Dot + Name + Email + Status Badge + Role -->
+            <div class="flex items-center gap-3.5 min-w-0">
+              <div class="relative shrink-0">
                 <img
                   [src]="user.picture || 'https://ui-avatars.com/api/?name=' + user.name + '&background=0284c7&color=fff'"
                   [alt]="user.name"
-                  class="w-12 h-12 rounded-2xl object-cover border border-slate-200 shrink-0 shadow-2xs"
+                  class="w-11 h-11 rounded-2xl object-cover border border-slate-200 shadow-2xs group-hover:border-indigo-300 transition-colors"
+                  [class.opacity-60]="!userActive"
                   referrerpolicy="no-referrer"
                 />
+                <span
+                  class="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white"
+                  [class.bg-emerald-500]="userActive"
+                  [class.bg-rose-500]="!userActive"
+                  [title]="userActive ? 'Стан: Активний' : 'Стан: Неактивний (Доступ заблоковано)'"
+                ></span>
+              </div>
 
+              <div class="min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span
+                    class="text-sm font-bold group-hover:text-indigo-700 transition-colors truncate"
+                    [class.text-slate-900]="userActive"
+                    [class.text-slate-500]="!userActive"
+                    [class.line-through]="!userActive"
+                  >
+                    {{ user.name }}
+                  </span>
+
+                  <!-- User Active / Inactive Status Indicator Badge -->
+                  @if (userActive) {
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-3xs font-bold">
+                      <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                      <span>Активний</span>
+                    </span>
+                  } @else {
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200 text-3xs font-bold">
+                      <span class="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+                      <span>Неактивний</span>
+                    </span>
+                  }
+
+                  @if (isCurrentLoggedInUser(user)) {
+                    <span class="px-1.5 py-0.2 rounded-md bg-slate-900 text-white text-3xs font-bold">
+                      Це ви
+                    </span>
+                  }
+
+                  @if (user.id === 'user_test_sandbox') {
+                    <span class="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-300 text-3xs font-extrabold inline-flex items-center gap-1">
+                      <mat-icon class="text-3xs leading-none">science</mat-icon>
+                      <span>Тестовий акаунт</span>
+                    </span>
+                  }
+
+                  <!-- Role Badge -->
+                  @switch (user.role) {
+                    @case ('admin') {
+                      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-3xs font-bold border border-emerald-200">
+                        <mat-icon class="text-3xs">shield</mat-icon>
+                        <span>Адміністратор</span>
+                      </span>
+                    }
+                    @case ('user') {
+                      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 text-3xs font-bold border border-sky-200">
+                        <mat-icon class="text-3xs">person</mat-icon>
+                        <span>Користувач</span>
+                      </span>
+                    }
+                    @case ('new') {
+                      <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-3xs font-bold border border-amber-300 animate-pulse">
+                        <mat-icon class="text-3xs">lock_clock</mat-icon>
+                        <span>Новий (Очікує доступу)</span>
+                      </span>
+                    }
+                  }
+                  <!-- Access Level Badge (Тільки для перегляду vs Повний доступ) -->
+                  @if (getUserAccessLevel(user) === 'view_only') {
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-300 text-3xs font-bold" title="Доступ тільки для перегляду">
+                      <mat-icon class="text-3xs">visibility</mat-icon>
+                      <span>Тільки для перегляду</span>
+                    </span>
+                  } @else {
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-teal-50 text-teal-800 border border-teal-200 text-3xs font-bold" title="Повний доступ до будинку та бюджету">
+                      <mat-icon class="text-3xs">edit_note</mat-icon>
+                      <span>Повний доступ</span>
+                    </span>
+                  }
+
+                  <!-- Member Relationship Tags with Thematic Icons -->
+                  @for (tagId of getUserRelationTags(user); track tagId) {
+                    @if (getRelationTagMeta(tagId); as tagMeta) {
+                      <span
+                        class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full border text-3xs font-extrabold"
+                        [class]="tagMeta.badgeClass"
+                      >
+                        <mat-icon [class]="'text-xs leading-none ' + tagMeta.iconColorClass">{{ tagMeta.icon }}</mat-icon>
+                        <span>{{ tagMeta.label }}</span>
+                      </span>
+                    }
+                  }
+                </div>
+
+                <div class="flex items-center gap-2.5 text-xs text-slate-500 font-mono mt-0.5 truncate">
+                  <span>{{ user.email }}</span>
+                  @if (user.invitedByUserName) {
+                    <span class="text-slate-300 font-sans">•</span>
+                    <span class="text-3xs text-teal-700 font-sans font-semibold">Запросив: {{ user.invitedByUserName }}</span>
+                  }
+                  @if (user.lastLoginAt) {
+                    <span class="text-slate-300 font-sans">•</span>
+                    <span class="text-3xs text-slate-400 font-sans">Вхід: {{ formatDate(user.lastLoginAt) }}</span>
+                  }
+                </div>
+              </div>
+            </div>
+
+            <!-- Right: Summary Counters & Open Settings Indicator -->
+            <div class="flex items-center justify-between sm:justify-end gap-2.5 shrink-0 border-t sm:border-t-0 pt-2.5 sm:pt-0 border-slate-100">
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <span class="px-2 py-1 rounded-lg bg-slate-100 text-slate-700 text-2xs font-semibold inline-flex items-center gap-1" title="Доступні вкладки">
+                  <mat-icon class="text-xs text-indigo-600">tab</mat-icon>
+                  <span>{{ getUserAllowedTabs(user).length }} вкл.</span>
+                </span>
+                <span class="px-2 py-1 rounded-lg bg-amber-50 text-amber-800 border border-amber-200/70 text-2xs font-semibold inline-flex items-center gap-1" title="Прив'язані будинки">
+                  <mat-icon class="text-xs text-amber-600">home_work</mat-icon>
+                  <span>{{ getUserBoundHouses(user).length }} буд.</span>
+                </span>
+                @if (getUserBoundClients(user).length > 0) {
+                  <span class="px-2 py-1 rounded-lg bg-indigo-50 text-indigo-800 border border-indigo-200/70 text-2xs font-semibold inline-flex items-center gap-1" title="Прив'язані IPTV клієнти">
+                    <mat-icon class="text-xs text-indigo-600">groups</mat-icon>
+                    <span>{{ getUserBoundClients(user).length }} абон.</span>
+                  </span>
+                }
+              </div>
+
+              <div class="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-100 group-hover:bg-indigo-600 text-slate-700 group-hover:text-white text-xs font-bold transition-colors">
+                <mat-icon class="text-sm">tune</mat-icon>
+                <span class="hidden md:inline">Налаштування</span>
+                <mat-icon class="text-sm">chevron_right</mat-icon>
+              </div>
+            </div>
+          </div>
+        } @empty {
+          <div class="text-center py-12 p-8">
+            <mat-icon class="text-4xl text-slate-300 mb-2">person_search</mat-icon>
+            <div class="text-sm font-bold text-slate-700">Користувачів не знайдено</div>
+            <div class="text-xs text-slate-400 mt-1">Змініть фільтр або додайте нового користувача через кнопку вище.</div>
+          </div>
+        }
+      </div>
+
+      <!-- MODAL: FULL USER SETTINGS (Role, Tabs, Settings, Bound Houses + Per-Tab Visibility, Individual Tariffs, IPTV Clients) -->
+      @if (editingUserForPermissions(); as targetUser) {
+        <div
+          class="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs"
+          (click)="closePermissionsModal()"
+        >
+          <div
+            class="bg-white rounded-3xl p-5 sm:p-7 max-w-3xl w-full shadow-2xl border border-slate-200 max-h-[92vh] flex flex-col"
+            (click)="$event.stopPropagation()"
+          >
+            <!-- Header -->
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100 shrink-0">
+              <div class="flex items-center gap-3 min-w-0">
+                <img
+                  [src]="targetUser.picture || 'https://ui-avatars.com/api/?name=' + targetUser.name + '&background=0284c7&color=fff'"
+                  [alt]="targetUser.name"
+                  class="w-11 h-11 rounded-2xl object-cover border border-slate-200 shrink-0 shadow-2xs"
+                  referrerpolicy="no-referrer"
+                />
                 <div class="min-w-0">
                   <div class="flex items-center gap-2 flex-wrap">
-                    <span class="text-sm font-bold text-slate-900 truncate">{{ user.name }}</span>
-
-                    @if (isCurrentLoggedInUser(user)) {
-                      <span class="px-1.5 py-0.2 rounded-md bg-slate-900 text-white text-3xs font-bold">
-                        Це ви
-                      </span>
-                    }
-
-                    @if (user.id === 'user_test_sandbox') {
-                      <span class="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-300 text-2xs font-extrabold inline-flex items-center gap-1">
-                        <mat-icon class="text-xs leading-none">science</mat-icon>
-                        <span>Тестовий акаунт для перевірки</span>
-                      </span>
-                    }
-
-                    <!-- Role Badge -->
-                    @switch (user.role) {
-                      @case ('admin') {
-                        <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-2xs font-bold border border-emerald-200">
-                          <mat-icon class="text-xs">shield</mat-icon>
-                          <span>Адміністратор (Повний доступ)</span>
-                        </span>
-                      }
-                      @case ('user') {
-                        <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-sky-100 text-sky-800 text-2xs font-bold border border-sky-200">
-                          <mat-icon class="text-xs">person</mat-icon>
-                          <span>Користувач (Власні + привʼязані дані)</span>
-                        </span>
-                      }
-                      @case ('new') {
-                        <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-2xs font-bold border border-amber-300 animate-pulse">
-                          <mat-icon class="text-xs">lock_clock</mat-icon>
-                          <span>Новий (Без доступу)</span>
-                        </span>
-                      }
+                    <h3 class="text-base font-bold text-slate-900 truncate">
+                      {{ targetUser.name }}
+                    </h3>
+                    @if (isCurrentLoggedInUser(targetUser)) {
+                      <span class="px-1.5 py-0.2 rounded-md bg-slate-900 text-white text-3xs font-bold">Це ви</span>
                     }
                   </div>
-
-                  <div class="text-xs text-slate-600 font-mono mt-0.5">{{ user.email }}</div>
-
-                  <div class="flex items-center gap-3 text-3xs text-slate-400 mt-1.5 flex-wrap">
-                    <span>Створено: {{ formatDate(user.createdAt) }}</span>
-                    @if (user.lastLoginAt) {
-                      <span>•</span>
-                      <span>Останній вхід: {{ formatDate(user.lastLoginAt) }}</span>
-                    }
-                  </div>
+                  <p class="text-xs text-slate-500 font-mono truncate">{{ targetUser.email }}</p>
                 </div>
               </div>
 
-              <!-- Role Change & Quick Actions -->
-              <div class="flex items-center gap-2 flex-wrap shrink-0 border-t md:border-t-0 pt-3 md:pt-0 border-slate-100">
-                @if (user.role === 'new') {
-                  <!-- Quick Approve for New Users -->
+              <div class="flex items-center gap-2 shrink-0">
+                @if (targetUser.role !== 'admin') {
                   <button
                     type="button"
-                    (click)="setRole(user, 'user')"
-                    [disabled]="isLoading()"
-                    class="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 active:bg-sky-700 text-white font-bold text-xs flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
-                    title="Надати доступ користувача"
-                  >
-                    <mat-icon class="text-sm">check_circle</mat-icon>
-                    <span>Надати доступ (Користувач)</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    (click)="setRole(user, 'admin')"
-                    [disabled]="isLoading()"
-                    class="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
-                    title="Надати повний доступ адміністратора"
-                  >
-                    <mat-icon class="text-sm">shield</mat-icon>
-                    <span>Зробити Адміном</span>
-                  </button>
-                } @else {
-                  <!-- Role Select Dropdown -->
-                  <div class="flex items-center gap-1.5">
-                    <span class="text-2xs text-slate-500 font-medium">Роль:</span>
-                    <select
-                      [value]="user.role"
-                      (change)="onRoleSelectChange(user, $event)"
-                      [disabled]="isLoading() || (user.role === 'admin' && adminCount() <= 1)"
-                      class="px-2.5 py-1.5 rounded-xl bg-slate-50 border border-slate-300 text-slate-800 text-xs font-semibold focus:outline-none focus:border-emerald-500 cursor-pointer"
-                    >
-                      <option value="admin">👑 Адміністратор (Всі права)</option>
-                      <option value="user">👤 Користувач (Індивідуальний доступ)</option>
-                      <option value="new">⏳ Новий (Без доступу)</option>
-                    </select>
-                  </div>
-
-                  @if (user.role === 'user') {
-                    <button
-                      type="button"
-                      (click)="openPermissionsModal(user)"
-                      class="px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
-                    >
-                      <mat-icon class="text-sm">tune</mat-icon>
-                      <span>Вкладки та Будинки</span>
-                    </button>
-                  }
-                }
-
-                @if (user.role !== 'admin') {
-                  <button
-                    type="button"
-                    (click)="impersonateUser(user)"
+                    (click)="impersonateFromModal(targetUser)"
                     [disabled]="isLoading()"
                     class="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
                     title="Перемкнутись на цей акаунт і побачити застосунок очима цього користувача"
@@ -372,245 +772,215 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
                     <span>Увійти як користувач</span>
                   </button>
                 }
-
-                <!-- Delete User -->
                 <button
                   type="button"
-                  (click)="deleteUser(user)"
-                  [disabled]="isLoading() || (user.role === 'admin' && adminCount() <= 1)"
-                  class="p-1.5 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                  (click)="deleteUserFromModal(targetUser)"
+                  [disabled]="isLoading() || (targetUser.role === 'admin' && adminCount() <= 1)"
+                  class="p-2 rounded-xl text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
                   title="Видалити користувача"
                 >
                   <mat-icon class="text-base">delete_outline</mat-icon>
                 </button>
+                <button
+                  type="button"
+                  (click)="closePermissionsModal()"
+                  class="p-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                >
+                  <mat-icon class="text-base">close</mat-icon>
+                </button>
               </div>
-            </div>
-
-            <!-- Extended Per-User Controls: Allowed Tabs + Settings Sections + Assigned Houses (for non-admin users) -->
-            @if (user.role === 'user') {
-              <div class="pt-3 border-t border-slate-100 grid grid-cols-1 lg:grid-cols-12 gap-4">
-                <!-- Left Column: Allowed Tabs & Granular Settings Toggles -->
-                <div class="lg:col-span-7 space-y-3">
-                  <div class="space-y-2">
-                    <div class="flex items-center justify-between flex-wrap gap-2">
-                      <span class="text-2xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1">
-                        <mat-icon class="text-sm text-indigo-600">tab</mat-icon>
-                        <span>Доступні вкладки застосунку (натисніть, щоб увімкнути/вимкнути):</span>
-                      </span>
-                      <label class="inline-flex items-center gap-1.5 text-2xs font-semibold text-slate-700 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          [checked]="user.canManageOwnData !== false"
-                          (change)="toggleUserCanManageOwnData(user, $any($event.target).checked)"
-                          class="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                        />
-                        <span>Дозволити додавати/редагувати свої дані</span>
-                      </label>
-                    </div>
-
-                    <div class="flex items-center gap-1.5 flex-wrap">
-                      @for (tabItem of assignableTabs; track tabItem.id) {
-                        @let isEnabled = isUserTabEnabled(user, tabItem.id);
-                        <button
-                          type="button"
-                          (click)="quickToggleUserTab(user, tabItem.id)"
-                          class="px-2.5 py-1.5 rounded-xl text-xs font-semibold border flex items-center gap-1.5 transition-all duration-150 cursor-pointer select-none active:scale-95"
-                          [class.bg-emerald-600]="isEnabled"
-                          [class.text-white]="isEnabled"
-                          [class.border-emerald-600]="isEnabled"
-                          [class.shadow-2xs]="isEnabled"
-                          [class.bg-slate-50]="!isEnabled"
-                          [class.text-slate-500]="!isEnabled"
-                          [class.border-slate-200]="!isEnabled"
-                          [title]="isEnabled ? 'Вимкнути вкладку «' + tabItem.label + '»' : 'Увімкнути вкладку «' + tabItem.label + '»'"
-                        >
-                          <mat-icon class="text-sm leading-none">{{ tabItem.icon }}</mat-icon>
-                          <span>{{ tabItem.label }}</span>
-                          <mat-icon class="text-xs leading-none">{{ isEnabled ? 'check_circle' : 'block' }}</mat-icon>
-                        </button>
-                      }
-                    </div>
-                  </div>
-
-                  <!-- Granular Settings Sections Access -->
-                  <div class="pt-2.5 border-t border-slate-100 space-y-2">
-                    <div class="flex items-center justify-between flex-wrap gap-2">
-                      <span class="text-2xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1">
-                        <mat-icon class="text-sm text-slate-700">settings</mat-icon>
-                        <span>Доступ до окремих пунктів системних налаштувань ({{ getUserAllowedSettings(user).length }}/{{ allSettingsSections.length }}):</span>
-                      </span>
-                      @if (getUserAllowedSettings(user).length === 0) {
-                        <span class="px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 text-3xs font-semibold flex items-center gap-1">
-                          <mat-icon class="text-3xs">lock</mat-icon>
-                          <span>Системні налаштування закрито</span>
-                        </span>
-                      }
-                    </div>
-
-                    <div class="flex items-center gap-1.5 flex-wrap">
-                      @for (sec of allSettingsSections; track sec.id) {
-                        @let secEnabled = isUserSettingsSectionEnabled(user, sec.id);
-                        <button
-                          type="button"
-                          (click)="quickToggleUserSettingsSection(user, sec.id)"
-                          class="px-2.5 py-1 rounded-xl text-2xs font-semibold border flex items-center gap-1 transition-all duration-150 cursor-pointer select-none active:scale-95"
-                          [class.bg-indigo-600]="secEnabled"
-                          [class.text-white]="secEnabled"
-                          [class.border-indigo-600]="secEnabled"
-                          [class.shadow-2xs]="secEnabled"
-                          [class.bg-slate-50]="!secEnabled"
-                          [class.text-slate-500]="!secEnabled"
-                          [class.border-slate-200]="!secEnabled"
-                          [title]="sec.subtitle"
-                        >
-                          <mat-icon class="text-xs leading-none">{{ sec.icon }}</mat-icon>
-                          <span>{{ sec.label }}</span>
-                          <mat-icon class="text-3xs leading-none">{{ secEnabled ? 'check_circle' : 'lock' }}</mat-icon>
-                        </button>
-                      }
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Right Column: Bound Houses / Utility Accounts -->
-                <div class="lg:col-span-5 space-y-2 lg:border-l lg:border-slate-100 lg:pl-4">
-                  <div class="flex items-center justify-between gap-2">
-                    <span class="text-2xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1">
-                      <mat-icon class="text-sm text-amber-600">home_work</mat-icon>
-                      <span>Привʼязані будинки / рахунки ({{ getUserBoundHouses(user).length }}):</span>
-                    </span>
-                    <button
-                      type="button"
-                      (click)="openPermissionsModal(user)"
-                      class="text-2xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5 cursor-pointer"
-                    >
-                      <mat-icon class="text-xs">add_link</mat-icon>
-                      <span>Привʼязати будинок</span>
-                    </button>
-                  </div>
-
-                  @if (getUserBoundHouses(user).length > 0) {
-                    <div class="flex items-center gap-1.5 flex-wrap">
-                      @for (house of getUserBoundHouses(user); track house.id) {
-                        <span
-                          class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-2xs font-semibold border bg-amber-50 border-amber-200 text-amber-900"
-                        >
-                          <mat-icon class="text-xs leading-none">home</mat-icon>
-                          <span>{{ house.name }} ({{ house.accountNumber }})</span>
-                          @if (house.ownerUserId === user.id) {
-                            <span class="px-1 py-0.2 rounded bg-white/80 text-3xs font-bold">Власний</span>
-                          } @else {
-                            <button
-                              type="button"
-                              (click)="quickToggleHouseAssignment(user, house.id)"
-                              class="hover:text-rose-600 cursor-pointer ml-0.5"
-                              title="Відкріпити будинок від користувача"
-                            >
-                              <mat-icon class="text-xs leading-none">close</mat-icon>
-                            </button>
-                          }
-                        </span>
-                      }
-                    </div>
-                  } @else {
-                    <div class="text-2xs text-slate-400 italic bg-slate-50 rounded-xl px-3 py-2 border border-slate-200/70">
-                      Немає привʼязаних будинків адміна. Користувач бачитиме лише свої рахунки.
-                    </div>
-                  }
-
-                  <!-- Bound IPTV Clients (Клієнти та групи) -->
-                  <div class="pt-2 border-t border-slate-100 space-y-1.5">
-                    <div class="flex items-center justify-between gap-2">
-                      <span class="text-2xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1">
-                        <mat-icon class="text-sm text-indigo-600">groups</mat-icon>
-                        <span>Прив'язані IPTV Абоненти ({{ getUserBoundClients(user).length }}):</span>
-                      </span>
-                      <button
-                        type="button"
-                        (click)="openPermissionsModal(user)"
-                        class="text-2xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-0.5 cursor-pointer"
-                      >
-                        <mat-icon class="text-xs">add_link</mat-icon>
-                        <span>Прив'язати акаунт</span>
-                      </button>
-                    </div>
-
-                    @if (getUserBoundClients(user).length > 0) {
-                      <div class="flex items-center gap-1.5 flex-wrap">
-                        @for (c of getUserBoundClients(user); track c.id) {
-                          <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-2xs font-semibold border bg-indigo-50 border-indigo-200 text-indigo-900">
-                            <mat-icon class="text-xs leading-none text-indigo-600">person</mat-icon>
-                            <span>{{ c.fullName }} ({{ c.balance }} ₴)</span>
-                          </span>
-                        }
-                      </div>
-                    } @else {
-                      <div class="text-3xs text-slate-400 italic">Абонентів з «Клієнти та групи» не прив'язано</div>
-                    }
-                  </div>
-                </div>
-              </div>
-            }
-          </div>
-        } @empty {
-          <div class="text-center py-12 bg-white rounded-2xl border border-slate-200 p-8">
-            <mat-icon class="text-4xl text-slate-300 mb-2">person_search</mat-icon>
-            <div class="text-sm font-bold text-slate-700">Користувачів не знайдено</div>
-            <div class="text-xs text-slate-400 mt-1">Змініть фільтр або додайте нового користувача через кнопку вище.</div>
-          </div>
-        }
-      </div>
-
-      <!-- MODAL: PERMISSIONS, TABS & HOUSE BINDING -->
-      @if (editingUserForPermissions(); as targetUser) {
-        <div class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-          <div class="bg-white rounded-3xl p-6 sm:p-7 max-w-2xl w-full shadow-2xl border border-slate-200 max-h-[90vh] flex flex-col">
-            <!-- Header -->
-            <div class="flex items-center justify-between pb-4 border-b border-slate-100 shrink-0">
-              <div class="flex items-center gap-3">
-                <div class="w-10 h-10 rounded-2xl bg-indigo-100 text-indigo-700 flex items-center justify-center">
-                  <mat-icon class="text-xl">admin_panel_settings</mat-icon>
-                </div>
-                <div>
-                  <h3 class="text-base font-bold text-slate-900">
-                    Налаштування доступу: {{ targetUser.name }}
-                  </h3>
-                  <p class="text-xs text-slate-500 font-mono">{{ targetUser.email }}</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                (click)="closePermissionsModal()"
-                class="text-slate-400 hover:text-slate-600 cursor-pointer p-1"
-              >
-                <mat-icon>close</mat-icon>
-              </button>
             </div>
 
             <!-- Scrollable Body -->
             <div class="py-4 space-y-5 overflow-y-auto flex-1 pr-1">
-              <!-- Section 1: Data Editing Permission -->
-              <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 flex items-center justify-between gap-4">
-                <div>
-                  <div class="text-xs font-bold text-slate-900">Дозвіл на внесення показів та створення власних рахунків</div>
-                  <div class="text-2xs text-slate-500 mt-0.5">
-                    Якщо увімкнено, користувач може додавати власні будинки та вносити покази лічильників.
+              <!-- Instant Access Block Toggle Switch Banner -->
+              @let modalIsActive = modalUserStatus() === 'active' && modalRole() !== 'new';
+              <div
+                class="p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-colors"
+                [class.bg-emerald-50/70]="modalIsActive"
+                [class.border-emerald-200]="modalIsActive"
+                [class.bg-rose-50/80]="!modalIsActive"
+                [class.border-rose-300]="!modalIsActive"
+              >
+                <div class="flex items-start sm:items-center gap-3">
+                  <div
+                    class="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+                    [class.bg-emerald-600]="modalIsActive"
+                    [class.text-white]="modalIsActive"
+                    [class.bg-rose-600]="!modalIsActive"
+                    [class.text-white]="!modalIsActive"
+                  >
+                    <mat-icon class="text-xl">{{ modalIsActive ? 'verified_user' : 'block' }}</mat-icon>
+                  </div>
+                  <div>
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <span class="text-xs font-bold text-slate-900">
+                        Стан доступу до застосунку:
+                      </span>
+                      @if (modalIsActive) {
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300 text-2xs font-bold">
+                          <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                          <span>Активний (Доступ дозволено)</span>
+                        </span>
+                      } @else {
+                        <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300 text-2xs font-bold">
+                          <span class="w-2 h-2 rounded-full bg-rose-600"></span>
+                          <span>Неактивний (Доступ заблоковано)</span>
+                        </span>
+                      }
+                    </div>
+                    <p class="text-2xs text-slate-600 mt-0.5">
+                      Перемикач миттєво блокує або відновлює доступ користувача до застосунку без видалення його даних.
+                    </p>
                   </div>
                 </div>
-                <input
-                  type="checkbox"
-                  [checked]="modalCanManageOwnData()"
-                  (change)="modalCanManageOwnData.set($any($event.target).checked)"
-                  class="w-5 h-5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer shrink-0"
-                />
+
+                <!-- Instant Toggle Switch -->
+                <div class="flex items-center gap-2.5 shrink-0 self-end sm:self-center">
+                  <span class="text-xs font-bold" [class.text-rose-700]="!modalIsActive" [class.text-emerald-800]="modalIsActive">
+                    {{ modalIsActive ? 'Активний' : 'Заблоковано' }}
+                  </span>
+                  <button
+                    type="button"
+                    role="switch"
+                    [attr.aria-checked]="modalIsActive"
+                    (click)="onInstantToggleUserAccess(targetUser)"
+                    [disabled]="isLoading() || (targetUser.role === 'admin' && adminCount() <= 1 && modalIsActive)"
+                    class="relative inline-flex h-7 w-13 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                    [class.bg-emerald-600]="modalIsActive"
+                    [class.bg-rose-600]="!modalIsActive"
+                    title="Миттєво увімкнути або заблокувати доступ до застосунку"
+                  >
+                    <span
+                      class="pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out flex items-center justify-center"
+                      [class.translate-x-6]="modalIsActive"
+                      [class.translate-x-0]="!modalIsActive"
+                    >
+                      <mat-icon
+                        class="text-xs leading-none"
+                        [class.text-emerald-600]="modalIsActive"
+                        [class.text-rose-600]="!modalIsActive"
+                      >
+                        {{ modalIsActive ? 'check' : 'lock' }}
+                      </mat-icon>
+                    </span>
+                  </button>
+                </div>
               </div>
 
-              <!-- Section 2: Allowed Application Tabs -->
-              <div class="space-y-2.5">
-                <div class="flex items-center justify-between">
+              <!-- Section 0: User Role & Household Access Level ("Тільки для перегляду" vs "Повний доступ") -->
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
+                  <label for="modal-user-role-select" class="block text-xs font-bold text-slate-900">
+                    Роль у системі
+                  </label>
+                  <select
+                    id="modal-user-role-select"
+                    [value]="modalRole()"
+                    (change)="onModalRoleChange($any($event.target).value)"
+                    [disabled]="targetUser.role === 'admin' && adminCount() <= 1"
+                    class="w-full px-3 py-2 rounded-xl bg-white border border-slate-300 text-slate-900 text-xs font-semibold focus:outline-none focus:border-emerald-500 cursor-pointer"
+                  >
+                    <option value="admin">Адміністратор (Повний доступ)</option>
+                    <option value="user">Користувач (Спільний дім / Індивідуальний)</option>
+                    <option value="new">Новий (Без доступу)</option>
+                  </select>
+                  <div class="text-3xs text-slate-500">
+                    Створено: {{ formatDate(targetUser.createdAt) }}
+                  </div>
+                </div>
+
+                <!-- Household Access Level Switcher -->
+                <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
+                  <div class="text-xs font-bold text-slate-900 flex items-center justify-between">
+                    <span>Доступ до спільного будинку та бюджету</span>
+                    <span class="text-3xs font-semibold text-amber-700">За замовчуванням: Перегляд</span>
+                  </div>
+                  <div class="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      (click)="setModalAccessLevel('view_only')"
+                      class="p-2.5 rounded-xl border text-left flex items-center gap-2 transition-all cursor-pointer"
+                      [class.bg-amber-50]="modalAccessLevel() === 'view_only'"
+                      [class.border-amber-400]="modalAccessLevel() === 'view_only'"
+                      [class.text-amber-900]="modalAccessLevel() === 'view_only'"
+                      [class.bg-white]="modalAccessLevel() !== 'view_only'"
+                      [class.border-slate-200]="modalAccessLevel() !== 'view_only'"
+                      [class.text-slate-600]="modalAccessLevel() !== 'view_only'"
+                    >
+                      <mat-icon class="text-base text-amber-600 shrink-0">visibility</mat-icon>
+                      <div class="min-w-0">
+                        <div class="text-2xs font-extrabold truncate">Тільки для перегляду</div>
+                        <div class="text-3xs opacity-75 truncate">Без змін даних</div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      (click)="setModalAccessLevel('full')"
+                      class="p-2.5 rounded-xl border text-left flex items-center gap-2 transition-all cursor-pointer"
+                      [class.bg-emerald-50]="modalAccessLevel() === 'full'"
+                      [class.border-emerald-500]="modalAccessLevel() === 'full'"
+                      [class.text-emerald-900]="modalAccessLevel() === 'full'"
+                      [class.bg-white]="modalAccessLevel() !== 'full'"
+                      [class.border-slate-200]="modalAccessLevel() !== 'full'"
+                      [class.text-slate-600]="modalAccessLevel() !== 'full'"
+                    >
+                      <mat-icon class="text-base text-emerald-600 shrink-0">edit_note</mat-icon>
+                      <div class="min-w-0">
+                        <div class="text-2xs font-extrabold truncate">Повний доступ</div>
+                        <div class="text-3xs opacity-75 truncate">Внесення та зміни</div>
+                      </div>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Section 0.5: Single-Choice Member Relationship Dropdown -->
+              <div class="p-4 rounded-2xl bg-gradient-to-r from-rose-50/50 via-indigo-50/40 to-teal-50/50 border border-slate-200/90 space-y-2.5">
+                <div class="flex items-center justify-between flex-wrap gap-2">
+                  <label for="modal-user-relation-select" class="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                    <mat-icon class="text-base text-rose-500">diversity_3</mat-icon>
+                    <span>Статус користувача (Сім'я та близькі)</span>
+                  </label>
+                  <span class="text-2xs text-slate-500">
+                    Однозначний вибір зі списку
+                  </span>
+                </div>
+                @let selectedModalRel = getSelectedModalMemberRelation();
+                @let selectedModalRelMeta = getRelationTagMeta(selectedModalRel);
+                <div class="flex flex-col sm:flex-row sm:items-center gap-2.5">
+                  <div class="relative flex-1">
+                    <select
+                      id="modal-user-relation-select"
+                      [value]="selectedModalRel"
+                      (change)="setModalMemberRelation($any($event.target).value)"
+                      class="w-full px-3.5 py-2.5 rounded-xl bg-white border border-slate-200 text-xs font-extrabold text-slate-900 focus:outline-none focus:ring-2 focus:ring-teal-500 cursor-pointer"
+                    >
+                      @for (tag of relationTagsCatalog; track tag.id) {
+                        <option [value]="tag.id" [selected]="selectedModalRel === tag.id">
+                          {{ tag.label }}
+                        </option>
+                      }
+                    </select>
+                  </div>
+                  @if (selectedModalRelMeta) {
+                    <div
+                      [class]="'px-3.5 py-2 rounded-xl border text-xs font-extrabold inline-flex items-center gap-2 shrink-0 ' + selectedModalRelMeta.badgeClass"
+                    >
+                      <mat-icon [class]="'text-base leading-none ' + selectedModalRelMeta.iconColorClass">{{ selectedModalRelMeta.icon }}</mat-icon>
+                      <span>Обрано: {{ selectedModalRelMeta.label }}</span>
+                    </div>
+                  }
+                </div>
+              </div>
+
+              <!-- Section 1: Allowed Application Tabs -->
+              <div class="space-y-2.5 p-4 rounded-2xl bg-slate-50/60 border border-slate-200/80">
+                <div class="flex items-center justify-between flex-wrap gap-2">
                   <div class="text-xs font-bold text-slate-900 flex items-center gap-1.5">
                     <mat-icon class="text-base text-indigo-600">tab</mat-icon>
-                    <span>Доступ до вкладок застосунку</span>
+                    <span>Доступні вкладки застосунку</span>
                   </div>
                   <div class="flex items-center gap-2 text-2xs">
                     <button
@@ -626,40 +996,40 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
                       (click)="selectUtilityOnlyModalTabs()"
                       class="text-amber-700 hover:underline font-semibold cursor-pointer"
                     >
-                      Тільки Комунальні (Електро + Вода)
+                      Тільки Комунальні
                     </button>
                   </div>
                 </div>
 
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
                   @for (tabItem of assignableTabs; track tabItem.id) {
                     @let checked = modalAllowedTabs().includes(tabItem.id);
                     <button
                       type="button"
                       (click)="toggleModalTab(tabItem.id)"
-                      class="p-3 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer"
-                      [class.bg-emerald-50/80]="checked"
+                      class="p-2.5 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer"
+                      [class.bg-emerald-50/90]="checked"
                       [class.border-emerald-400]="checked"
                       [class.bg-white]="!checked"
                       [class.border-slate-200]="!checked"
                     >
-                      <div class="flex items-center gap-2.5">
+                      <div class="flex items-center gap-2 min-w-0">
                         <div
-                          class="w-8 h-8 rounded-lg flex items-center justify-center"
+                          class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"
                           [class.bg-emerald-600]="checked"
                           [class.text-white]="checked"
                           [class.bg-slate-100]="!checked"
                           [class.text-slate-500]="!checked"
                         >
-                          <mat-icon class="text-base">{{ tabItem.icon }}</mat-icon>
+                          <mat-icon class="text-sm">{{ tabItem.icon }}</mat-icon>
                         </div>
-                        <div>
-                          <div class="text-xs font-bold text-slate-900">{{ tabItem.label }}</div>
-                          <div class="text-3xs text-slate-500">{{ checked ? 'Доступ відкрито' : 'Приховано' }}</div>
+                        <div class="min-w-0">
+                          <div class="text-xs font-bold text-slate-900 truncate">{{ tabItem.label }}</div>
+                          <div class="text-3xs text-slate-500">{{ checked ? 'Відкрито' : 'Приховано' }}</div>
                         </div>
                       </div>
                       <mat-icon
-                        class="text-lg"
+                        class="text-base shrink-0"
                         [class.text-emerald-600]="checked"
                         [class.text-slate-300]="!checked"
                       >
@@ -670,19 +1040,27 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
                 </div>
               </div>
 
-              <!-- Section 2B: Granular System Settings Permissions -->
-              <div class="space-y-2.5">
+              <!-- Section 2: Granular Settings Sections Access -->
+              <div class="space-y-2.5 p-4 rounded-2xl bg-slate-50/60 border border-slate-200/80">
                 <div class="flex items-center justify-between flex-wrap gap-2">
                   <div>
                     <div class="text-xs font-bold text-slate-900 flex items-center gap-1.5">
                       <mat-icon class="text-base text-slate-700">settings</mat-icon>
-                      <span>Доступ до окремих пунктів Системних налаштувань</span>
+                      <span>Доступ до пунктів вкладки «Налаштування»</span>
                     </div>
                     <p class="text-2xs text-slate-500 mt-0.5">
-                      За замовчуванням системні налаштування закриті для користувачів. Оберіть окремі пункти, до яких потрібно відкрити доступ.
+                      Оберіть, які розділи налаштувань бачитиме цей користувач (Тариф електро, Тариф на воду, Тариф на вивіз сміття тощо).
                     </p>
                   </div>
-                  <div class="flex items-center gap-2 text-2xs">
+                  <div class="flex items-center gap-2 text-2xs flex-wrap">
+                    <button
+                      type="button"
+                      (click)="selectDefaultUserModalSettings()"
+                      class="text-emerald-700 hover:underline font-semibold cursor-pointer"
+                    >
+                      Користувацькі (за замовчуванням)
+                    </button>
+                    <span class="text-slate-300">•</span>
                     <button
                       type="button"
                       (click)="selectAllModalSettings()"
@@ -704,32 +1082,40 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   @for (sec of allSettingsSections; track sec.id) {
                     @let secChecked = modalAllowedSettings().includes(sec.id);
+                    @let isUserScoped = isSettingUserScoped(sec.id);
                     <button
                       type="button"
                       (click)="toggleModalSettingsSection(sec.id)"
-                      class="p-3 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer"
-                      [class.bg-indigo-50/80]="secChecked"
+                      class="p-2.5 rounded-xl border text-left flex items-center justify-between transition-all cursor-pointer"
+                      [class.bg-indigo-50/90]="secChecked"
                       [class.border-indigo-400]="secChecked"
                       [class.bg-white]="!secChecked"
                       [class.border-slate-200]="!secChecked"
                     >
                       <div class="flex items-center gap-2.5 min-w-0">
                         <div
-                          class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+                          class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"
                           [class.bg-indigo-600]="secChecked"
                           [class.text-white]="secChecked"
                           [class.bg-slate-100]="!secChecked"
                           [class.text-slate-500]="!secChecked"
                         >
-                          <mat-icon class="text-base">{{ sec.icon }}</mat-icon>
+                          <mat-icon class="text-sm">{{ sec.icon }}</mat-icon>
                         </div>
                         <div class="min-w-0">
-                          <div class="text-xs font-bold text-slate-900 truncate">{{ sec.label }}</div>
+                          <div class="flex items-center gap-1.5 flex-wrap">
+                            <span class="text-xs font-bold text-slate-900 truncate">{{ sec.label }}</span>
+                            @if (isUserScoped) {
+                              <span class="px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-800 text-3xs font-bold">Користувацьке</span>
+                            } @else {
+                              <span class="px-1.5 py-0.5 rounded-md bg-slate-200 text-slate-600 text-3xs font-semibold">Системне</span>
+                            }
+                          </div>
                           <div class="text-3xs text-slate-500 truncate">{{ sec.subtitle }}</div>
                         </div>
                       </div>
                       <mat-icon
-                        class="text-lg shrink-0"
+                        class="text-base shrink-0"
                         [class.text-indigo-600]="secChecked"
                         [class.text-slate-300]="!secChecked"
                       >
@@ -740,107 +1126,244 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
                 </div>
               </div>
 
-              <!-- Section 3: Bind Existing Houses / Utility Accounts -->
-              <div class="space-y-2.5">
+              <!-- Section 3: Bound Houses + Individual Per-User House Visibility per Tab -->
+              <div class="space-y-3 p-4 rounded-2xl bg-amber-50/40 border border-amber-200/80">
                 <div>
                   <div class="text-xs font-bold text-slate-900 flex items-center gap-1.5">
                     <mat-icon class="text-base text-amber-600">home_work</mat-icon>
-                    <span>Привʼязка будинків (особових рахунків електроенергії та води)</span>
+                    <span>Привʼязка будинків та індивідуальна видимість по вкладках для {{ targetUser.name }}</span>
                   </div>
                   <p class="text-2xs text-slate-500 mt-0.5">
-                    Оберіть будинки, створені адміністратором, щоб привʼязати їх до акаунту цього користувача. Користувач бачитиме їхні графіки, покази та нарахування.
+                    Навіть якщо будинок спільний для декількох користувачів, налаштування показу чи приховування будинку на вкладках («Графік», «Електро», «Вода», «Сміття») зберігається індивідуально для цього користувача.
                   </p>
                 </div>
 
                 @if (allUtilityAccounts().length > 0) {
-                  <div class="grid grid-cols-1 gap-2 max-h-60 overflow-y-auto pr-1">
+                  <div class="space-y-2">
                     @for (acc of allUtilityAccounts(); track acc.id) {
-                      @let isOwner = acc.ownerUserId === targetUser.id;
-                      @let isBound = isOwner || modalAssignedUtilityIds().includes(acc.id);
-                      <button
-                        type="button"
-                        (click)="!isOwner && toggleModalUtilityAccount(acc.id)"
-                        class="p-3 rounded-xl border text-left flex items-center justify-between gap-3 transition-all cursor-pointer"
-                        [class.bg-amber-50/70]="isBound && acc.type === 'electricity'"
-                        [class.border-amber-400]="isBound && acc.type === 'electricity'"
-                        [class.bg-cyan-50/70]="isBound && acc.type === 'water_waste'"
-                        [class.border-cyan-400]="isBound && acc.type === 'water_waste'"
-                        [class.bg-white]="!isBound"
+                      @let isOwner = isAccountOwnedByUser(acc, targetUser);
+                      @let isBound = modalAssignedUtilityIds().includes(acc.id);
+                      <div
+                        class="p-3 rounded-xl border transition-all space-y-2.5"
+                        [class.bg-white]="isBound"
+                        [class.border-amber-300]="isBound"
+                        [class.bg-slate-50/70]="!isBound"
                         [class.border-slate-200]="!isBound"
                       >
-                        <div class="flex items-center gap-3 min-w-0">
+                        <div class="flex items-center justify-between gap-3">
                           <div
-                            class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
-                            [class.bg-amber-500]="acc.type === 'electricity'"
-                            [class.bg-cyan-600]="acc.type === 'water_waste'"
-                            class="text-white"
+                            (click)="toggleModalUtilityAccount(acc.id)"
+                            class="flex items-center gap-2.5 min-w-0 flex-1 cursor-pointer"
                           >
-                            <mat-icon class="text-base">{{ acc.type === 'electricity' ? 'bolt' : 'water_drop' }}</mat-icon>
-                          </div>
-                          <div class="min-w-0">
-                            <div class="flex items-center gap-2 flex-wrap">
-                              <span class="text-xs font-bold text-slate-900">{{ acc.name }}</span>
-                              <span class="px-1.5 py-0.2 rounded bg-slate-100 text-slate-700 font-mono text-3xs font-semibold">
-                                № {{ acc.accountNumber }}
-                              </span>
-                              <span class="text-3xs font-bold uppercase px-1.5 py-0.2 rounded"
-                                [class.bg-amber-100]="acc.type === 'electricity'"
-                                [class.text-amber-800]="acc.type === 'electricity'"
-                                [class.bg-cyan-100]="acc.type === 'water_waste'"
-                                [class.text-cyan-800]="acc.type === 'water_waste'"
-                              >
-                                {{ acc.type === 'electricity' ? 'Електроенергія' : 'Вода та сміття' }}
-                              </span>
-                              @if (isOwner) {
-                                <span class="px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 text-3xs font-bold">
-                                  Створено цим користувачем
+                            <div
+                              class="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 text-white"
+                              [class.bg-amber-500]="acc.type === 'electricity'"
+                              [class.bg-cyan-600]="acc.type === 'water_waste'"
+                            >
+                              <mat-icon class="text-sm">{{ acc.type === 'electricity' ? 'bolt' : 'water_drop' }}</mat-icon>
+                            </div>
+                            <div class="min-w-0">
+                              <div class="flex items-center gap-2 flex-wrap">
+                                <span class="text-xs font-bold text-slate-900">{{ acc.name }}</span>
+                                <span class="px-1.5 py-0.2 rounded bg-slate-100 text-slate-700 font-mono text-3xs font-semibold">
+                                  № {{ acc.accountNumber }}
                                 </span>
+                                @if (isOwner) {
+                                  <span class="px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 text-3xs font-bold">
+                                    Створив цей користувач
+                                  </span>
+                                } @else if (acc.ownerUserId) {
+                                  <span class="px-1.5 py-0.2 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 text-3xs font-semibold">
+                                    Власник: {{ getHouseOwnerLabel(acc) }}
+                                  </span>
+                                }
+                              </div>
+                              @if (acc.address) {
+                                <div class="text-3xs text-slate-500 truncate">{{ acc.address }}</div>
                               }
                             </div>
-                            @if (acc.address) {
-                              <div class="text-2xs text-slate-500 truncate mt-0.5">{{ acc.address }}</div>
-                            }
                           </div>
+
+                          <button
+                            type="button"
+                            (click)="toggleModalUtilityAccount(acc.id)"
+                            class="px-2.5 py-1 rounded-lg text-2xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                            [class.bg-emerald-100]="isBound"
+                            [class.text-emerald-800]="isBound"
+                            [class.bg-slate-200]="!isBound"
+                            [class.text-slate-600]="!isBound"
+                          >
+                            <mat-icon class="text-xs">{{ isBound ? 'link' : 'link_off' }}</mat-icon>
+                            <span>{{ isBound ? 'Привʼязано' : 'Привʼязати' }}</span>
+                          </button>
                         </div>
 
-                        <mat-icon
-                          class="text-lg shrink-0"
-                          [class.text-emerald-600]="isBound"
-                          [class.text-slate-300]="!isBound"
-                        >
-                          {{ isBound ? 'check_circle' : 'radio_button_unchecked' }}
-                        </mat-icon>
-                      </button>
+                        <!-- Per-user individual visibility toggles per tab -->
+                        @if (isBound) {
+                          <div class="pt-2 border-t border-slate-100 flex items-center justify-between flex-wrap gap-2">
+                            <span class="text-3xs font-bold text-slate-500 uppercase tracking-wider">
+                              Показувати цей будинок користувачу на вкладках:
+                            </span>
+                            <div class="flex items-center gap-1.5 flex-wrap">
+                              @for (ht of houseTabsList; track ht.id) {
+                                @let isHidden = isHouseHiddenForTargetUser(targetUser.id, acc, ht.id);
+                                <button
+                                  type="button"
+                                  (click)="toggleHouseVisibilityForTargetUser(targetUser.id, acc.id, ht.id)"
+                                  class="px-2 py-1 rounded-lg text-3xs font-bold border flex items-center gap-1 cursor-pointer transition-all"
+                                  [class.bg-emerald-50]="!isHidden"
+                                  [class.border-emerald-300]="!isHidden"
+                                  [class.text-emerald-800]="!isHidden"
+                                  [class.bg-slate-100]="isHidden"
+                                  [class.border-slate-200]="isHidden"
+                                  [class.text-slate-400]="isHidden"
+                                  [title]="!isHidden ? 'Відображається на вкладці «' + ht.label + '» (натисніть, щоб приховати для цього користувача)' : 'Приховано на вкладці «' + ht.label + '» (натисніть, щоб показати)'"
+                                >
+                                  <mat-icon class="text-3xs">{{ !isHidden ? 'visibility' : 'visibility_off' }}</mat-icon>
+                                  <span>{{ ht.label }}</span>
+                                </button>
+                              }
+                            </div>
+                          </div>
+                        }
+                      </div>
                     }
                   </div>
                 } @else {
-                  <div class="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 text-center">
-                    У системі ще немає створених будинків (особових рахунків електроенергії або води).
+                  <div class="p-4 rounded-xl bg-white border border-slate-200 text-xs text-slate-500 text-center">
+                    У системі ще немає створених будинків.
                   </div>
                 }
               </div>
 
-              <!-- Section 4: Bind IPTV Clients from "Клієнти та групи" -->
-              <div class="space-y-2.5">
+              <!-- Section 4: Individual User Tariffs (Тариф електро, Тариф на воду, Тариф на вивіз сміття) -->
+              <div class="space-y-3 p-4 rounded-2xl bg-indigo-50/40 border border-indigo-200/80">
+                <div>
+                  <div class="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                    <mat-icon class="text-base text-indigo-600">payments</mat-icon>
+                    <span>Індивідуальні тарифи користувача ({{ targetUser.name }})</span>
+                  </div>
+                  <p class="text-2xs text-slate-500 mt-0.5">
+                    Окремі налаштування «Тариф електро», «Тариф на воду» та «Тариф на вивіз сміття» для цього користувача (зберігаються в таблиці БД <code>user_settings</code>).
+                  </p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <!-- 1. Тариф електро -->
+                  <div class="p-3 rounded-xl bg-white border border-amber-200 space-y-2">
+                    <div class="flex items-center gap-1.5 text-xs font-bold text-amber-900">
+                      <mat-icon class="text-sm text-amber-600">bolt</mat-icon>
+                      <span>Тариф електро</span>
+                    </div>
+                    <div class="space-y-1.5">
+                      <div>
+                        <label class="block text-3xs font-semibold text-slate-500">Однозонний (грн/кВт·год)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          [value]="modalElecSingle()"
+                          (input)="modalElecSingle.set(+$any($event.target).value)"
+                          class="w-full px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-300 text-xs font-mono text-slate-900"
+                        />
+                      </div>
+                      <div class="grid grid-cols-2 gap-1.5">
+                        <div>
+                          <label class="block text-3xs font-semibold text-slate-500">День (грн)</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            [value]="modalElecDay()"
+                            (input)="modalElecDay.set(+$any($event.target).value)"
+                            class="w-full px-2 py-1 rounded-lg bg-slate-50 border border-slate-300 text-xs font-mono text-slate-900"
+                          />
+                        </div>
+                        <div>
+                          <label class="block text-3xs font-semibold text-slate-500">Ніч (грн)</label>
+                          <input
+                            type="number"
+                            step="0.01"
+                            [value]="modalElecNight()"
+                            (input)="modalElecNight.set(+$any($event.target).value)"
+                            class="w-full px-2 py-1 rounded-lg bg-slate-50 border border-slate-300 text-xs font-mono text-slate-900"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- 2. Тариф на воду -->
+                  <div class="p-3 rounded-xl bg-white border border-cyan-200 space-y-2">
+                    <div class="flex items-center gap-1.5 text-xs font-bold text-cyan-900">
+                      <mat-icon class="text-sm text-cyan-600">water_drop</mat-icon>
+                      <span>Тариф на воду</span>
+                    </div>
+                    <div class="space-y-1.5">
+                      <div>
+                        <label class="block text-3xs font-semibold text-slate-500">Водопостачання (грн/м³)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          [value]="modalWaterPerM3()"
+                          (input)="modalWaterPerM3.set(+$any($event.target).value)"
+                          class="w-full px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-300 text-xs font-mono text-slate-900"
+                        />
+                      </div>
+                      <div>
+                        <label class="block text-3xs font-semibold text-slate-500">Абонплата (грн/міс)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          [value]="modalWaterSubFee()"
+                          (input)="modalWaterSubFee.set(+$any($event.target).value)"
+                          class="w-full px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-300 text-xs font-mono text-slate-900"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- 3. Тариф на вивіз сміття -->
+                  <div class="p-3 rounded-xl bg-white border border-emerald-200 space-y-2">
+                    <div class="flex items-center gap-1.5 text-xs font-bold text-emerald-900">
+                      <mat-icon class="text-sm text-emerald-600">delete_sweep</mat-icon>
+                      <span>Тариф на вивіз сміття</span>
+                    </div>
+                    <div class="space-y-1.5">
+                      <div>
+                        <label class="block text-3xs font-semibold text-slate-500">За 1 мешканця (грн/міс)</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          [value]="modalWastePerPerson()"
+                          (input)="modalWastePerPerson.set(+$any($event.target).value)"
+                          class="w-full px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-300 text-xs font-mono text-slate-900"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Section 5: Bind IPTV Clients from "Клієнти та групи" -->
+              <div class="space-y-2.5 p-4 rounded-2xl bg-slate-50/60 border border-slate-200/80">
                 <div>
                   <div class="text-xs font-bold text-slate-900 flex items-center gap-1.5">
                     <mat-icon class="text-base text-indigo-600">groups</mat-icon>
-                    <span>Привʼязка акаунтів абонентів з розділу «Клієнти та групи»</span>
+                    <span>Привʼязка абонентів з розділу «Клієнти та групи»</span>
                   </div>
                   <p class="text-2xs text-slate-500 mt-0.5">
-                    Адміністратор може привʼязати конкретного IPTV клієнта / групу підписок до даного користувача для перегляду та керування його балансом і підписками.
+                    Оберіть IPTV клієнтів, яких бачитиме цей користувач.
                   </p>
                 </div>
 
                 @if (allClients().length > 0) {
-                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto pr-1">
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
                     @for (c of allClients(); track c.id) {
                       @let isClientBound = isClientBoundInModal(c.id, c.ownerUserId);
                       <button
                         type="button"
                         (click)="toggleModalClient(c.id)"
                         class="p-2.5 rounded-xl border text-left flex items-center justify-between gap-2 transition-all cursor-pointer"
-                        [class.bg-indigo-50/80]="isClientBound"
+                        [class.bg-indigo-50/90]="isClientBound"
                         [class.border-indigo-400]="isClientBound"
                         [class.bg-white]="!isClientBound"
                         [class.border-slate-200]="!isClientBound"
@@ -860,7 +1383,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
                         </div>
 
                         <mat-icon
-                          class="text-lg shrink-0"
+                          class="text-base shrink-0"
                           [class.text-indigo-600]="isClientBound"
                           [class.text-slate-300]="!isClientBound"
                         >
@@ -870,7 +1393,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
                     }
                   </div>
                 } @else {
-                  <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 text-center">
+                  <div class="p-3.5 rounded-xl bg-white border border-slate-200 text-xs text-slate-500 text-center">
                     У розділі «Клієнти та групи» ще немає створених абонентів.
                   </div>
                 }
@@ -893,7 +1416,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
                 class="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-xs transition-colors cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
               >
                 <mat-icon class="text-sm">save</mat-icon>
-                <span>Зберегти налаштування користувача</span>
+                <span>Зберегти всі налаштування користувача</span>
               </button>
             </div>
           </div>
@@ -950,9 +1473,9 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
                   formControlName="role"
                   class="w-full px-3 py-2 rounded-xl bg-slate-50 border border-slate-300 text-slate-900 text-xs font-semibold focus:outline-none focus:border-emerald-500"
                 >
-                  <option value="user">👤 Користувач (Власні дані + вибрані вкладки/будинки)</option>
-                  <option value="admin">👑 Адміністратор (Всі права)</option>
-                  <option value="new">⏳ Новий (Без доступу)</option>
+                  <option value="user">Користувач (Власні дані + вибрані вкладки/будинки)</option>
+                  <option value="admin">Адміністратор (Всі права)</option>
+                  <option value="new">Новий (Без доступу)</option>
                 </select>
               </div>
 
@@ -983,12 +1506,31 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin';
 export class UsersView {
   private readonly dataService = inject(IptvData);
 
+  readonly houseTabsList: { id: UtilityServiceTabId; label: string }[] = [
+    { id: 'outage_schedule', label: 'Графік' },
+    { id: 'electricity', label: 'Електро' },
+    { id: 'water', label: 'Вода' },
+    { id: 'waste', label: 'Сміття' },
+  ];
+
   async enterTestSandbox(): Promise<void> {
     await this.dataService.switchToTestUser();
   }
 
   async impersonateUser(user: AppUser): Promise<void> {
     await this.dataService.switchToTestUser(user);
+  }
+
+  async impersonateFromModal(user: AppUser): Promise<void> {
+    this.closePermissionsModal();
+    await this.dataService.switchToTestUser(user);
+  }
+
+  async deleteUserFromModal(user: AppUser): Promise<void> {
+    if (confirm(`Ви впевнені, що бажаєте видалити користувача ${user.email}?`)) {
+      this.closePermissionsModal();
+      await this.dataService.deleteUser(user.id);
+    }
   }
 
   readonly users = this.dataService.usersList;
@@ -1008,13 +1550,38 @@ export class UsersView {
   readonly searchControl = new FormControl('');
   readonly isAddModalOpen = signal<boolean>(false);
 
-  // Permissions, House & Client Binding Modal state
+  // Invite Link Creator state
+  readonly relationTagsCatalog: MemberRelationTagMeta[] = MEMBER_RELATION_TAGS;
+  readonly householdInvites = this.dataService.householdInvites;
+  readonly isCreatingInvite = this.dataService.isCreatingInvite;
+  readonly isInviteCreatorExpanded = signal<boolean>(false);
+  readonly inviteAccessLevel = signal<HouseholdAccessLevel>('view_only'); // Default "Тільки для перегляду"
+  readonly inviteIncludeSharedBudget = signal<boolean>(true);
+  readonly inviteSelectedTags = signal<MemberRelationTag[]>(['family']);
+  readonly inviteSelectedHouseIds = signal<string[]>([]);
+  readonly lastCreatedInviteCode = signal<string>('');
+  readonly lastCreatedInviteUrl = signal<string>('');
+  readonly copiedInviteCode = signal<string>('');
+
+  // Full User Settings Modal state
   readonly editingUserForPermissions = signal<AppUser | null>(null);
+  readonly modalRole = signal<UserRole>('user');
+  readonly modalUserStatus = signal<UserAccountStatus>('active');
   readonly modalAllowedTabs = signal<AppTabId[]>([]);
   readonly modalAllowedSettings = signal<SettingsSectionId[]>([]);
   readonly modalAssignedUtilityIds = signal<string[]>([]);
   readonly modalAssignedClientIds = signal<string[]>([]);
-  readonly modalCanManageOwnData = signal<boolean>(true);
+  readonly modalCanManageOwnData = signal<boolean>(false);
+  readonly modalAccessLevel = signal<HouseholdAccessLevel>('view_only');
+  readonly modalMemberTags = signal<MemberRelationTag[]>([]);
+
+  // Individual user tariffs in modal
+  readonly modalElecSingle = signal<number>(4.32);
+  readonly modalElecDay = signal<number>(4.32);
+  readonly modalElecNight = signal<number>(2.16);
+  readonly modalWaterPerM3 = signal<number>(35.16);
+  readonly modalWaterSubFee = signal<number>(21.5);
+  readonly modalWastePerPerson = signal<number>(35.0);
 
   readonly allClients = computed<Client[]>(() => this.dataService.clients());
 
@@ -1026,6 +1593,9 @@ export class UsersView {
 
   readonly adminCount = computed(() => this.users().filter((u) => u.role === 'admin').length);
   readonly viewerCount = computed(() => this.users().filter((u) => u.role === 'user').length);
+  readonly inactiveCount = computed(
+    () => this.users().filter((u) => !isUserAccountActive(u)).length
+  );
 
   readonly filteredUsers = computed(() => {
     const list = this.users();
@@ -1033,7 +1603,9 @@ export class UsersView {
     const query = (this.searchControl.value || '').trim().toLowerCase();
 
     return list.filter((user) => {
-      if (filter !== 'all' && user.role !== filter) {
+      if (filter === 'inactive') {
+        if (isUserAccountActive(user)) return false;
+      } else if (filter !== 'all' && user.role !== filter) {
         return false;
       }
       if (query) {
@@ -1047,6 +1619,147 @@ export class UsersView {
 
   constructor() {
     this.dataService.fetchAdminUtilityAccounts();
+    void this.dataService.fetchHouseholdInvites();
+  }
+
+  openInvitePanel(): void {
+    this.isInviteCreatorExpanded.set(true);
+    if (this.inviteSelectedHouseIds().length === 0) {
+      this.inviteSelectedHouseIds.set(this.allUtilityAccounts().map((a) => a.id));
+    }
+    void this.dataService.fetchHouseholdInvites();
+  }
+
+  readonly copiedCleanApp = signal<boolean>(false);
+
+  openGlobalHouseholdModal(): void {
+    this.dataService.openSharedHouseholdModal();
+  }
+
+  async shareCleanAppFromUsersView(): Promise<void> {
+    const url = this.dataService.publicAppBaseUrl;
+    const nav = typeof navigator !== 'undefined' ? navigator : null;
+    if (nav && typeof nav.share === 'function') {
+      try {
+        await nav.share({
+          title: 'HomeHub — Комунальні послуги, графік ДТЕК та бюджет',
+          text: 'Застосунок для обліку комунальних послуг, графіків відключень світла ДТЕК та домашнього бюджету:',
+          url,
+        });
+        return;
+      } catch {
+        // fallback to clipboard
+      }
+    }
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      void navigator.clipboard.writeText(url);
+      this.copiedCleanApp.set(true);
+      setTimeout(() => this.copiedCleanApp.set(false), 2500);
+    }
+  }
+
+  getRelationTagMeta(tagId: string): MemberRelationTagMeta | undefined {
+    return this.relationTagsCatalog.find((t) => t.id === tagId);
+  }
+
+  getUserRelationTags(user: AppUser): MemberRelationTag[] {
+    return Array.isArray(user.memberTags) ? user.memberTags : [];
+  }
+
+  getUserAccessLevel(user: AppUser): HouseholdAccessLevel {
+    if (user.householdAccessLevel === 'view_only' || user.householdAccessLevel === 'full') {
+      return user.householdAccessLevel;
+    }
+    return user.canManageOwnData === false ? 'view_only' : 'full';
+  }
+
+  getSelectedInviteRelation(): MemberRelationTag {
+    const tags = this.inviteSelectedTags();
+    return tags.length > 0 ? tags[0] : 'family';
+  }
+
+  setInviteRelation(tagId: string): void {
+    const clean = (tagId || '').trim() as MemberRelationTag;
+    this.inviteSelectedTags.set(clean ? [clean] : ['family']);
+  }
+
+  toggleInviteTag(tagId: MemberRelationTag): void {
+    this.inviteSelectedTags.set([tagId]);
+  }
+
+  isInviteHouseSelected(houseId: string): boolean {
+    const sel = this.inviteSelectedHouseIds();
+    if (sel.length === 0) return true;
+    return sel.includes(houseId);
+  }
+
+  toggleInviteHouse(houseId: string): void {
+    const allIds = this.allUtilityAccounts().map((a) => a.id);
+    const curr = this.inviteSelectedHouseIds().length > 0 ? this.inviteSelectedHouseIds() : allIds;
+    if (curr.includes(houseId)) {
+      if (curr.length <= 1) return;
+      this.inviteSelectedHouseIds.set(curr.filter((id) => id !== houseId));
+    } else {
+      this.inviteSelectedHouseIds.set([...curr, houseId]);
+    }
+  }
+
+  async generateNewInviteLink(): Promise<void> {
+    const allIds = this.allUtilityAccounts().map((a) => a.id);
+    const houseIds =
+      this.inviteSelectedHouseIds().length > 0 ? this.inviteSelectedHouseIds() : allIds;
+    const primaryTag = this.getSelectedInviteRelation();
+    const inv = await this.dataService.createHouseholdInvite({
+      houseIds,
+      accessLevel: this.inviteAccessLevel(),
+      includeSharedBudget: this.inviteIncludeSharedBudget(),
+      memberTags: [primaryTag],
+    });
+    if (inv) {
+      this.lastCreatedInviteCode.set(inv.code);
+      this.lastCreatedInviteUrl.set(this.dataService.buildInviteUrl(inv.code));
+      this.copyInviteLink(inv.code);
+    }
+  }
+
+  getInviteUrl(code: string): string {
+    return this.dataService.buildInviteUrl(code);
+  }
+
+  copyInviteLink(code: string): void {
+    const url = this.dataService.buildInviteUrl(code);
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      void navigator.clipboard.writeText(url);
+      this.copiedInviteCode.set(code);
+      setTimeout(() => {
+        if (this.copiedInviteCode() === code) {
+          this.copiedInviteCode.set('');
+        }
+      }, 2500);
+    }
+  }
+
+  async removeInvite(id: string): Promise<void> {
+    await this.dataService.deleteHouseholdInvite(id);
+  }
+
+  setModalAccessLevel(level: HouseholdAccessLevel): void {
+    this.modalAccessLevel.set(level);
+    this.modalCanManageOwnData.set(level === 'full');
+  }
+
+  getSelectedModalMemberRelation(): MemberRelationTag {
+    const tags = this.modalMemberTags();
+    return tags.length > 0 ? tags[0] : 'family';
+  }
+
+  setModalMemberRelation(tagId: string): void {
+    const clean = (tagId || '').trim() as MemberRelationTag;
+    this.modalMemberTags.set(clean ? [clean] : ['family']);
+  }
+
+  toggleModalMemberTag(tagId: MemberRelationTag): void {
+    this.modalMemberTags.set([tagId]);
   }
 
   formatDate(dateStr: string): string {
@@ -1060,65 +1773,51 @@ export class UsersView {
   }
 
   getUserAllowedTabs(user: AppUser): AppTabId[] {
-    if (user.role === 'admin') {
-      return this.assignableTabs.map((t) => t.id);
+    const rawTabs = Array.isArray(user.allowedTabs)
+      ? (user.allowedTabs.filter(
+          (t) =>
+            typeof t === 'string' &&
+            !t.startsWith('settings:') &&
+            !t.startsWith('tag:') &&
+            !t.startsWith('access:') &&
+            !t.startsWith('invitedBy:') &&
+            !t.startsWith('invitedByName:')
+        ) as AppTabId[])
+      : [];
+    const base =
+      rawTabs.length > 0
+        ? rawTabs
+        : user.role === 'admin'
+          ? this.assignableTabs.map((t) => t.id)
+          : [...DEFAULT_USER_TABS];
+    const expanded = new Set<AppTabId>(base);
+    if (expanded.has('water_waste')) {
+      expanded.add('water');
+      expanded.add('waste');
     }
-    if (Array.isArray(user.allowedTabs)) {
-      const expanded = new Set<AppTabId>(user.allowedTabs);
-      if (expanded.has('water_waste')) {
-        expanded.add('water');
-        expanded.add('waste');
-      }
-      return Array.from(expanded);
+    if (user.role === 'admin' || this.getUserAllowedSettings(user).length > 0) {
+      expanded.add('settings');
     }
-    return [...DEFAULT_USER_TABS];
+    return Array.from(expanded);
   }
 
   getUserAllowedSettings(user: AppUser): SettingsSectionId[] {
-    return extractAllowedSettingsFromUser(user);
+    const scopes = this.dataService.systemSettingsConfig().scopesConfig || {};
+    return extractAllowedSettingsFromUser(user, scopes);
   }
 
-  isUserSettingsSectionEnabled(user: AppUser, sectionId: SettingsSectionId): boolean {
-    return this.getUserAllowedSettings(user).includes(sectionId);
+  isSettingUserScoped(sectionId: SettingsSectionId): boolean {
+    return this.dataService.getSettingScope(sectionId) === 'user';
   }
 
-  async quickToggleUserSettingsSection(user: AppUser, sectionId: SettingsSectionId): Promise<void> {
-    const currentSecs = this.getUserAllowedSettings(user);
-    const nextSecs: SettingsSectionId[] = currentSecs.includes(sectionId)
-      ? currentSecs.filter((s) => s !== sectionId)
-      : [...currentSecs, sectionId];
-    const currentTabs = this.getUserAllowedTabs(user).filter((t) => t !== 'settings');
-    const nextTabs: AppTabId[] = nextSecs.length > 0 ? [...currentTabs, 'settings'] : currentTabs;
-    await this.dataService.updateUserPermissions(user.id, {
-      allowedTabs: nextTabs,
-      allowedSettings: nextSecs,
-    });
+  isAccountOwnedByUser(acc: UtilityAccount, user: AppUser): boolean {
+    return Boolean(acc.ownerUserId && acc.ownerUserId === user.id);
   }
 
-  isUserTabEnabled(user: AppUser, tabId: AppTabId): boolean {
-    if (tabId === 'settings') {
-      return user.role === 'admin' || this.getUserAllowedSettings(user).length > 0;
-    }
-    return this.getUserAllowedTabs(user).includes(tabId);
-  }
-
-  async quickToggleUserTab(user: AppUser, tabId: AppTabId): Promise<void> {
-    const currentTabs = this.getUserAllowedTabs(user);
-    let nextTabs: AppTabId[];
-    if (currentTabs.includes(tabId)) {
-      nextTabs = currentTabs.filter((t) => t !== tabId && !( (tabId === 'water' || tabId === 'waste') && t === 'water_waste' ));
-    } else {
-      nextTabs = [...currentTabs, tabId];
-    }
-    await this.dataService.updateUserPermissions(user.id, {
-      allowedTabs: nextTabs,
-    });
-  }
-
-  async toggleUserCanManageOwnData(user: AppUser, canManage: boolean): Promise<void> {
-    await this.dataService.updateUserPermissions(user.id, {
-      canManageOwnData: canManage,
-    });
+  getHouseOwnerLabel(acc: UtilityAccount): string {
+    if (!acc.ownerUserId) return 'Не вказано';
+    const found = this.users().find((u) => u.id === acc.ownerUserId);
+    return found ? found.name || found.email : acc.ownerUserId;
   }
 
   getUserBoundHouses(user: AppUser): UtilityAccount[] {
@@ -1126,27 +1825,10 @@ export class UsersView {
     const assignedSet = new Set(user.assignedUtilityAccountIds || []);
     return all.filter(
       (acc) =>
-        acc.ownerUserId === user.id ||
+        this.isAccountOwnedByUser(acc, user) ||
         assignedSet.has(acc.id) ||
         (Array.isArray(acc.assignedUserIds) && acc.assignedUserIds.includes(user.id))
     );
-  }
-
-  async quickToggleHouseAssignment(user: AppUser, accountId: string): Promise<void> {
-    const currentAssigned = new Set(user.assignedUtilityAccountIds || []);
-    for (const acc of this.allUtilityAccounts()) {
-      if (Array.isArray(acc.assignedUserIds) && acc.assignedUserIds.includes(user.id)) {
-        currentAssigned.add(acc.id);
-      }
-    }
-    if (currentAssigned.has(accountId)) {
-      currentAssigned.delete(accountId);
-    } else {
-      currentAssigned.add(accountId);
-    }
-    await this.dataService.updateUserPermissions(user.id, {
-      assignedUtilityAccountIds: Array.from(currentAssigned),
-    });
   }
 
   getUserBoundClients(user: AppUser): Client[] {
@@ -1156,20 +1838,78 @@ export class UsersView {
     );
   }
 
+  isHouseHiddenForTargetUser(userId: string, account: UtilityAccount, tabId: UtilityServiceTabId): boolean {
+    return this.dataService.isHouseHiddenInTabForUser(userId, account, tabId);
+  }
+
+  async toggleHouseVisibilityForTargetUser(
+    userId: string,
+    accountId: string,
+    tabId: UtilityServiceTabId
+  ): Promise<void> {
+    await this.dataService.toggleHouseVisibilityInTabForUser(userId, accountId, tabId);
+  }
+
+  isUserActive(user: AppUser): boolean {
+    return isUserAccountActive(user);
+  }
+
+  onModalRoleChange(newRole: UserRole): void {
+    this.modalRole.set(newRole);
+    if (newRole === 'new') {
+      this.modalUserStatus.set('inactive');
+    } else {
+      this.modalUserStatus.set('active');
+    }
+  }
+
+  async onInstantToggleUserAccess(user: AppUser): Promise<void> {
+    const currentlyActive = this.modalUserStatus() === 'active' && this.modalRole() !== 'new';
+    const nextStatus: UserAccountStatus = currentlyActive ? 'inactive' : 'active';
+    this.modalUserStatus.set(nextStatus);
+    if (nextStatus === 'active' && this.modalRole() === 'new') {
+      this.modalRole.set('user');
+    }
+    const ok = await this.dataService.toggleUserAccessStatus(user.id, nextStatus);
+    if (ok) {
+      const refreshed = this.users().find((u) => u.id === user.id);
+      if (refreshed) {
+        this.editingUserForPermissions.set(refreshed);
+      }
+    }
+  }
+
   openPermissionsModal(user: AppUser): void {
     this.editingUserForPermissions.set(user);
+    this.modalRole.set(user.role);
+    this.modalUserStatus.set(isUserAccountActive(user) ? 'active' : 'inactive');
     this.modalAllowedTabs.set([...this.getUserAllowedTabs(user)]);
     this.modalAllowedSettings.set([...this.getUserAllowedSettings(user)]);
 
     const assignedHouseSet = new Set(user.assignedUtilityAccountIds || []);
     for (const acc of this.allUtilityAccounts()) {
-      if (Array.isArray(acc.assignedUserIds) && acc.assignedUserIds.includes(user.id)) {
+      if (
+        (Array.isArray(acc.assignedUserIds) && acc.assignedUserIds.includes(user.id)) ||
+        (acc.ownerUserId && acc.ownerUserId === user.id)
+      ) {
         assignedHouseSet.add(acc.id);
       }
     }
     this.modalAssignedUtilityIds.set(Array.from(assignedHouseSet));
     this.modalAssignedClientIds.set([...(user.assignedClientIds || [])]);
-    this.modalCanManageOwnData.set(user.canManageOwnData !== false);
+    const effectiveAccess = this.getUserAccessLevel(user);
+    this.modalAccessLevel.set(effectiveAccess);
+    this.modalCanManageOwnData.set(effectiveAccess === 'full');
+    this.modalMemberTags.set([...this.getUserRelationTags(user)]);
+
+    // Load individual tariffs for this user
+    const userTariffs = this.dataService.getUserEffectiveTariffs(user.id);
+    this.modalElecSingle.set(userTariffs.electricitySingle?.rate ?? 4.32);
+    this.modalElecDay.set(userTariffs.electricityDual?.summerDay ?? 4.32);
+    this.modalElecNight.set(userTariffs.electricityDual?.summerNight ?? 2.16);
+    this.modalWaterPerM3.set(userTariffs.water?.price ?? 32);
+    this.modalWaterSubFee.set(userTariffs.water?.monthlyFee ?? 0);
+    this.modalWastePerPerson.set(userTariffs.waste?.price ?? 45);
   }
 
   closePermissionsModal(): void {
@@ -1197,6 +1937,10 @@ export class UsersView {
     }
   }
 
+  selectDefaultUserModalSettings(): void {
+    this.modalAllowedSettings.set(this.dataService.getUserScopedSettingsSections());
+  }
+
   selectAllModalSettings(): void {
     this.modalAllowedSettings.set(this.allSettingsSections.map((s) => s.id));
   }
@@ -1210,7 +1954,7 @@ export class UsersView {
   }
 
   selectUtilityOnlyModalTabs(): void {
-    this.modalAllowedTabs.set(['electricity', 'water', 'waste']);
+    this.modalAllowedTabs.set(['electricity', 'water', 'waste', 'settings']);
   }
 
   toggleModalUtilityAccount(accountId: string): void {
@@ -1244,41 +1988,68 @@ export class UsersView {
   async saveModalPermissions(): Promise<void> {
     const user = this.editingUserForPermissions();
     if (!user) return;
+
+    const newRole = this.modalRole();
+    if (newRole !== user.role) {
+      await this.dataService.updateUserRole(user.id, newRole);
+    }
+
     const settingsSecs = this.modalAllowedSettings();
     const baseTabs = this.modalAllowedTabs().filter((t) => t !== 'settings');
     const finalTabs: AppTabId[] = settingsSecs.length > 0 ? [...baseTabs, 'settings'] : baseTabs;
-    const ok = await this.dataService.updateUserPermissions(user.id, {
+
+    await this.dataService.updateUserPermissions(user.id, {
+      role: newRole,
+      status: this.modalUserStatus(),
       allowedTabs: finalTabs,
       allowedSettings: settingsSecs,
       assignedUtilityAccountIds: this.modalAssignedUtilityIds(),
       assignedClientIds: this.modalAssignedClientIds(),
-      canManageOwnData: this.modalCanManageOwnData(),
+      canManageOwnData: this.modalAccessLevel() === 'full',
+      householdAccessLevel: this.modalAccessLevel(),
+      memberTags: this.modalMemberTags(),
     });
-    if (ok) {
-      this.closePermissionsModal();
-    }
+
+    const baseTariffs = this.dataService.getUserEffectiveTariffs(user.id);
+    const singleRate = Number(this.modalElecSingle()) || 4.32;
+    const dayRate = Number(this.modalElecDay()) || 4.32;
+    const nightRate = Number(this.modalElecNight()) || 2.16;
+    const waterPrice = Number(this.modalWaterPerM3()) || 32;
+    const waterFee = Number(this.modalWaterSubFee()) || 0;
+    const wastePrice = Number(this.modalWastePerPerson()) || 45;
+
+    await this.dataService.updateUtilityTariffs(
+      {
+        ...baseTariffs,
+        electricitySingle: {
+          ...baseTariffs.electricitySingle,
+          rate: singleRate,
+        },
+        electricityDual: {
+          ...baseTariffs.electricityDual,
+          summerDay: dayRate,
+          summerNight: nightRate,
+          winterDay: dayRate,
+          winterNight: nightRate,
+        },
+        water: {
+          ...baseTariffs.water,
+          price: waterPrice,
+          monthlyFee: waterFee,
+        },
+        waste: {
+          ...baseTariffs.waste,
+          price: wastePrice,
+        },
+      },
+      { targetUserId: user.id }
+    );
+
+    this.closePermissionsModal();
   }
 
   async refreshUsers(): Promise<void> {
     await this.dataService.fetchUsers();
-  }
-
-  async setRole(user: AppUser, role: UserRole): Promise<void> {
-    await this.dataService.updateUserRole(user.id, role);
-  }
-
-  async onRoleSelectChange(user: AppUser, event: Event): Promise<void> {
-    const select = event.target as HTMLSelectElement;
-    const newRole = select.value as UserRole;
-    if (newRole && newRole !== user.role) {
-      await this.dataService.updateUserRole(user.id, newRole);
-    }
-  }
-
-  async deleteUser(user: AppUser): Promise<void> {
-    if (confirm(`Ви впевнені, що бажаєте видалити користувача ${user.email}?`)) {
-      await this.dataService.deleteUser(user.id);
-    }
   }
 
   async submitAddUser(): Promise<void> {

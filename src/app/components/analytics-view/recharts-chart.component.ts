@@ -16,10 +16,10 @@ import { MonthlyChartItem } from './recharts-wrapper';
   template: `
     <div class="w-full space-y-4">
       <!-- Chart Control Header -->
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50/80 p-3 rounded-xl border border-slate-200/80">
-        <div class="flex items-center gap-2">
-          <span class="text-xs font-semibold text-slate-700">Вигляд графіку:</span>
-          <div class="inline-flex rounded-lg bg-slate-200/80 p-0.5 text-xs">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50 dark:bg-slate-800/90 p-3 rounded-xl border border-slate-200/80 dark:border-slate-700">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-xs font-semibold text-slate-700 dark:text-slate-200">Вигляд графіку:</span>
+          <div class="inline-flex rounded-lg bg-slate-200/80 dark:bg-slate-900 p-0.5 text-xs border border-slate-300/50 dark:border-slate-700">
             <button
               type="button"
               (click)="chartType.set('composed')"

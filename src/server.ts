@@ -8,6 +8,7 @@ import express from 'express';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GoogleGenAI, Type } from '@google/genai';
+import * as webpush from 'web-push';
 import { FIREBASE_APPLET_CONFIG } from './app/firebase-config';
 import { verifyFirebaseTokenSafe } from './server/firebase-admin';
 import {
@@ -32,6 +33,8 @@ import {
   saveUserToCloudSql,
   deleteUserFromCloudSql,
   saveSettingsToCloudSql,
+  saveUserSettingsToCloudSql,
+  saveSystemSettingsConfigToCloudSql,
   seedInitialDataToCloudSql,
   purgeTestDataFromCloudSql,
   getCloudSqlDbStatus,
@@ -78,12 +81,69 @@ interface AppState {
   providerBalanceAdjustments: Record<string, unknown>[];
   accountDeductionOverrides: Record<string, unknown>[];
   users: Record<string, unknown>[];
+  userSettings: Record<string, Record<string, unknown>>;
+  systemSettingsConfig: Record<string, unknown>;
   settings: Record<string, unknown>;
 }
 
+const DEFAULT_SCOPES_CONFIG: Record<string, 'user' | 'system'> = {
+  theme: 'user',
+  outage_display: 'user',
+  house_visibility: 'user',
+  electricity_tariffs: 'user',
+  water_tariffs: 'user',
+  waste_tariffs: 'user',
+  billing: 'system',
+  viber: 'system',
+  telegram: 'system',
+  database: 'system',
+  backup: 'system',
+};
+
+const DEFAULT_SYSTEM_SETTINGS_CONFIG: Record<string, unknown> = {
+  id: 'global',
+  scopesConfig: { ...DEFAULT_SCOPES_CONFIG },
+  systemValues: {},
+  updatedAt: new Date().toISOString(),
+};
+
+function getDefaultUserSettingsIds(
+  scopesOverride?: Record<string, 'user' | 'system'>
+): string[] {
+  const scopes =
+    scopesOverride ||
+    (state?.systemSettingsConfig?.['scopesConfig'] as Record<string, 'user' | 'system'>) ||
+    DEFAULT_SCOPES_CONFIG;
+  return Object.keys(DEFAULT_SCOPES_CONFIG).filter(
+    (key) => (scopes[key] || DEFAULT_SCOPES_CONFIG[key]) === 'user'
+  );
+}
+
+function ensureUserDefaultSettings(user: Record<string, unknown>): boolean {
+  let changed = false;
+  if (user['role'] === 'admin') return false;
+  const userScoped = getDefaultUserSettingsIds();
+  const currentSettings = Array.isArray(user['allowedSettings'])
+    ? (user['allowedSettings'] as string[])
+    : [];
+  const mergedSettings = Array.from(new Set([...userScoped, ...currentSettings]));
+  if (mergedSettings.length !== currentSettings.length) {
+    user['allowedSettings'] = mergedSettings;
+    changed = true;
+  }
+  const currentTabs = Array.isArray(user['allowedTabs'])
+    ? (user['allowedTabs'] as string[])
+    : ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'settings'];
+  if (mergedSettings.length > 0 && !currentTabs.includes('settings')) {
+    user['allowedTabs'] = [...currentTabs, 'settings'];
+    changed = true;
+  }
+  return changed;
+}
+
 const DEFAULT_SETTINGS_OBJ: Record<string, unknown> = {
-  telegramBotToken: '',
-  telegramBotUsername: 'iptv_billing_bot',
+  telegramBotToken: process.env['TELEGRAM_BOT_TOKEN'] || '',
+  telegramBotUsername: process.env['TELEGRAM_BOT_USERNAME'] || 'iptv_billing_bot',
   telegramSenderName: 'IPTV Підтримка',
   cardRequisites: '4441 1144 2233 5566 (Монобанк)',
   reminderDaysBefore: 7,
@@ -129,8 +189,36 @@ const state: AppState = {
       lastLoginAt: new Date().toISOString(),
     },
   ],
+  userSettings: {},
+  systemSettingsConfig: { ...DEFAULT_SYSTEM_SETTINGS_CONFIG },
   settings: { ...DEFAULT_SETTINGS_OBJ },
 };
+
+function getOrCreateUserSettingsEntry(userId: string): Record<string, unknown> {
+  const uid = String(userId || 'anonymous');
+  if (!state.userSettings[uid]) {
+    const userObj = state.users.find((u) => String(u['id']) === uid);
+    const defaultHidden: Record<string, string[]> = {};
+    for (const acc of state.utilityAccounts) {
+      const accId = String(acc['id'] || '');
+      if (accId && Array.isArray(acc['hiddenUtilityTabs']) && acc['hiddenUtilityTabs'].length > 0) {
+        defaultHidden[accId] = [...(acc['hiddenUtilityTabs'] as string[])];
+      }
+    }
+    state.userSettings[uid] = {
+      userId: uid,
+      themeMode: 'light',
+      outageScheduleViewVariant: String(userObj?.['outageScheduleViewVariant'] || 'v10_minimal_pills'),
+      hiddenHouseTabs: defaultHidden,
+      electricityTariffs: null,
+      waterTariffs: null,
+      wasteTariffs: null,
+      customPreferences: {},
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  return state.userSettings[uid];
+}
 
 const getUkFormattedNow = () => new Date().toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' });
 
@@ -166,6 +254,8 @@ async function triggerBackgroundMultiDbSync(): Promise<void> {
       providerBalanceAdjustments: state.providerBalanceAdjustments,
       accountDeductionOverrides: state.accountDeductionOverrides,
       users: state.users,
+      userSettings: state.userSettings,
+      systemSettingsConfig: state.systemSettingsConfig,
       settings: state.settings,
     };
     if (isExternalDbConfigured()) {
@@ -289,6 +379,50 @@ async function hydrateFromDatabase(): Promise<boolean> {
     if (loaded.settings) {
       state.settings = { ...DEFAULT_SETTINGS_OBJ, ...loaded.settings };
     }
+    if (loaded.systemSettingsConfig) {
+      const loadedScopes =
+        loaded.systemSettingsConfig['scopesConfig'] &&
+        typeof loaded.systemSettingsConfig['scopesConfig'] === 'object'
+          ? (loaded.systemSettingsConfig['scopesConfig'] as Record<string, 'user' | 'system'>)
+          : {};
+      state.systemSettingsConfig = {
+        ...DEFAULT_SYSTEM_SETTINGS_CONFIG,
+        ...loaded.systemSettingsConfig,
+        scopesConfig: {
+          ...DEFAULT_SCOPES_CONFIG,
+          ...loadedScopes,
+        },
+      };
+    } else {
+      state.systemSettingsConfig = {
+        ...DEFAULT_SYSTEM_SETTINGS_CONFIG,
+        scopesConfig: { ...DEFAULT_SCOPES_CONFIG },
+      };
+      void saveSystemSettingsConfigToCloudSql(state.systemSettingsConfig);
+    }
+
+    if (Array.isArray(loaded.userSettings)) {
+      const map: Record<string, Record<string, unknown>> = {};
+      for (const row of loaded.userSettings) {
+        const uid = String(row['userId'] || '');
+        if (uid) {
+          map[uid] = { ...row };
+        }
+      }
+      state.userSettings = map;
+    }
+
+    for (const u of state.users) {
+      if (ensureUserDefaultSettings(u)) {
+        void saveUserToCloudSql(u);
+      }
+      const uid = String(u['id'] || '');
+      if (uid && !state.userSettings[uid]) {
+        const entry = getOrCreateUserSettingsEntry(uid);
+        void saveUserSettingsToCloudSql(entry);
+      }
+    }
+
     bumpVersion();
     return true;
   } catch (err) {
@@ -376,8 +510,8 @@ function resolveRequestUser(req: express.Request): {
       status: 'active',
       allowedTabs: isOwnerAdmin
         ? ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'clients', 'accounts', 'budget', 'analytics', 'payments', 'users', 'settings']
-        : ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste'],
-      allowedSettings: [],
+        : ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'settings'],
+      allowedSettings: isOwnerAdmin ? Object.keys(DEFAULT_SCOPES_CONFIG) : getDefaultUserSettingsIds(),
       assignedUtilityAccountIds: [],
       assignedClientIds: [],
       canManageOwnData: true,
@@ -398,8 +532,8 @@ function resolveRequestUser(req: express.Request): {
         name: 'Тестовий Користувач (Перевірка доступу)',
         role: 'user',
         status: 'active',
-        allowedTabs: ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste'],
-        allowedSettings: [],
+        allowedTabs: ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'settings'],
+        allowedSettings: getDefaultUserSettingsIds(),
         assignedUtilityAccountIds: [],
         assignedClientIds: [],
         canManageOwnData: true,
@@ -410,6 +544,7 @@ function resolveRequestUser(req: express.Request): {
     }
     if (imp) {
       if (imp['role'] === 'new') imp['role'] = 'user';
+      ensureUserDefaultSettings(imp);
       return {
         authenticated: true,
         user: imp,
@@ -451,6 +586,82 @@ app.get('/api/sync/version', (_req, res) => {
   res.json({ version: state.version, lastUpdate: state.lastUpdate });
 });
 
+const CURRENT_APP_RELEASE_VERSION = 'v4.0';
+const PREVIOUS_APP_RELEASE_VERSION = 'v3.0';
+
+function getAppReleaseInfoForUser(user: Record<string, unknown> | null): {
+  currentVersion: string;
+  previousVersion: string;
+  userLastSeenVersion: string;
+  dismissedVersion: string;
+  shouldShowModal: boolean;
+} {
+  const sysVals = getSystemValuesMap();
+  const existingTracking =
+    sysVals['appReleaseTracking'] && typeof sysVals['appReleaseTracking'] === 'object'
+      ? (sysVals['appReleaseTracking'] as Record<string, unknown>)
+      : {};
+  const storedCurr = String(existingTracking['currentVersion'] || '');
+  let prevVer = String(existingTracking['previousVersion'] || PREVIOUS_APP_RELEASE_VERSION);
+  if (storedCurr && storedCurr !== CURRENT_APP_RELEASE_VERSION) {
+    prevVer = storedCurr;
+  }
+  if (storedCurr !== CURRENT_APP_RELEASE_VERSION) {
+    sysVals['appReleaseTracking'] = {
+      currentVersion: CURRENT_APP_RELEASE_VERSION,
+      previousVersion: prevVer || PREVIOUS_APP_RELEASE_VERSION,
+      updatedAt: new Date().toISOString(),
+    };
+    void persistSystemValues();
+  }
+
+  if (!user || !user['id'] || user['id'] === 'anonymous') {
+    return {
+      currentVersion: CURRENT_APP_RELEASE_VERSION,
+      previousVersion: prevVer || PREVIOUS_APP_RELEASE_VERSION,
+      userLastSeenVersion: PREVIOUS_APP_RELEASE_VERSION,
+      dismissedVersion: '',
+      shouldShowModal: false,
+    };
+  }
+
+  const uid = String(user['id']);
+  const us = getOrCreateUserSettingsEntry(uid);
+  const customPrefs =
+    us['customPreferences'] && typeof us['customPreferences'] === 'object'
+      ? (us['customPreferences'] as Record<string, unknown>)
+      : {};
+  const sysDismissedMap =
+    sysVals['userDismissedReleases'] && typeof sysVals['userDismissedReleases'] === 'object'
+      ? (sysVals['userDismissedReleases'] as Record<string, string>)
+      : {};
+
+  const dismissedVersion = String(
+    customPrefs['dismissedAppReleaseVersion'] ||
+      user['dismissedAppReleaseVersion'] ||
+      sysDismissedMap[uid] ||
+      ''
+  );
+  const userLastSeenVersion = String(
+    customPrefs['lastSeenAppVersion'] ||
+      user['lastSeenAppVersion'] ||
+      (dismissedVersion === CURRENT_APP_RELEASE_VERSION
+        ? CURRENT_APP_RELEASE_VERSION
+        : prevVer || PREVIOUS_APP_RELEASE_VERSION)
+  );
+
+  user['dismissedAppReleaseVersion'] = dismissedVersion;
+  user['lastSeenAppVersion'] = userLastSeenVersion;
+
+  return {
+    currentVersion: CURRENT_APP_RELEASE_VERSION,
+    previousVersion: prevVer || PREVIOUS_APP_RELEASE_VERSION,
+    userLastSeenVersion,
+    dismissedVersion,
+    shouldShowModal: dismissedVersion !== CURRENT_APP_RELEASE_VERSION,
+  };
+}
+
 app.get('/api/auth/me', (req, res) => {
   const { authenticated, user, realAdmin } = resolveRequestUser(req);
   const clientId = process.env['GOOGLE_CLIENT_ID'] || FIREBASE_APPLET_CONFIG.oAuthClientId || '';
@@ -461,15 +672,18 @@ app.get('/api/auth/me', (req, res) => {
       realAdminUser: null,
       googleClientId: clientId,
       totalUsersCount: state.users.length,
+      appReleaseInfo: getAppReleaseInfoForUser(null),
     });
     return;
   }
+  const appReleaseInfo = getAppReleaseInfoForUser(user);
   res.json({
     authenticated: true,
     user,
     realAdminUser: realAdmin,
     googleClientId: clientId,
     totalUsersCount: state.users.length,
+    appReleaseInfo,
   });
 });
 
@@ -529,8 +743,8 @@ app.post('/api/auth/google', async (req, res) => {
       status: 'active',
       allowedTabs: isOwnerAdmin
         ? ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'clients', 'accounts', 'budget', 'analytics', 'payments', 'users', 'settings']
-        : ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste'],
-      allowedSettings: [],
+        : ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'settings'],
+      allowedSettings: isOwnerAdmin ? Object.keys(DEFAULT_SCOPES_CONFIG) : getDefaultUserSettingsIds(),
       assignedUtilityAccountIds: [],
       assignedClientIds: [],
       canManageOwnData: true,
@@ -542,12 +756,15 @@ app.post('/api/auth/google', async (req, res) => {
     existing['lastLoginAt'] = new Date().toISOString();
     if (isOwnerAdmin) {
       existing['role'] = 'admin';
-    } else if (existing['role'] === 'new') {
+      existing['status'] = 'active';
+    } else if (existing['role'] === 'new' && existing['status'] !== 'inactive') {
       existing['role'] = 'user';
+      existing['status'] = 'active';
       if (!Array.isArray(existing['allowedTabs']) || (existing['allowedTabs'] as string[]).length === 0) {
-        existing['allowedTabs'] = ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste'];
+        existing['allowedTabs'] = ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'settings'];
       }
     }
+    ensureUserDefaultSettings(existing);
     if (name) existing['name'] = name;
     if (picture) existing['picture'] = picture;
     if (sub) existing['sub'] = sub;
@@ -556,11 +773,13 @@ app.post('/api/auth/google', async (req, res) => {
   await saveUserToCloudSql(existing);
   bumpVersion();
 
+  const appReleaseInfo = getAppReleaseInfoForUser(existing);
   const emailB64 = Buffer.from(normEmail, 'utf8').toString('base64url');
   res.json({
     success: true,
     user: existing,
     token: `gauth3_${existing['id']}__${emailB64}`,
+    appReleaseInfo,
     message: `Вітаємо, ${existing['name']}!`,
   });
 });
@@ -611,6 +830,15 @@ const handleSaveUserPreferences = async (req: express.Request, res: express.Resp
     if (defaultUtilityAccountId !== undefined) {
       user['defaultUtilityAccountId'] = defaultUtilityAccountId || null;
     }
+    const uid = String(user['id'] || '');
+    if (uid && uid !== 'anonymous') {
+      const us = getOrCreateUserSettingsEntry(uid);
+      if (outageScheduleViewVariant !== undefined) {
+        us['outageScheduleViewVariant'] = String(outageScheduleViewVariant);
+      }
+      us['updatedAt'] = new Date().toISOString();
+      await saveUserSettingsToCloudSql(us);
+    }
     await saveUserToCloudSql(user);
     bumpVersion();
     res.status(200).json({
@@ -629,6 +857,66 @@ const handleSaveUserPreferences = async (req: express.Request, res: express.Resp
 app.put('/api/auth/preferences', handleSaveUserPreferences);
 app.post('/api/auth/preferences', handleSaveUserPreferences);
 app.patch('/api/auth/preferences', handleSaveUserPreferences);
+
+app.get('/api/app-release/status', (req, res) => {
+  const { authenticated, user } = resolveRequestUser(req);
+  const info = getAppReleaseInfoForUser(authenticated ? user : null);
+  res.json({
+    success: true,
+    ...info,
+  });
+});
+
+const handleDismissAppRelease = async (req: express.Request, res: express.Response) => {
+  try {
+    const { authenticated, user } = resolveRequestUser(req);
+    if (!authenticated || !user || !user['id'] || user['id'] === 'anonymous') {
+      res.status(401).json({ success: false, error: 'Необхідна авторизація' });
+      return;
+    }
+    const versionToDismiss = String(req.body?.version || CURRENT_APP_RELEASE_VERSION).trim() || CURRENT_APP_RELEASE_VERSION;
+    const uid = String(user['id']);
+    const nowIso = new Date().toISOString();
+
+    // 1. Update user_settings.custom_preferences in DB
+    const us = getOrCreateUserSettingsEntry(uid);
+    const customPrefs =
+      us['customPreferences'] && typeof us['customPreferences'] === 'object'
+        ? { ...(us['customPreferences'] as Record<string, unknown>) }
+        : {};
+    customPrefs['dismissedAppReleaseVersion'] = versionToDismiss;
+    customPrefs['lastSeenAppVersion'] = versionToDismiss;
+    customPrefs['dismissedAppReleaseAt'] = nowIso;
+    us['customPreferences'] = customPrefs;
+    us['updatedAt'] = nowIso;
+    await saveUserSettingsToCloudSql(us);
+
+    // 2. Also store in system_settings_config.system_values.userDismissedReleases as backup in DB
+    const sysVals = getSystemValuesMap();
+    if (!sysVals['userDismissedReleases'] || typeof sysVals['userDismissedReleases'] !== 'object') {
+      sysVals['userDismissedReleases'] = {};
+    }
+    (sysVals['userDismissedReleases'] as Record<string, string>)[uid] = versionToDismiss;
+    await persistSystemValues();
+
+    // 3. Update in-memory user record
+    user['dismissedAppReleaseVersion'] = versionToDismiss;
+    user['lastSeenAppVersion'] = versionToDismiss;
+
+    bumpVersion();
+    res.json({
+      success: true,
+      appReleaseInfo: getAppReleaseInfoForUser(user),
+      message: `Повідомлення про оновлення ${versionToDismiss} приховано для вашого акаунту`,
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Помилка збереження статусу оновлення';
+    res.status(500).json({ success: false, error: msg });
+  }
+};
+
+app.post('/api/app-release/dismiss', handleDismissAppRelease);
+app.put('/api/app-release/dismiss', handleDismissAppRelease);
 
 // ============================================================================
 // USERS & PERMISSIONS API
@@ -653,8 +941,8 @@ app.post('/api/users', async (req, res) => {
       name: name || normEmail.split('@')[0],
       role: role === 'admin' ? 'admin' : 'user',
       status: 'active',
-      allowedTabs: ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste'],
-      allowedSettings: [],
+      allowedTabs: ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'settings'],
+      allowedSettings: getDefaultUserSettingsIds(),
       assignedUtilityAccountIds: [],
       assignedClientIds: [],
       canManageOwnData: true,
@@ -664,6 +952,7 @@ app.post('/api/users', async (req, res) => {
   } else {
     if (name) user['name'] = name;
     if (role) user['role'] = role === 'new' ? 'user' : role;
+    ensureUserDefaultSettings(user);
   }
   await saveUserToCloudSql(user);
   bumpVersion();
@@ -672,7 +961,7 @@ app.post('/api/users', async (req, res) => {
 
 app.put('/api/users/:id/role', async (req, res) => {
   const { id } = req.params;
-  const { role } = req.body || {};
+  const { role, status } = req.body || {};
   const normId = String(id || '').trim().toLowerCase();
   const user = state.users.find(
     (u) =>
@@ -684,10 +973,43 @@ app.put('/api/users/:id/role', async (req, res) => {
     res.status(404).json({ error: 'Користувача не знайдено' });
     return;
   }
-  user['role'] = role;
+  if (role) {
+    user['role'] = role;
+  }
+  if (status === 'active' || status === 'inactive') {
+    user['status'] = status;
+  } else if (role === 'new') {
+    user['status'] = 'inactive';
+  } else if (role === 'admin' || role === 'user') {
+    user['status'] = 'active';
+  }
   await saveUserToCloudSql(user);
   bumpVersion();
   res.json(user);
+});
+
+app.put('/api/users/:id/status', async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body || {};
+  const normId = String(id || '').trim().toLowerCase();
+  const user = state.users.find(
+    (u) =>
+      String(u['id'] || '').toLowerCase() === normId ||
+      String(u['email'] || '').toLowerCase() === normId ||
+      (u['sub'] && String(u['sub']).toLowerCase() === normId)
+  );
+  if (!user) {
+    res.status(404).json({ error: 'Користувача не знайдено' });
+    return;
+  }
+  const nextStatus = status === 'inactive' ? 'inactive' : 'active';
+  user['status'] = nextStatus;
+  if (nextStatus === 'active' && user['role'] === 'new') {
+    user['role'] = 'user';
+  }
+  await saveUserToCloudSql(user);
+  bumpVersion();
+  res.json({ success: true, user });
 });
 
 app.put('/api/users/:id/permissions', async (req, res) => {
@@ -707,7 +1029,7 @@ app.put('/api/users/:id/permissions', async (req, res) => {
       name: payload.name || (id.includes('@') ? id.split('@')[0] : 'Користувач'),
       picture: payload.picture || '',
       role: payload.role || 'user',
-      status: 'active',
+      status: payload.status === 'inactive' ? 'inactive' : 'active',
       allowedTabs: payload.allowedTabs || ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste'],
       allowedSettings: Array.isArray(payload.allowedSettings) ? payload.allowedSettings : [],
       assignedUtilityAccountIds: payload.assignedUtilityAccountIds || [],
@@ -718,6 +1040,9 @@ app.put('/api/users/:id/permissions', async (req, res) => {
     state.users.push(user);
   } else {
     if (payload.role !== undefined) user['role'] = payload.role;
+    if (payload.status === 'active' || payload.status === 'inactive') {
+      user['status'] = payload.status;
+    }
     if (payload.name !== undefined && payload.name !== 'Тестовий Користувач') user['name'] = payload.name;
     if (payload.email !== undefined && !payload.email.endsWith('@homehub.local')) user['email'] = payload.email;
     if (payload.picture !== undefined && payload.picture) user['picture'] = payload.picture;
@@ -737,17 +1062,43 @@ app.put('/api/users/:id/permissions', async (req, res) => {
             acc['assignedUserIds'] = [...currUsers, realUserId];
             void saveUtilityAccountToCloudSql(acc);
           }
-        } else if (currUsers.includes(realUserId) || currUsers.includes(id)) {
-          acc['assignedUserIds'] = currUsers.filter((uid) => uid !== realUserId && uid !== id);
-          void saveUtilityAccountToCloudSql(acc);
+        } else {
+          let changed = false;
+          if (currUsers.includes(realUserId) || currUsers.includes(id)) {
+            acc['assignedUserIds'] = currUsers.filter((uid) => uid !== realUserId && uid !== id);
+            changed = true;
+          }
+          if (
+            String(acc['ownerUserId'] || '') === realUserId ||
+            String(acc['ownerUserId'] || '') === id
+          ) {
+            acc['ownerUserId'] = '';
+            changed = true;
+          }
+          if (changed) {
+            void saveUtilityAccountToCloudSql(acc);
+          }
         }
       }
     }
     if (Array.isArray(payload.assignedClientIds)) {
       user['assignedClientIds'] = payload.assignedClientIds;
     }
-    if (payload.canManageOwnData !== undefined) {
+    if (Array.isArray(payload.memberTags)) {
+      user['memberTags'] = payload.memberTags;
+    }
+    if (payload.householdAccessLevel === 'view_only' || payload.householdAccessLevel === 'full') {
+      user['householdAccessLevel'] = payload.householdAccessLevel;
+      user['canManageOwnData'] = payload.householdAccessLevel === 'full';
+    } else if (payload.canManageOwnData !== undefined) {
       user['canManageOwnData'] = Boolean(payload.canManageOwnData);
+      user['householdAccessLevel'] = Boolean(payload.canManageOwnData) ? 'full' : 'view_only';
+    }
+    if (payload.invitedByUserId !== undefined) {
+      user['invitedByUserId'] = payload.invitedByUserId;
+    }
+    if (payload.invitedByUserName !== undefined) {
+      user['invitedByUserName'] = payload.invitedByUserName;
     }
   }
   await saveUserToCloudSql(user);
@@ -765,6 +1116,301 @@ app.delete('/api/users/:id', async (req, res) => {
 
 app.get('/api/admin/utility-accounts', (_req, res) => {
   res.json(state.utilityAccounts);
+});
+
+// ============================================================================
+// SHARED HOUSEHOLD & BUDGET INVITE LINKS API
+// ============================================================================
+
+function getSystemValuesMap(): Record<string, unknown> {
+  if (!state.systemSettingsConfig || typeof state.systemSettingsConfig !== 'object') {
+    state.systemSettingsConfig = {
+      id: 'global',
+      scopesConfig: { ...DEFAULT_SCOPES_CONFIG },
+      systemValues: {},
+      updatedAt: new Date().toISOString(),
+    };
+  }
+  if (
+    !state.systemSettingsConfig['systemValues'] ||
+    typeof state.systemSettingsConfig['systemValues'] !== 'object'
+  ) {
+    state.systemSettingsConfig['systemValues'] = {};
+  }
+  return state.systemSettingsConfig['systemValues'] as Record<string, unknown>;
+}
+
+function getStoredHouseholdInvites(): Record<string, unknown>[] {
+  const sysVals = getSystemValuesMap();
+  if (!Array.isArray(sysVals['householdInvites'])) {
+    sysVals['householdInvites'] = [];
+  }
+  return sysVals['householdInvites'] as Record<string, unknown>[];
+}
+
+async function persistSystemValues(): Promise<void> {
+  state.systemSettingsConfig['updatedAt'] = new Date().toISOString();
+  await saveSystemSettingsConfigToCloudSql(state.systemSettingsConfig);
+}
+
+app.get('/api/household/invites', (req, res) => {
+  const { authenticated, user } = resolveRequestUser(req);
+  if (!authenticated || !user) {
+    res.json({ invites: [], sharedMembers: [] });
+    return;
+  }
+  const userId = String(user['id'] || '');
+  const allInvites = getStoredHouseholdInvites();
+  const visibleInvites = allInvites.filter(
+    (inv) =>
+      String(inv['ownerUserId'] || '') === userId ||
+      (Array.isArray(inv['acceptedByUserIds']) &&
+        (inv['acceptedByUserIds'] as string[]).includes(userId))
+  );
+
+  // Find users who share houses with current user or were invited by current user (no automatic admin binding)
+  const myHouseIds = new Set<string>(
+    state.utilityAccounts
+      .filter((a) => {
+        const ownerId = String(a['ownerUserId'] || '');
+        const assigned = Array.isArray(a['assignedUserIds']) ? (a['assignedUserIds'] as string[]) : [];
+        const userAssigned = Array.isArray(user['assignedUtilityAccountIds'])
+          ? (user['assignedUtilityAccountIds'] as string[])
+          : [];
+        return (
+          (ownerId && ownerId === userId) ||
+          assigned.includes(userId) ||
+          userAssigned.includes(String(a['id']))
+        );
+      })
+      .map((a) => String(a['id']))
+  );
+
+  const sharedMembers = state.users.filter((u) => {
+    const uid = String(u['id'] || '');
+    if (!uid || uid === userId) return false;
+    if (String(u['invitedByUserId'] || '') === userId) return true;
+    if (String(user['invitedByUserId'] || '') === uid) return true;
+    const uHouses = Array.isArray(u['assignedUtilityAccountIds'])
+      ? (u['assignedUtilityAccountIds'] as string[])
+      : [];
+    return myHouseIds.size > 0 && uHouses.some((hid) => myHouseIds.has(hid));
+  });
+
+  res.json({
+    invites: visibleInvites,
+    sharedMembers,
+  });
+});
+
+app.get('/api/household/invites/:code', (req, res) => {
+  const code = String(req.params.code || '').trim();
+  const invite = getStoredHouseholdInvites().find(
+    (inv) => String(inv['code'] || '') === code || String(inv['id'] || '') === code
+  );
+  if (!invite) {
+    res.status(404).json({ error: 'Запрошення не знайдено або термін його дії закінчився' });
+    return;
+  }
+  res.json({ success: true, invite });
+});
+
+app.post('/api/household/invites', async (req, res) => {
+  const { authenticated, user } = resolveRequestUser(req);
+  if (!authenticated || !user) {
+    res.status(401).json({ error: 'Необхідна авторизація для створення запрошення' });
+    return;
+  }
+  const body = req.body || {};
+  const userId = String(user['id'] || '');
+
+  // Determine houses to include (only houses bound to or owned by this user)
+  const requestedHouseIds: string[] = Array.isArray(body.houseIds)
+    ? body.houseIds.map((x: unknown) => String(x)).filter(Boolean)
+    : [];
+
+  const availableHouses = state.utilityAccounts.filter((a) => {
+    const ownerId = String(a['ownerUserId'] || '');
+    const assigned = Array.isArray(a['assignedUserIds']) ? (a['assignedUserIds'] as string[]) : [];
+    const userAssigned = Array.isArray(user['assignedUtilityAccountIds'])
+      ? (user['assignedUtilityAccountIds'] as string[])
+      : [];
+    return (
+      (ownerId && ownerId === userId) ||
+      assigned.includes(userId) ||
+      userAssigned.includes(String(a['id']))
+    );
+  });
+
+  const targetHouses =
+    requestedHouseIds.length > 0
+      ? availableHouses.filter((a) => requestedHouseIds.includes(String(a['id'])))
+      : availableHouses;
+
+  const houseIds = targetHouses.map((a) => String(a['id']));
+  const houseNames = targetHouses.map(
+    (a) => String(a['name'] || a['address'] || a['accountNumber'] || 'Будинок')
+  );
+
+  const accessLevel = body.accessLevel === 'full' ? 'full' : 'view_only'; // Default 'view_only' ("Тільки для перегляду")
+  const includeSharedBudget = body.includeSharedBudget !== false;
+  const memberTags = Array.isArray(body.memberTags)
+    ? body.memberTags.map((x: unknown) => String(x)).filter(Boolean)
+    : ['family'];
+
+  const randPart = Math.random().toString(36).substring(2, 10) + Date.now().toString(36).slice(-4);
+  const code = `inv_${randPart}`;
+  const invite: Record<string, unknown> = {
+    id: code,
+    code,
+    ownerUserId: userId,
+    ownerName: String(user['name'] || user['email'] || 'Власник будинку'),
+    ownerEmail: String(user['email'] || ''),
+    ownerPicture: String(user['picture'] || ''),
+    houseIds,
+    houseNames,
+    accessLevel,
+    includeSharedBudget,
+    memberTags,
+    label: body.label ? String(body.label).trim() : '',
+    acceptedByUserIds: [],
+    createdAt: new Date().toISOString(),
+  };
+
+  const invites = getStoredHouseholdInvites();
+  invites.unshift(invite);
+  await persistSystemValues();
+  bumpVersion();
+  res.json({ success: true, invite });
+});
+
+app.put('/api/household/invites/:code', async (req, res) => {
+  const { authenticated, user } = resolveRequestUser(req);
+  if (!authenticated || !user) {
+    res.status(401).json({ error: 'Необхідна авторизація' });
+    return;
+  }
+  const code = String(req.params.code || '').trim();
+  const invites = getStoredHouseholdInvites();
+  const invite = invites.find(
+    (inv) => String(inv['code'] || '') === code || String(inv['id'] || '') === code
+  );
+  if (!invite) {
+    res.status(404).json({ error: 'Запрошення не знайдено' });
+    return;
+  }
+  const body = req.body || {};
+  if (Array.isArray(body.memberTags) && body.memberTags.length > 0) {
+    invite['memberTags'] = [String(body.memberTags[0]).trim()];
+  }
+  if (body.accessLevel === 'full' || body.accessLevel === 'view_only') {
+    invite['accessLevel'] = body.accessLevel;
+  }
+  if (typeof body.includeSharedBudget === 'boolean') {
+    invite['includeSharedBudget'] = body.includeSharedBudget;
+  }
+  await persistSystemValues();
+  bumpVersion();
+  res.json({ success: true, invite });
+});
+
+app.post('/api/household/invites/:code/accept', async (req, res) => {
+  const { authenticated, user } = resolveRequestUser(req);
+  if (!authenticated || !user) {
+    res.status(401).json({ error: 'Спочатку увійдіть у свій обліковий запис Google' });
+    return;
+  }
+  const code = String(req.params.code || '').trim();
+  const invites = getStoredHouseholdInvites();
+  const invite = invites.find(
+    (inv) => String(inv['code'] || '') === code || String(inv['id'] || '') === code
+  );
+  if (!invite) {
+    res.status(404).json({ error: 'Запрошення не знайдено або було видалено власником' });
+    return;
+  }
+
+  const userId = String(user['id'] || '');
+  const houseIds = Array.isArray(invite['houseIds']) ? (invite['houseIds'] as string[]) : [];
+  const accessLevel = invite['accessLevel'] === 'full' ? 'full' : 'view_only';
+  const includeSharedBudget = invite['includeSharedBudget'] !== false;
+  const inviteTags = Array.isArray(invite['memberTags']) ? (invite['memberTags'] as string[]) : [];
+
+  // Activate user if they were 'new'
+  if (user['role'] === 'new') {
+    user['role'] = 'user';
+  }
+  user['status'] = 'active';
+
+  // Merge assigned houses
+  const currHouses = Array.isArray(user['assignedUtilityAccountIds'])
+    ? (user['assignedUtilityAccountIds'] as string[])
+    : [];
+  const mergedHouses = Array.from(new Set([...currHouses, ...houseIds]));
+  user['assignedUtilityAccountIds'] = mergedHouses;
+
+  // Bind user to each shared utilityAccount
+  for (const acc of state.utilityAccounts) {
+    const accId = String(acc['id'] || '');
+    if (houseIds.includes(accId)) {
+      const currAssigned = Array.isArray(acc['assignedUserIds'])
+        ? (acc['assignedUserIds'] as string[])
+        : [];
+      if (!currAssigned.includes(userId)) {
+        acc['assignedUserIds'] = [...currAssigned, userId];
+        await saveUtilityAccountToCloudSql(acc);
+      }
+    }
+  }
+
+  // Merge allowed tabs (always include utility tabs + settings, and budget if includeSharedBudget)
+  const currTabs = Array.isArray(user['allowedTabs']) ? (user['allowedTabs'] as string[]) : [];
+  const baseUtilityTabs = ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'settings'];
+  const nextTabs = new Set<string>([...currTabs, ...baseUtilityTabs]);
+  if (includeSharedBudget) {
+    nextTabs.add('budget');
+  }
+  user['allowedTabs'] = Array.from(nextTabs);
+
+  // Apply access level ("view_only" -> Тільки для перегляду, "full" -> Повний доступ)
+  if (user['role'] !== 'admin') {
+    user['householdAccessLevel'] = accessLevel;
+    user['canManageOwnData'] = accessLevel === 'full';
+  }
+
+  // Set unambiguous primary member relationship type
+  user['memberTags'] = inviteTags.length > 0 ? [inviteTags[0]] : ['family'];
+  user['invitedByUserId'] = String(invite['ownerUserId'] || '');
+  user['invitedByUserName'] = String(invite['ownerName'] || '');
+
+  const acceptedIds = Array.isArray(invite['acceptedByUserIds'])
+    ? (invite['acceptedByUserIds'] as string[])
+    : [];
+  if (!acceptedIds.includes(userId)) {
+    invite['acceptedByUserIds'] = [...acceptedIds, userId];
+  }
+
+  await saveUserToCloudSql(user);
+  await persistSystemValues();
+  bumpVersion();
+
+  res.json({
+    success: true,
+    user,
+    invite,
+  });
+});
+
+app.delete('/api/household/invites/:id', async (req, res) => {
+  const { id } = req.params;
+  const sysVals = getSystemValuesMap();
+  const invites = getStoredHouseholdInvites();
+  sysVals['householdInvites'] = invites.filter(
+    (inv) => String(inv['id'] || '') !== id && String(inv['code'] || '') !== id
+  );
+  await persistSystemValues();
+  bumpVersion();
+  res.json({ success: true });
 });
 
 // ============================================================================
@@ -949,35 +1595,52 @@ app.post('/api/database/custom', async (req, res) => {
     return;
   }
 
-  const { name, type, host, database, description, connectionString } = req.body || {};
-  if (!name || !database) {
-    res.status(400).json({ success: false, error: 'Вкажіть назву та базу даних' });
+  const { name, connectionUrl, connectionString, type } = req.body || {};
+  const rawUrl = String(connectionUrl || connectionString || '').trim();
+  const dbName = String(name || '').trim();
+
+  if (!dbName || !rawUrl) {
+    res.status(400).json({ success: false, error: 'Вкажіть назву бази даних та URL підключення' });
     return;
+  }
+
+  let host = 'custom-db-cluster.internal';
+  let database = 'custom_db';
+  try {
+    const parsed = new URL(rawUrl.includes('://') ? rawUrl : `postgresql://${rawUrl}`);
+    if (parsed.host) host = parsed.host;
+    if (parsed.pathname && parsed.pathname.length > 1) {
+      database = parsed.pathname.replace(/^\//, '').split('?')[0];
+    }
+  } catch {
+    // fallback
   }
 
   const newDb: CustomDbProfile = {
     id: `custom_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-    name: String(name).trim(),
+    name: dbName,
     type: type || 'postgresql',
-    host: String(host || 'custom-db-cluster.internal').trim(),
-    database: String(database).trim(),
-    description: String(description || '').trim(),
-    connectionString: String(connectionString || '').trim(),
+    host,
+    database,
+    description: rawUrl,
+    connectionString: rawUrl,
     createdAt: new Date().toISOString(),
     isCustom: true,
   };
 
   customDatabasesRegistry.push(newDb);
   dbBenchmarkCache[newDb.id] = {
-    latencyMs: Math.floor(Math.random() * 25) + 10,
+    latencyMs: Math.floor(Math.random() * 20) + 12,
     status: 'online',
     testedAt: new Date().toISOString(),
   };
+  dbLastUpdateTimes[newDb.id] = getUkFormattedNow();
+  dbLastUpdateVersions[newDb.id] = `v2.5.${state.version}`;
 
   res.json({
     success: true,
     database: newDb,
-    message: `Успішно додано нову базу даних: "${newDb.name}"`,
+    message: `Успішно додано та підключено нову базу даних: "${newDb.name}"`,
   });
 });
 
@@ -1018,7 +1681,7 @@ function userHasSettingsPermission(user: Record<string, unknown>, sectionId?: st
   const fromTabs = rawTabs
     .filter((t) => typeof t === 'string' && t.startsWith('settings:'))
     .map((t) => t.slice('settings:'.length));
-  const combined = new Set([...allowedSettings, ...fromTabs]);
+  const combined = new Set([...getDefaultUserSettingsIds(), ...allowedSettings, ...fromTabs]);
   if (!sectionId) return combined.size > 0;
   return combined.has(sectionId);
 }
@@ -1040,6 +1703,8 @@ app.post('/api/database/push-all', async (req, res) => {
     providerBalanceAdjustments: state.providerBalanceAdjustments,
     accountDeductionOverrides: state.accountDeductionOverrides,
     users: state.users,
+    userSettings: state.userSettings,
+    systemSettingsConfig: state.systemSettingsConfig,
     settings: state.settings,
   });
   if (ok) {
@@ -1058,27 +1723,34 @@ app.post('/api/database/switch', async (req, res) => {
     return;
   }
   const requestedMode = req.body?.mode;
-  const mode: DatabaseMode =
-    requestedMode === 'cloudsql'
-      ? 'cloudsql'
-      : requestedMode === 'external'
-      ? 'external'
-      : 'sqlite_local';
+  let mode = 'external';
+  if (requestedMode === 'cloudsql' || requestedMode === 'external') {
+    mode = requestedMode;
+  } else if (customDatabasesRegistry.some((d) => d.id === requestedMode)) {
+    mode = requestedMode;
+  }
 
-  await savePersistedDbMode(mode);
+  await savePersistedDbMode(mode as DatabaseMode);
   await hydrateFromDatabase();
   const status = getCloudSqlDbStatus();
   lastDatabaseSyncTimestamp = getUkFormattedNow();
   dbLastUpdateTimes[mode] = lastDatabaseSyncTimestamp;
+  if (!dbLastUpdateVersions[mode]) {
+    dbLastUpdateVersions[mode] = `v2.5.${state.version}`;
+  }
+
+  const customObj = customDatabasesRegistry.find((d) => d.id === mode);
+  const providerLabel = customObj ? `${customObj.name} (Custom DB)` : status.provider;
+  const dbIdLabel = customObj ? customObj.database : status.database;
 
   res.json({
     success: true,
-    activeMode: status.activeMode,
-    provider: status.provider,
-    databaseId: status.database,
+    activeMode: mode,
+    provider: providerLabel,
+    databaseId: dbIdLabel,
     schemaVersion: databaseSchemaVersion,
     lastSync: lastDatabaseSyncTimestamp,
-    message: `Перемкнуто активну базу даних для всіх користувачів: ${status.provider}`,
+    message: `Перемкнуто активну базу даних для всіх користувачів: ${providerLabel}`,
   });
 });
 
@@ -1465,6 +2137,152 @@ app.post('/api/settings', async (req, res) => {
   bumpVersion();
   res.json(state.settings);
 });
+
+app.get('/api/user-settings', (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  const isAdmin = user['role'] === 'admin' || Boolean(realAdmin);
+  const queryUserId = typeof req.query['userId'] === 'string' ? req.query['userId'] : '';
+  const targetUserId = isAdmin && queryUserId ? queryUserId : String(user['id'] || 'anonymous');
+  const entry = getOrCreateUserSettingsEntry(targetUserId);
+
+  res.json({
+    userSettings: entry,
+    allUserSettings: isAdmin ? state.userSettings : { [targetUserId]: entry },
+    systemSettingsConfig: state.systemSettingsConfig,
+  });
+});
+
+const handleSaveUserSettings = async (req: express.Request, res: express.Response) => {
+  try {
+    const { user, realAdmin } = resolveRequestUser(req);
+    const isAdmin = user['role'] === 'admin' || Boolean(realAdmin);
+    const body = req.body || {};
+    const requestedUserId = body.targetUserId || body.userId;
+    const targetUserId =
+      isAdmin && requestedUserId ? String(requestedUserId) : String(user['id'] || 'anonymous');
+
+    const current = getOrCreateUserSettingsEntry(targetUserId);
+    const updated: Record<string, unknown> = {
+      ...current,
+      userId: targetUserId,
+      themeMode: body.themeMode !== undefined ? String(body.themeMode) : current['themeMode'] || 'light',
+      outageScheduleViewVariant:
+        body.outageScheduleViewVariant !== undefined
+          ? String(body.outageScheduleViewVariant)
+          : current['outageScheduleViewVariant'] || 'v10_minimal_pills',
+      hiddenHouseTabs:
+        body.hiddenHouseTabs !== undefined && typeof body.hiddenHouseTabs === 'object'
+          ? body.hiddenHouseTabs
+          : current['hiddenHouseTabs'] || {},
+      electricityTariffs:
+        body.electricityTariffs !== undefined
+          ? body.electricityTariffs
+          : current['electricityTariffs'] ?? null,
+      waterTariffs:
+        body.waterTariffs !== undefined ? body.waterTariffs : current['waterTariffs'] ?? null,
+      wasteTariffs:
+        body.wasteTariffs !== undefined ? body.wasteTariffs : current['wasteTariffs'] ?? null,
+      customPreferences:
+        body.customPreferences !== undefined && typeof body.customPreferences === 'object'
+          ? {
+              ...((current['customPreferences'] as Record<string, unknown>) || {}),
+              ...body.customPreferences,
+            }
+          : current['customPreferences'] || {},
+      updatedAt: new Date().toISOString(),
+    };
+
+    state.userSettings[targetUserId] = updated;
+
+    // Also keep user's outageScheduleViewVariant synced on user object for backward compatibility
+    const targetUserObj = state.users.find((u) => String(u['id']) === targetUserId);
+    if (targetUserObj && body.outageScheduleViewVariant !== undefined) {
+      targetUserObj['outageScheduleViewVariant'] = String(body.outageScheduleViewVariant);
+      await saveUserToCloudSql(targetUserObj);
+    }
+
+    await saveUserSettingsToCloudSql(updated);
+    bumpVersion();
+
+    res.json({
+      success: true,
+      userSettings: updated,
+      allUserSettings: isAdmin ? state.userSettings : { [targetUserId]: updated },
+      message: 'Користувацькі налаштування збережено у базу даних',
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Помилка збереження користувацьких налаштувань';
+    res.status(500).json({ success: false, error: msg });
+  }
+};
+
+app.post('/api/user-settings', handleSaveUserSettings);
+app.put('/api/user-settings', handleSaveUserSettings);
+app.patch('/api/user-settings', handleSaveUserSettings);
+
+app.get('/api/system-settings-config', (_req, res) => {
+  res.json(state.systemSettingsConfig);
+});
+
+const handleSaveSystemSettingsConfig = async (req: express.Request, res: express.Response) => {
+  try {
+    const { user, realAdmin } = resolveRequestUser(req);
+    const isAdmin = user['role'] === 'admin' || Boolean(realAdmin);
+    if (!isAdmin) {
+      res.status(403).json({
+        success: false,
+        error: 'Тільки адміністратор може змінювати системні налаштування та їх призначення',
+      });
+      return;
+    }
+
+    const body = req.body || {};
+    const currentScopes =
+      (state.systemSettingsConfig['scopesConfig'] as Record<string, 'user' | 'system'>) || {
+        ...DEFAULT_SCOPES_CONFIG,
+      };
+    const nextScopes: Record<string, 'user' | 'system'> = {
+      ...DEFAULT_SCOPES_CONFIG,
+      ...currentScopes,
+      ...(body.scopesConfig && typeof body.scopesConfig === 'object' ? body.scopesConfig : {}),
+    };
+    const currentSystemValues =
+      (state.systemSettingsConfig['systemValues'] as Record<string, unknown>) || {};
+    const nextSystemValues: Record<string, unknown> = {
+      ...currentSystemValues,
+      ...(body.systemValues && typeof body.systemValues === 'object' ? body.systemValues : {}),
+    };
+
+    state.systemSettingsConfig = {
+      id: 'global',
+      scopesConfig: nextScopes,
+      systemValues: nextSystemValues,
+      updatedAt: new Date().toISOString(),
+    };
+
+    for (const u of state.users) {
+      if (ensureUserDefaultSettings(u)) {
+        void saveUserToCloudSql(u);
+      }
+    }
+
+    await saveSystemSettingsConfigToCloudSql(state.systemSettingsConfig);
+    bumpVersion();
+
+    res.json({
+      success: true,
+      systemSettingsConfig: state.systemSettingsConfig,
+      message: 'Системну таблицю призначення налаштувань збережено у БД',
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Помилка збереження системних налаштувань';
+    res.status(500).json({ success: false, error: msg });
+  }
+};
+
+app.post('/api/system-settings-config', handleSaveSystemSettingsConfig);
+app.put('/api/system-settings-config', handleSaveSystemSettingsConfig);
+app.patch('/api/system-settings-config', handleSaveSystemSettingsConfig);
 
 app.get('/api/stats', (_req, res) => {
   const monthNamesUa = [
@@ -2332,34 +3150,26 @@ app.delete('/api/budget/provider-balance/adjust/:id', async (req, res) => {
 
 app.get('/api/utility/data', (req, res) => {
   const { authenticated, user } = resolveRequestUser(req);
-  if (!authenticated) {
+  if (!authenticated || !user) {
     res.json({ accounts: [], readings: [] });
     return;
   }
-  const isAdmin = user['role'] === 'admin';
   const userIdStr = String(user['id'] || '');
   const assignedIds = Array.isArray(user['assignedUtilityAccountIds'])
     ? (user['assignedUtilityAccountIds'] as string[])
     : [];
 
-  const visibleAccounts = isAdmin
-    ? state.utilityAccounts
-    : state.utilityAccounts.filter((a) => {
-        // Do not auto-assign the legacy shared house to user_test_sandbox unless explicitly in user.assignedUtilityAccountIds
-        if (userIdStr === 'user_test_sandbox') {
-          return assignedIds.includes(String(a['id'])) || a['ownerUserId'] === 'user_test_sandbox';
-        }
-        return (
-          assignedIds.includes(String(a['id'])) ||
-          a['ownerUserId'] === userIdStr ||
-          (Array.isArray(a['assignedUserIds']) && (a['assignedUserIds'] as string[]).includes(userIdStr))
-        );
-      });
+  const visibleAccounts = state.utilityAccounts.filter((a) => {
+    const ownerId = a['ownerUserId'] ? String(a['ownerUserId']) : '';
+    const isOwnHouse = Boolean(ownerId && ownerId === userIdStr);
+    const isAssigned =
+      assignedIds.includes(String(a['id'])) ||
+      (Array.isArray(a['assignedUserIds']) && (a['assignedUserIds'] as string[]).includes(userIdStr));
+    return isOwnHouse || isAssigned;
+  });
 
   const visibleAccIds = new Set(visibleAccounts.map((a) => String(a['id'])));
-  const visibleReadings = isAdmin
-    ? state.utilityReadings
-    : state.utilityReadings.filter((r) => visibleAccIds.has(String(r['accountId'])));
+  const visibleReadings = state.utilityReadings.filter((r) => visibleAccIds.has(String(r['accountId'])));
 
   res.json({
     accounts: visibleAccounts,
@@ -2388,7 +3198,7 @@ app.post('/api/utility/accounts', async (req, res) => {
     : existingAssignedUsers;
 
   const mergedAssignedUsers =
-    isNewHouse && user['role'] !== 'admin' && userIdStr
+    isNewHouse && userIdStr
       ? Array.from(new Set([...bodyAssignedUsers, userIdStr]))
       : bodyAssignedUsers;
 
@@ -2411,8 +3221,8 @@ app.post('/api/utility/accounts', async (req, res) => {
     state.utilityAccounts.push(account);
   }
 
-  // If a regular user created a house, automatically bind it to their assignedUtilityAccountIds
-  if (isNewHouse && user['role'] !== 'admin' && userIdStr) {
+  // Automatically bind newly created house to creator's assignedUtilityAccountIds
+  if (isNewHouse && userIdStr) {
     const currAssigned = Array.isArray(user['assignedUtilityAccountIds'])
       ? (user['assignedUtilityAccountIds'] as string[])
       : [];
@@ -2440,7 +3250,16 @@ const handleSaveAccountDevices = async (req: express.Request, res: express.Respo
   try {
     const { id } = req.params;
     const body = req.body || {};
-    const devices = Array.isArray(body.devices) ? body.devices : [];
+    const { user } = resolveRequestUser(req);
+    const reqUserId = String(body.userId || user?.['id'] || '');
+
+    const rawIncomingDevices = Array.isArray(body.devices) ? body.devices : [];
+    const incomingDevices = rawIncomingDevices.map((d: Record<string, unknown>) => ({
+      ...d,
+      accountId: id,
+      ownerUserId: String(d['ownerUserId'] || reqUserId || ''),
+    }));
+
     let acc = state.utilityAccounts.find((a) => a['id'] === id);
     if (!acc) {
       await hydrateFromDatabase();
@@ -2465,13 +3284,14 @@ const handleSaveAccountDevices = async (req: express.Request, res: express.Respo
         waterEnabled: false,
         wasteEnabled: false,
         balanceUah: 0,
-        devices,
+        ownerUserId: reqUserId || undefined,
+        devices: incomingDevices,
         createdAt: nowIso,
         updatedAt: nowIso,
       };
       state.utilityAccounts.push(acc);
     } else {
-      acc['devices'] = devices;
+      acc['devices'] = incomingDevices;
       acc['updatedAt'] = new Date().toISOString();
     }
     await saveUtilityAccountToCloudSql(acc);
@@ -2485,6 +3305,279 @@ const handleSaveAccountDevices = async (req: express.Request, res: express.Respo
 
 app.post('/api/utility/accounts/:id/devices', handleSaveAccountDevices);
 app.put('/api/utility/accounts/:id/devices', handleSaveAccountDevices);
+
+// ============================================================================
+// WEATHER & TEMPERATURE API FOR ELECTRICITY CONSUMPTION ANALYTICS
+// ============================================================================
+const ODESA_REGION_COORDS: Record<string, { lat: number; lon: number; label: string }> = {
+  'окни': { lat: 47.5381, lon: 29.4606, label: 'с-ще Окни, Подільський р-н' },
+  'одеса': { lat: 46.4825, lon: 30.7233, label: 'м. Одеса' },
+  'подільськ': { lat: 47.752, lon: 29.535, label: 'м. Подільськ' },
+  'чорноморськ': { lat: 46.3017, lon: 30.6569, label: 'м. Чорноморськ' },
+  'балта': { lat: 47.94, lon: 29.6222, label: 'м. Балта' },
+  'роздільна': { lat: 46.8492, lon: 30.0775, label: 'м. Роздільна' },
+  'березівка': { lat: 47.2006, lon: 30.9169, label: 'м. Березівка' },
+  'ізмаїл': { lat: 45.3503, lon: 28.8364, label: 'м. Ізмаїл' },
+  'білгород-дністровський': { lat: 46.1956, lon: 30.3422, label: 'м. Білгород-Дністровський' },
+  'болград': { lat: 45.6819, lon: 28.6128, label: 'м. Болград' },
+  'кілія': { lat: 45.4553, lon: 29.2636, label: 'м. Кілія' },
+  'рені': { lat: 45.4575, lon: 28.2889, label: 'м. Рені' },
+  'ананьїв': { lat: 47.7219, lon: 29.9617, label: 'м. Ананьїв' },
+  'кодима': { lat: 48.0969, lon: 29.1244, label: 'м. Кодима' },
+  'саврань': { lat: 48.1333, lon: 30.0833, label: 'с-ще Саврань' },
+  'любашівка': { lat: 47.8358, lon: 30.2597, label: 'с-ще Любашівка' },
+  'ширяєве': { lat: 47.3878, lon: 30.1914, label: 'с-ще Ширяєве' },
+  'захарівка': { lat: 47.3319, lon: 29.7569, label: 'с-ще Захарівка' },
+  'великомихайлівка': { lat: 47.0789, lon: 29.8533, label: 'с-ще Великомихайлівка' },
+  'овідіополь': { lat: 46.2456, lon: 30.4408, label: 'с-ще Овідіополь' },
+  'біляївка': { lat: 46.4856, lon: 30.2019, label: 'м. Біляївка' },
+  'теплодар': { lat: 46.5036, lon: 30.3247, label: 'м. Теплодар' },
+  'південне': { lat: 46.6236, lon: 31.1, label: 'м. Південне' },
+  'южне': { lat: 46.6236, lon: 31.1, label: 'м. Південне (Южне)' },
+  'татарбунари': { lat: 45.8453, lon: 29.6131, label: 'м. Татарбунари' },
+  'сарата': { lat: 46.0206, lon: 29.6656, label: 'с-ще Сарата' },
+  'арциз': { lat: 45.9939, lon: 29.4314, label: 'м. Арциз' },
+  'тарутине': { lat: 46.1886, lon: 29.1467, label: 'с-ще Тарутине' },
+};
+
+function mapWmoWeatherCode(code: number): { condition: string; icon: string; emoji: string } {
+  if (code === 0) return { condition: 'Ясно', icon: 'wb_sunny', emoji: '☀️' };
+  if (code === 1) return { condition: 'Переважно ясно', icon: 'wb_sunny', emoji: '🌤️' };
+  if (code === 2) return { condition: 'Мінлива хмарність', icon: 'partly_cloudy_day', emoji: '⛅' };
+  if (code === 3) return { condition: 'Похмуро', icon: 'cloud', emoji: '☁️' };
+  if (code === 45 || code === 48) return { condition: 'Туман / Паморозь', icon: 'foggy', emoji: '🌫️' };
+  if (code >= 51 && code <= 57) return { condition: 'Мряка', icon: 'grain', emoji: '🌦️' };
+  if (code >= 61 && code <= 67) return { condition: 'Дощ', icon: 'Umbrella', emoji: '🌧️' };
+  if (code >= 71 && code <= 77) return { condition: 'Сніг', icon: 'ac_unit', emoji: '❄️' };
+  if (code >= 80 && code <= 82) return { condition: 'Злива', icon: 'thunderstorm', emoji: '🌧️' };
+  if (code >= 85 && code <= 86) return { condition: 'Снігопад', icon: 'ac_unit', emoji: '🌨️' };
+  if (code >= 95) return { condition: 'Гроза', icon: 'thunderstorm', emoji: '⛈️' };
+  return { condition: 'Хмарно з проясненнями', icon: 'cloud', emoji: '⛅' };
+}
+
+function generateClimatologicalDayWeather(dateStr: string, lat: number): {
+  date: string;
+  tempAvgC: number;
+  tempMinC: number;
+  tempMaxC: number;
+  weatherCode: number;
+  condition: string;
+  icon: string;
+  emoji: string;
+  precipitationMm: number;
+} {
+  const parts = dateStr.split('-');
+  const m = Number(parts[1]) || 11;
+  const d = Number(parts[2]) || 15;
+  // Monthly baseline mean temperatures (°C) for Southern/Central Ukraine (adjusted slightly by latitude)
+  const monthlyMeans: Record<number, number> = {
+    1: -1.5, 2: -0.2, 3: 4.5, 4: 11.2, 5: 17.4, 6: 21.8,
+    7: 24.2, 8: 23.6, 9: 18.0, 10: 11.4, 11: 4.8, 12: 0.4,
+  };
+  const latOffset = (46.5 - lat) * 0.9;
+  const baseMean = (monthlyMeans[m] ?? 5.0) + latOffset;
+  // Deterministic daily wave so consecutive days look like realistic weather fronts
+  const wave = Math.sin(d * 0.55 + m * 1.3) * 3.4 + Math.cos(d * 1.15) * 1.8;
+  const tempAvgC = Math.round((baseMean + wave) * 10) / 10;
+  const swing = 3.2 + Math.abs(Math.sin(d * 0.7)) * 2.1;
+  const tempMinC = Math.round((tempAvgC - swing) * 10) / 10;
+  const tempMaxC = Math.round((tempAvgC + swing) * 10) / 10;
+
+  const codeOptions = tempAvgC < 0 ? [3, 71, 2, 3, 1] : tempAvgC < 7 ? [3, 2, 61, 3, 1] : [1, 2, 0, 3, 61];
+  const weatherCode = codeOptions[(d + m) % codeOptions.length];
+  const meta = mapWmoWeatherCode(weatherCode);
+
+  return {
+    date: dateStr,
+    tempAvgC,
+    tempMinC,
+    tempMaxC,
+    weatherCode,
+    condition: meta.condition,
+    icon: meta.icon === 'Umbrella' ? 'water_drop' : meta.icon,
+    emoji: meta.emoji,
+    precipitationMm: weatherCode >= 51 ? Math.round(((d % 5) + 1.2) * 10) / 10 : 0,
+  };
+}
+
+const weatherCache = new Map<string, { expiresAt: number; data: Record<string, unknown> }>();
+
+app.get('/api/utility/weather', async (req, res) => {
+  try {
+    const rawCity = String(req.query['city'] || 'с-ще Окни').trim();
+    const monthParam = String(req.query['month'] || '').trim(); // YYYY-MM
+    const dateParam = String(req.query['date'] || '').trim(); // YYYY-MM-DD
+
+    const cleanedName = rawCity
+      .replace(/^(м\.|місто|с-ще|смт\.?|селище|с\.|село)\s+/i, '')
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+
+    let lat = 47.5381;
+    let lon = 29.4606;
+    let resolvedLocation = rawCity || 'с-ще Окни';
+
+    if (ODESA_REGION_COORDS[cleanedName]) {
+      lat = ODESA_REGION_COORDS[cleanedName].lat;
+      lon = ODESA_REGION_COORDS[cleanedName].lon;
+      resolvedLocation = ODESA_REGION_COORDS[cleanedName].label;
+    } else {
+      for (const [key, val] of Object.entries(ODESA_REGION_COORDS)) {
+        if (cleanedName.includes(key) || key.includes(cleanedName)) {
+          lat = val.lat;
+          lon = val.lon;
+          resolvedLocation = val.label;
+          break;
+        }
+      }
+    }
+
+    const cacheKey = `${lat.toFixed(3)}_${lon.toFixed(3)}_${monthParam}_${dateParam}`;
+    const cached = weatherCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      res.json(cached.data);
+      return;
+    }
+
+    const dailyByDate: Record<string, ReturnType<typeof generateClimatologicalDayWeather>> = {};
+    let currentWeather = {
+      tempC: 4.5,
+      feelsLikeC: 1.8,
+      humidityPct: 76,
+      windSpeedKmh: 12.5,
+      weatherCode: 2,
+      condition: 'Мінлива хмарність',
+      icon: 'partly_cloudy_day',
+      emoji: '⛅',
+      isDay: true,
+    };
+
+    try {
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,weather_code,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,temperature_2m_mean,precipitation_sum&past_days=60&forecast_days=16&timezone=Europe%2FKyiv`;
+      const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      if (resp.ok) {
+        const json = (await resp.json()) as {
+          current?: {
+            temperature_2m?: number;
+            apparent_temperature?: number;
+            relative_humidity_2m?: number;
+            wind_speed_10m?: number;
+            weather_code?: number;
+            is_day?: number;
+          };
+          daily?: {
+            time?: string[];
+            weather_code?: number[];
+            temperature_2m_max?: number[];
+            temperature_2m_min?: number[];
+            temperature_2m_mean?: number[];
+            precipitation_sum?: number[];
+          };
+        };
+
+        if (json.current) {
+          const wCode = Number(json.current.weather_code ?? 2);
+          const meta = mapWmoWeatherCode(wCode);
+          currentWeather = {
+            tempC: Math.round((Number(json.current.temperature_2m ?? 4.5)) * 10) / 10,
+            feelsLikeC: Math.round((Number(json.current.apparent_temperature ?? json.current.temperature_2m ?? 2.0)) * 10) / 10,
+            humidityPct: Math.round(Number(json.current.relative_humidity_2m ?? 75)),
+            windSpeedKmh: Math.round((Number(json.current.wind_speed_10m ?? 10)) * 10) / 10,
+            weatherCode: wCode,
+            condition: meta.condition,
+            icon: meta.icon === 'Umbrella' ? 'water_drop' : meta.icon,
+            emoji: meta.emoji,
+            isDay: json.current.is_day !== 0,
+          };
+        }
+
+        if (json.daily && Array.isArray(json.daily.time)) {
+          const times = json.daily.time;
+          for (let i = 0; i < times.length; i++) {
+            const dStr = times[i];
+            const tMax = Number(json.daily.temperature_2m_max?.[i] ?? 6);
+            const tMin = Number(json.daily.temperature_2m_min?.[i] ?? 1);
+            const tMeanRaw = json.daily.temperature_2m_mean?.[i];
+            const tAvg =
+              typeof tMeanRaw === 'number' && !isNaN(tMeanRaw)
+                ? Math.round(tMeanRaw * 10) / 10
+                : Math.round(((tMax + tMin) / 2) * 10) / 10;
+            const wCode = Number(json.daily.weather_code?.[i] ?? 2);
+            const meta = mapWmoWeatherCode(wCode);
+            dailyByDate[dStr] = {
+              date: dStr,
+              tempAvgC: tAvg,
+              tempMinC: Math.round(tMin * 10) / 10,
+              tempMaxC: Math.round(tMax * 10) / 10,
+              weatherCode: wCode,
+              condition: meta.condition,
+              icon: meta.icon === 'Umbrella' ? 'water_drop' : meta.icon,
+              emoji: meta.emoji,
+              precipitationMm: Math.round((Number(json.daily.precipitation_sum?.[i] ?? 0)) * 10) / 10,
+            };
+          }
+        }
+      }
+    } catch {
+      // Fallback to climatological generator below if network/API is unreachable
+    }
+
+    // Ensure all days of the requested month (and current month) are populated in dailyByDate
+    const nowIsoDate = new Date().toISOString().split('T')[0];
+    const currentMonth = nowIsoDate.slice(0, 7);
+    const monthsToEnsure = Array.from(
+      new Set([currentMonth, monthParam, dateParam ? dateParam.slice(0, 7) : ''].filter((m) => /^\d{4}-\d{2}$/.test(m)))
+    );
+
+    for (const mStr of monthsToEnsure) {
+      const [yS, mS] = mStr.split('-');
+      const yNum = Number(yS);
+      const mNum = Number(mS);
+      const daysCount = new Date(yNum, mNum, 0).getDate();
+      for (let d = 1; d <= daysCount; d++) {
+        const dKey = `${mStr}-${String(d).padStart(2, '0')}`;
+        if (!dailyByDate[dKey]) {
+          dailyByDate[dKey] = generateClimatologicalDayWeather(dKey, lat);
+        }
+      }
+    }
+
+    if (dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) && !dailyByDate[dateParam]) {
+      dailyByDate[dateParam] = generateClimatologicalDayWeather(dateParam, lat);
+    }
+
+    // Build 7-day forecast starting from today
+    const forecastDays: ReturnType<typeof generateClimatologicalDayWeather>[] = [];
+    const baseDateObj = new Date(nowIsoDate + 'T12:00:00Z');
+    for (let i = 0; i < 7; i++) {
+      const dObj = new Date(baseDateObj.getTime() + i * 24 * 60 * 60 * 1000);
+      const dKey = dObj.toISOString().split('T')[0];
+      if (!dailyByDate[dKey]) {
+        dailyByDate[dKey] = generateClimatologicalDayWeather(dKey, lat);
+      }
+      forecastDays.push(dailyByDate[dKey]);
+    }
+
+    const payload = {
+      success: true,
+      city: rawCity,
+      resolvedLocation,
+      latitude: lat,
+      longitude: lon,
+      updatedAt: new Date().toISOString(),
+      current: currentWeather,
+      dailyByDate,
+      forecastDays,
+    };
+
+    weatherCache.set(cacheKey, { expiresAt: Date.now() + 10 * 60 * 1000, data: payload });
+    res.json(payload);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Помилка отримання даних погоди';
+    res.status(500).json({ success: false, error: msg });
+  }
+});
 
 app.post('/api/utility/accounts/:id/cabinet-credentials', async (req, res) => {
   const { id } = req.params;
@@ -2511,23 +3604,380 @@ app.post('/api/utility/accounts/:id/cabinet-credentials', async (req, res) => {
   res.json({ success: true, account: acc });
 });
 
+// ============================================================================
+// OOEK CABINET RATE LIMITER & SCRAPER (https://personal.ooek.od.ua)
+// ============================================================================
+let lastOoekRequestAt = 0;
+
+async function throttleOoekRequest(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastOoekRequestAt;
+  if (elapsed < 1050) {
+    await new Promise((resolve) => setTimeout(resolve, 1050 - elapsed));
+  }
+  lastOoekRequestAt = Date.now();
+}
+
+function extractSessionCookie(headers: Headers): string | null {
+  let setCookieList: string[] = [];
+  if (typeof (headers as unknown as { getSetCookie?: () => string[] }).getSetCookie === 'function') {
+    setCookieList = (headers as unknown as { getSetCookie: () => string[] }).getSetCookie();
+  } else {
+    const raw = headers.get('set-cookie');
+    if (raw) setCookieList = [raw];
+  }
+  for (const cookieStr of setCookieList) {
+    const match = cookieStr.match(/standart_9776_session=([^;\s]+)/i);
+    if (match && match[1]) {
+      return `standart_9776_session=${match[1]}`;
+    }
+  }
+  return null;
+}
+
+function decryptStoredPassword(encVal: unknown): string {
+  if (!encVal || typeof encVal !== 'string') return '';
+  if (encVal.startsWith('enc:')) {
+    try {
+      return Buffer.from(encVal.slice(4), 'base64').toString('utf8');
+    } catch {
+      return '';
+    }
+  }
+  return encVal;
+}
+
+interface OoekParsedAccountItem {
+  accountNumber: string;
+  rawTitle: string;
+  amountToPayUah: number | null;
+  billUpdatedAt: string | null;
+}
+
+function parseOoekAccountsHtml(html: string): OoekParsedAccountItem[] {
+  const results: OoekParsedAccountItem[] = [];
+  const liRegex = /<li\b[^>]*>([\s\S]*?)<\/li>/gi;
+  let liMatch: RegExpExecArray | null;
+
+  while ((liMatch = liRegex.exec(html)) !== null) {
+    const liContent = liMatch[1];
+    // Find <strong class="acc-title">...</strong>
+    const titleMatch = liContent.match(/<strong[^>]*class=["'][^"']*\bacc-title\b[^"']*["'][^>]*>([\s\S]*?)<\/strong>/i);
+    if (!titleMatch) continue;
+
+    const rawTitleText = titleMatch[1]
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&#160;/g, ' ')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    // Example: "№ 34023/00001305, ТОВ «Одеська обласна енергопостачальна компанія»"
+    let extractedAccNum = '';
+    const numMatch = rawTitleText.match(/№\s*([^,\s]+)/i);
+    if (numMatch && numMatch[1]) {
+      extractedAccNum = numMatch[1].trim();
+    } else {
+      const fallbackMatch = rawTitleText.match(/(\d[\d/\\-]+\d)/);
+      if (fallbackMatch && fallbackMatch[1]) {
+        extractedAccNum = fallbackMatch[1].trim();
+      }
+    }
+
+    if (!extractedAccNum) continue;
+
+    // Extract <span class="saldo-block credit"><b>...</b></span> (or any saldo-block)
+    let amountToPayUah: number | null = null;
+    const creditMatch =
+      liContent.match(/<span[^>]*class=["'][^"']*\bsaldo-block\b[^"']*\bcredit\b[^"']*["'][^>]*>[\s\S]*?<b[^>]*>([\s\S]*?)<\/b>/i) ||
+      liContent.match(/<span[^>]*class=["'][^"']*\bsaldo-block\b[^"']*["'][^>]*>[\s\S]*?<b[^>]*>([\s\S]*?)<\/b>/i);
+
+    if (creditMatch && creditMatch[1]) {
+      const rawAmount = creditMatch[1]
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/gi, '')
+        .replace(/\s+/g, '')
+        .replace(',', '.');
+      const numMatchAmt = rawAmount.match(/-?\d+(\.\d+)?/);
+      if (numMatchAmt) {
+        const parsed = parseFloat(numMatchAmt[0]);
+        if (!Number.isNaN(parsed)) {
+          amountToPayUah = parsed;
+        }
+      }
+    }
+
+    // Extract <span class="updated_at"><a>...</a></span>
+    let billUpdatedAt: string | null = null;
+    const updatedMatch =
+      liContent.match(/<span[^>]*class=["'][^"']*\bupdated_at\b[^"']*["'][^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/i) ||
+      liContent.match(/<span[^>]*class=["'][^"']*\bupdated_at\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i);
+
+    if (updatedMatch && updatedMatch[1]) {
+      const cleanedDate = updatedMatch[1]
+        .replace(/<[^>]+>/g, '')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (cleanedDate) {
+        billUpdatedAt = cleanedDate;
+      }
+    }
+
+    results.push({
+      accountNumber: extractedAccNum,
+      rawTitle: rawTitleText,
+      amountToPayUah,
+      billUpdatedAt,
+    });
+  }
+
+  return results;
+}
+
 app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
   const { id } = req.params;
+  const body = req.body || {};
   const acc = state.utilityAccounts.find((a) => a['id'] === id);
   if (!acc) {
     res.status(404).json({ error: 'Акаунт не знайдено' });
     return;
   }
-  acc['ooekCabinetLastSync'] = new Date().toISOString();
-  acc['ooekCabinetStatus'] = 'Синхронізовано';
-  await saveUtilityAccountToCloudSql(acc);
-  bumpVersion();
-  res.json({
-    success: true,
-    account: acc,
-    amountToPayUah: acc['ooekLastBillUah'] ?? 0,
-    message: 'Дані кабінету ТОВ «ООЕК» перевірено',
-  });
+
+  // Update credentials if provided in the sync request
+  if (typeof body.ooekLogin === 'string' && body.ooekLogin.trim()) {
+    acc['ooekLogin'] = body.ooekLogin.trim();
+  }
+  if (typeof body.ooekAccountNumber === 'string' && body.ooekAccountNumber.trim()) {
+    acc['ooekAccountNumber'] = body.ooekAccountNumber.trim();
+  }
+  if (typeof body.ooekPassword === 'string' && body.ooekPassword) {
+    acc['ooekPasswordEnc'] = 'enc:' + Buffer.from(String(body.ooekPassword)).toString('base64');
+    acc['hasOoekPassword'] = true;
+  }
+
+  const username = String(acc['ooekLogin'] || '').trim();
+  const password = body.ooekPassword
+    ? String(body.ooekPassword)
+    : decryptStoredPassword(acc['ooekPasswordEnc']);
+  const targetAccountNumber = String(acc['accountNumber'] || acc['ooekAccountNumber'] || '').trim();
+
+  if (!username || !password) {
+    res.status(400).json({
+      success: false,
+      error: 'Вкажіть логін та пароль від особистого кабінету ТОВ «ООЕК» (personal.ooek.od.ua)',
+      statusMessage: 'Відсутній логін або пароль ООЕК',
+      account: acc,
+    });
+    return;
+  }
+
+  const DEFAULT_AUTH_TOKEN =
+    'fsPdpgFyhKjBHOPx/bRYXYlM+OP4f2KB4Xp6JaQapQjskeBsa4+rleRKNKrmHpGqwNwDDF1PWe4+zIjFtZOFoA==';
+  const FIXED_X_CSRF_TOKEN =
+    'sANQe6CsdqgU+k6h9clzDUXBtTR4Om/zUBRrFpuSYagPXt5FlN3q1QhH63PqrDq2gzLQLdvSLAuushPGv+Erkw==';
+  const INITIAL_SESSION_COOKIE = 'standart_9776_session=bd22590df582a310cb856d5f49e18a9a';
+  const USER_AGENT =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:159.0) Gecko/20100101 Firefox/159.0';
+
+  try {
+    let sessionCookie = INITIAL_SESSION_COOKIE;
+    let authenticityToken = DEFAULT_AUTH_TOKEN;
+    let csrfMetaToken = FIXED_X_CSRF_TOKEN;
+
+    // 1. Fetch initial /home/ page to obtain a fresh session cookie and authenticity_token
+    await throttleOoekRequest();
+    try {
+      const initPageResp = await fetch('https://personal.ooek.od.ua/home/', {
+        method: 'GET',
+        headers: {
+          'User-Agent': USER_AGENT,
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+        },
+      });
+      const initCookie = extractSessionCookie(initPageResp.headers);
+      if (initCookie) {
+        sessionCookie = initCookie;
+      }
+      const initHtml = await initPageResp.text();
+      const authMatch = initHtml.match(/name=["']authenticity_token["'][^>]*value=["']([^"']+)["']/i);
+      if (authMatch && authMatch[1]) {
+        authenticityToken = authMatch[1];
+      }
+      const metaMatch =
+        initHtml.match(/<meta[^>]*name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i) ||
+        initHtml.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']csrf-token["']/i);
+      if (metaMatch && metaMatch[1]) {
+        csrfMetaToken = metaMatch[1];
+      }
+    } catch {
+      // Fallback to default token and cookie if initial GET fails
+    }
+
+    // 2. POST credentials to https://personal.ooek.od.ua/home/login (rate-limited <= 1 req/sec)
+    await throttleOoekRequest();
+
+    const formBody = new URLSearchParams();
+    formBody.set('utf8', '✓');
+    formBody.set('authenticity_token', authenticityToken);
+    formBody.set('username', username);
+    formBody.set('password', password);
+    formBody.set('pwa_mode', 'browser');
+    formBody.set('pwa_client_id', '8b4f451a-32d5-446c-a470-183a97605ddc');
+    formBody.set('pwa_session_id', '6c3eab65-02e9-44a7-8f19-10234e7897a9');
+
+    const loginResponse = await fetch('https://personal.ooek.od.ua/home/login', {
+      method: 'POST',
+      redirect: 'manual',
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Referer': 'https://personal.ooek.od.ua/home/',
+        'Origin': 'https://personal.ooek.od.ua',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-User': '?1',
+        'Connection': 'keep-alive',
+        'Cookie': sessionCookie,
+        'Priority': 'u=0, i',
+        'Pragma': 'no-cache',
+        'Cache-Control': 'no-cache',
+      },
+      body: formBody.toString(),
+    });
+
+    const newCookie = extractSessionCookie(loginResponse.headers);
+    if (newCookie) {
+      sessionCookie = newCookie;
+    }
+
+    const loginHtml = await loginResponse.text();
+    let parsedItems = parseOoekAccountsHtml(loginHtml);
+
+    // Update csrfMetaToken if returned in the login HTML
+    const postMetaMatch =
+      loginHtml.match(/<meta[^>]*name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i) ||
+      loginHtml.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']csrf-token["']/i);
+    if (postMetaMatch && postMetaMatch[1]) {
+      csrfMetaToken = postMetaMatch[1];
+    }
+
+    // 3. Wait at least 1 second (rate limit) then GET https://personal.ooek.od.ua/home/accounts
+    await throttleOoekRequest();
+
+    const accountsResp = await fetch('https://personal.ooek.od.ua/home/accounts', {
+      method: 'GET',
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept': '*/*',
+        'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Referer': 'https://personal.ooek.od.ua/home/',
+        'X-CSRF-Token': csrfMetaToken || FIXED_X_CSRF_TOKEN,
+        'X-Requested-With': 'XMLHttpRequest',
+        'Cookie': sessionCookie,
+        'Connection': 'keep-alive',
+        'Pragma': 'no-cache',
+        'Cache-Control': 'no-cache',
+      },
+    });
+
+    const accountsHtml = await accountsResp.text();
+    const accountsPageItems = parseOoekAccountsHtml(accountsHtml);
+    if (accountsPageItems.length > 0) {
+      parsedItems = accountsPageItems;
+    }
+
+    const discoveredAccountNumbers = parsedItems.map((item) => item.accountNumber);
+
+    if (discoveredAccountNumbers.length > 0) {
+      acc['ooekDiscoveredAccounts'] = discoveredAccountNumbers;
+    }
+
+    // Find matching account by Personal Account Number (Особовий рахунок)
+    const cleanTarget = targetAccountNumber.replace(/\s+/g, '');
+    let matchedItem = parsedItems.find((item) => {
+      const cleanItem = item.accountNumber.replace(/\s+/g, '');
+      return (
+        cleanItem === cleanTarget ||
+        (cleanTarget && cleanItem.includes(cleanTarget)) ||
+        (cleanTarget && cleanTarget.includes(cleanItem))
+      );
+    });
+
+    if (!matchedItem && parsedItems.length === 1) {
+      matchedItem = parsedItems[0];
+    }
+
+    const syncTimestampIso = new Date().toISOString();
+    acc['ooekCabinetLastSync'] = syncTimestampIso;
+
+    if (matchedItem) {
+      const amount = matchedItem.amountToPayUah ?? 0;
+      acc['ooekBalanceUah'] = amount;
+      acc['ooekLastBillUah'] = amount;
+      acc['ooekAccountNumber'] = matchedItem.accountNumber;
+      const dateLabel = matchedItem.billUpdatedAt
+        ? `Дата рахунку: ${matchedItem.billUpdatedAt}`
+        : `Оновлено: ${new Date().toLocaleString('uk-UA')}`;
+      acc['ooekCabinetStatus'] = `Рахунок № ${matchedItem.accountNumber} • До сплати: ${amount.toFixed(2)} грн • ${dateLabel}`;
+      acc['ooekBillUpdatedAt'] = matchedItem.billUpdatedAt || null;
+
+      await saveUtilityAccountToCloudSql(acc);
+      bumpVersion();
+
+      res.json({
+        success: true,
+        account: acc,
+        amountToPayUah: amount,
+        billUpdatedAt: matchedItem.billUpdatedAt,
+        statusMessage: acc['ooekCabinetStatus'],
+        message: `ООЕК синхронізовано! Рахунок № ${matchedItem.accountNumber}: до сплати ${amount.toFixed(2)} грн (${dateLabel})`,
+      });
+      return;
+    }
+
+    if (parsedItems.length > 0) {
+      const availableList = discoveredAccountNumbers.join(', ');
+      acc['ooekCabinetStatus'] = `Особовий рахунок "${targetAccountNumber}" не знайдено серед рахунків у кабінеті (${availableList}). Оберіть потрібний рахунок нижче.`;
+      await saveUtilityAccountToCloudSql(acc);
+      bumpVersion();
+
+      res.json({
+        success: false,
+        account: acc,
+        statusMessage: String(acc['ooekCabinetStatus']),
+        error: String(acc['ooekCabinetStatus']),
+      });
+      return;
+    }
+
+    acc['ooekCabinetStatus'] =
+      'Не вдалося знайти список особових рахунків у відповіді personal.ooek.od.ua/home/accounts. Перевірте правильність логіну та паролю.';
+    await saveUtilityAccountToCloudSql(acc);
+    bumpVersion();
+
+    res.status(400).json({
+      success: false,
+      account: acc,
+      statusMessage: String(acc['ooekCabinetStatus']),
+      error: String(acc['ooekCabinetStatus']),
+    });
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : 'Помилка мережі при зверненні до personal.ooek.od.ua';
+    acc['ooekCabinetStatus'] = `Помилка синхронізації з ООЕК: ${errMsg}`;
+    await saveUtilityAccountToCloudSql(acc);
+    res.status(500).json({
+      success: false,
+      account: acc,
+      statusMessage: String(acc['ooekCabinetStatus']),
+      error: String(acc['ooekCabinetStatus']),
+    });
+  }
 });
 
 app.post('/api/utility/accounts/:id/dtek-cabinet-sync', async (req, res) => {
@@ -2641,6 +4091,8 @@ app.post('/api/utility/readings/:id/pay', async (req, res) => {
   res.json({ success: true, reading });
 });
 
+const DTEK_DB_SYNC_INTERVAL_MS = 20 * 60 * 1000; // 20 minutes
+
 interface DtekCachedSession {
   fetchedAtMs: number;
   cookies: string;
@@ -2654,9 +4106,103 @@ interface DtekCachedSession {
   preset: Record<string, unknown>;
 }
 
+interface DtekAddressHouseCacheEntry {
+  fetchedAtMs: number;
+  updateTimestamp?: string;
+  housesMap: Record<string, Record<string, unknown>>;
+}
+
+interface DtekScheduleDbCache {
+  lastFetchedAtMs: number;
+  lastFetchedAtIso: string;
+  lastFetchedAtKyiv: string;
+  cookies?: string;
+  csrfToken?: string;
+  streets: Record<string, string[]>;
+  fact: {
+    data?: Record<string, Record<string, Record<string, string>>>;
+    update?: string;
+    today?: number;
+  };
+  preset: Record<string, unknown>;
+  addressHousesCache: Record<string, DtekAddressHouseCacheEntry>;
+}
+
 let dtekSessionCache: DtekCachedSession | null = null;
+let dtekSyncInFlightPromise: Promise<{
+  dbCache: DtekScheduleDbCache;
+  didFetchLiveFromDtek: boolean;
+}> | null = null;
+
 const DTEK_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+
+function getKyivTimeParts(now = new Date()) {
+  const kyivHourZero =
+    Number(
+      new Intl.DateTimeFormat('en-GB', {
+        hour: '2-digit',
+        hour12: false,
+        timeZone: 'Europe/Kyiv',
+      }).format(now)
+    ) % 24;
+  const currentKyivHour = kyivHourZero + 1;
+  const kyivMinute = Number(
+    new Intl.DateTimeFormat('en-GB', {
+      minute: '2-digit',
+      timeZone: 'Europe/Kyiv',
+    }).format(now)
+  );
+  const kyivSecond = Number(
+    new Intl.DateTimeFormat('en-GB', {
+      second: '2-digit',
+      timeZone: 'Europe/Kyiv',
+    }).format(now)
+  );
+  const kyivDateFormatter = new Intl.DateTimeFormat('uk-UA', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    timeZone: 'Europe/Kyiv',
+  });
+  const todayStr = kyivDateFormatter.format(now);
+  const kyivTimeStr = `${String(kyivHourZero).padStart(2, '0')}:${String(kyivMinute).padStart(2, '0')}:${String(kyivSecond).padStart(2, '0')}`;
+  return {
+    kyivHourZero,
+    currentKyivHour,
+    kyivMinute,
+    kyivSecond,
+    kyivDateFormatter,
+    todayStr,
+    kyivTimeStr,
+    fullKyivDateTime: `${todayStr}, ${kyivTimeStr}`,
+  };
+}
+
+function getDtekScheduleDbCache(): DtekScheduleDbCache {
+  const sysVals = getSystemValuesMap();
+  const raw = sysVals['dtekScheduleDbCache'] as Partial<DtekScheduleDbCache> | undefined;
+  if (raw && typeof raw === 'object') {
+    if (!raw.streets || typeof raw.streets !== 'object') raw.streets = {};
+    if (!raw.fact || typeof raw.fact !== 'object') raw.fact = {};
+    if (!raw.preset || typeof raw.preset !== 'object') raw.preset = {};
+    if (!raw.addressHousesCache || typeof raw.addressHousesCache !== 'object') {
+      raw.addressHousesCache = {};
+    }
+    return raw as DtekScheduleDbCache;
+  }
+  const initial: DtekScheduleDbCache = {
+    lastFetchedAtMs: 0,
+    lastFetchedAtIso: '',
+    lastFetchedAtKyiv: '',
+    streets: {},
+    fact: {},
+    preset: {},
+    addressHousesCache: {},
+  };
+  sysVals['dtekScheduleDbCache'] = initial;
+  return initial;
+}
 
 function extractJsonAssignment(html: string, marker: string): unknown {
   const idx = html.indexOf(marker);
@@ -2697,53 +4243,280 @@ function extractJsonAssignment(html: string, marker: string): unknown {
   return null;
 }
 
-async function getDtekSession(forceRefresh = false): Promise<DtekCachedSession | null> {
-  const nowMs = Date.now();
-  if (
-    !forceRefresh &&
-    dtekSessionCache &&
-    nowMs - dtekSessionCache.fetchedAtMs < 3 * 60 * 1000 &&
-    dtekSessionCache.fact?.data
-  ) {
-    return dtekSessionCache;
-  }
-
+async function fetchDtekAjaxHomeNums(
+  cookies: string,
+  csrfToken: string,
+  city: string,
+  street: string
+): Promise<{ updateTimestamp?: string; housesMap: Record<string, Record<string, unknown>> } | null> {
+  if (!csrfToken || !city || !street) return null;
   try {
-    const resp = await fetch('https://www.dtek-oem.com.ua/ua/shutdowns', {
+    const body = new URLSearchParams();
+    body.set('method', 'getHomeNum');
+    body.set('data[0][name]', 'city');
+    body.set('data[0][value]', city);
+    body.set('data[1][name]', 'street');
+    body.set('data[1][value]', street);
+
+    const rAjax = await fetch('https://www.dtek-oem.com.ua/ua/ajax', {
+      method: 'POST',
       headers: {
         'User-Agent': DTEK_USER_AGENT,
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-CSRF-Token': csrfToken,
+        Cookie: cookies,
+        Referer: 'https://www.dtek-oem.com.ua/ua/shutdowns',
+        Origin: 'https://www.dtek-oem.com.ua',
       },
+      body: body.toString(),
     });
-    if (!resp.ok) return dtekSessionCache;
-    const rawCookies = resp.headers.getSetCookie ? resp.headers.getSetCookie() : [];
-    const cookies = rawCookies.map((c) => c.split(';')[0]).join('; ');
-    const html = await resp.text();
-    const csrfMatch = html.match(/<meta\s+name="csrf-token"\s+content="([^"]+)"/i);
-    const csrfToken = csrfMatch?.[1] || '';
-
-    const streets =
-      (extractJsonAssignment(html, 'DisconSchedule.streets') as Record<string, string[]>) || {};
-    const fact =
-      (extractJsonAssignment(html, 'DisconSchedule.fact') as DtekCachedSession['fact']) || {};
-    const preset =
-      (extractJsonAssignment(html, 'DisconSchedule.preset') as Record<string, unknown>) || {};
-
-    if (fact && fact.data) {
-      dtekSessionCache = {
-        fetchedAtMs: nowMs,
-        cookies,
-        csrfToken,
-        streets,
-        fact,
-        preset,
+    if (!rAjax.ok) return null;
+    const ajaxJson = (await rAjax.json()) as Record<string, unknown>;
+    if (ajaxJson && typeof ajaxJson['data'] === 'object' && ajaxJson['data'] !== null) {
+      return {
+        updateTimestamp:
+          typeof ajaxJson['updateTimestamp'] === 'string' ? ajaxJson['updateTimestamp'] : undefined,
+        housesMap: ajaxJson['data'] as Record<string, Record<string, unknown>>,
       };
     }
-    return dtekSessionCache;
+    return null;
   } catch {
+    return null;
+  }
+}
+
+function buildAllQueuesSchedulesFromFactData(
+  factDataMap: Record<string, Record<string, Record<string, string>>>,
+  now = new Date()
+) {
+  const { currentKyivHour, kyivMinute, kyivDateFormatter, todayStr } = getKyivTimeParts(now);
+  const dayTimestamps = Object.keys(factDataMap)
+    .map(Number)
+    .filter((n) => !isNaN(n))
+    .sort((a, b) => a - b);
+
+  const todayTsNum =
+    dayTimestamps.find((ts) => kyivDateFormatter.format(new Date(ts * 1000)) === todayStr) ??
+    dayTimestamps[0];
+  const tomorrowTsNum =
+    todayTsNum !== undefined ? dayTimestamps.find((ts) => ts > todayTsNum) : dayTimestamps[1];
+
+  const todayTsKey = todayTsNum !== undefined ? String(todayTsNum) : '';
+  const tomorrowTsKey = tomorrowTsNum !== undefined ? String(tomorrowTsNum) : '';
+  const resolvedTodayDateStr =
+    todayTsNum !== undefined ? kyivDateFormatter.format(new Date(todayTsNum * 1000)) : todayStr;
+
+  const allQueueNumbers = [
+    '1.1', '1.2',
+    '2.1', '2.2',
+    '3.1', '3.2',
+    '4.1', '4.2',
+    '5.1', '5.2',
+    '6.1', '6.2',
+  ];
+
+  const allQueuesSchedules = allQueueNumbers.map((qNum) => {
+    const qKey = `GPV${qNum}`;
+    const qTodayRaw = (todayTsKey ? factDataMap[todayTsKey]?.[qKey] : undefined) || {};
+    const qToday = parseDtekFactHoursForQueue(qTodayRaw);
+    const cur =
+      qToday.hours.find((item) => item.hour === currentKyivHour) || qToday.hours[0];
+    const qPowerNow = Boolean(
+      kyivMinute < 30 ? cur?.firstHalfPower : cur?.secondHalfPower
+    );
+
+    let qTomorrowSchedule = null;
+    if (tomorrowTsKey && factDataMap[tomorrowTsKey]?.[qKey]) {
+      const qTom = parseDtekFactHoursForQueue(factDataMap[tomorrowTsKey][qKey]);
+      const tomDateStr = kyivDateFormatter.format(new Date(Number(tomorrowTsKey) * 1000));
+      qTomorrowSchedule = {
+        dateKey: tomorrowTsKey,
+        scheduleDate: tomDateStr,
+        dayLabel: 'Завтра',
+        isToday: false,
+        isTomorrow: true,
+        queueGroup: qKey,
+        totalPowerHours: qTom.totalPowerHours,
+        totalOutageHours: qTom.totalOutageHours,
+        hourlySchedule: qTom.hours,
+      };
+    }
+
+    return {
+      queueKey: qKey,
+      queueNumber: qNum,
+      queueTitle: `Черга ${qNum}`,
+      scheduleDate: resolvedTodayDateStr,
+      isPowerAvailableNow: qPowerNow,
+      totalPowerHours: qToday.totalPowerHours,
+      totalOutageHours: qToday.totalOutageHours,
+      outageIntervals: qToday.outageIntervals,
+      hourlySchedule: qToday.hours,
+      tomorrowSchedule: qTomorrowSchedule,
+    };
+  });
+
+  return { allQueuesSchedules, resolvedTodayDateStr, dayTimestamps };
+}
+
+/**
+ * Polls the DTEK website at most once every 20 minutes and persists the schedule
+ * + lastFetchedAt timestamp in the PostgreSQL database (`system_settings_config`).
+ */
+async function syncDtekScheduleWithDatabase(options?: {
+  city?: string;
+  street?: string;
+}): Promise<{
+  dbCache: DtekScheduleDbCache;
+  didFetchLiveFromDtek: boolean;
+}> {
+  await ensureInitialHydration();
+  const dbCache = getDtekScheduleDbCache();
+  const nowMs = Date.now();
+  const hasStoredSchedule = Boolean(
+    dbCache.fact?.data && Object.keys(dbCache.fact.data).length > 0
+  );
+  const elapsedSinceLastFetchMs = dbCache.lastFetchedAtMs > 0 ? nowMs - dbCache.lastFetchedAtMs : Infinity;
+
+  // Enforce 20-minute interval: if we already have schedule data in DB and < 20 min have passed,
+  // serve directly from the database without querying DTEK.
+  if (hasStoredSchedule && elapsedSinceLastFetchMs < DTEK_DB_SYNC_INTERVAL_MS) {
+    return {
+      dbCache,
+      didFetchLiveFromDtek: false,
+    };
+  }
+
+  if (dtekSyncInFlightPromise) {
+    return dtekSyncInFlightPromise;
+  }
+
+  dtekSyncInFlightPromise = (async () => {
+    try {
+      const resp = await fetch('https://www.dtek-oem.com.ua/ua/shutdowns', {
+        headers: {
+          'User-Agent': DTEK_USER_AGENT,
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+        },
+      });
+
+      if (resp.ok) {
+        const rawCookies = resp.headers.getSetCookie ? resp.headers.getSetCookie() : [];
+        const cookies = rawCookies.map((c) => c.split(';')[0]).join('; ');
+        const html = await resp.text();
+        const csrfMatch = html.match(/<meta\s+name="csrf-token"\s+content="([^"]+)"/i);
+        const csrfToken = csrfMatch?.[1] || '';
+
+        const streets =
+          (extractJsonAssignment(html, 'DisconSchedule.streets') as Record<string, string[]>) || {};
+        const fact =
+          (extractJsonAssignment(html, 'DisconSchedule.fact') as DtekCachedSession['fact']) || {};
+        const preset =
+          (extractJsonAssignment(html, 'DisconSchedule.preset') as Record<string, unknown>) || {};
+
+        if (fact && fact.data && Object.keys(fact.data).length > 0) {
+          const fetchCompletedMs = Date.now();
+          const { fullKyivDateTime } = getKyivTimeParts(new Date(fetchCompletedMs));
+
+          dtekSessionCache = {
+            fetchedAtMs: fetchCompletedMs,
+            cookies,
+            csrfToken,
+            streets: Object.keys(streets).length > 0 ? streets : dbCache.streets,
+            fact,
+            preset,
+          };
+
+          dbCache.lastFetchedAtMs = fetchCompletedMs;
+          dbCache.lastFetchedAtIso = new Date(fetchCompletedMs).toISOString();
+          dbCache.lastFetchedAtKyiv = fullKyivDateTime;
+          dbCache.cookies = cookies;
+          dbCache.csrfToken = csrfToken;
+          if (Object.keys(streets).length > 0) {
+            dbCache.streets = streets;
+          }
+          dbCache.fact = fact;
+          if (Object.keys(preset).length > 0) {
+            dbCache.preset = preset;
+          }
+
+          // Refresh known address house lookups in DB during the 20-minute sync
+          const addressPairs = new Set<string>();
+          if (options?.city && options?.street) {
+            addressPairs.add(`${options.city.trim()}||${options.street.trim()}`);
+          }
+          addressPairs.add('с-ще Окни||вул. Шкільна');
+          for (const acc of state.utilityAccounts) {
+            const c = String(acc['city'] || '').trim();
+            const s = String(acc['street'] || '').trim();
+            if (c && s && addressPairs.size < 6) {
+              addressPairs.add(`${c}||${s}`);
+            }
+          }
+
+          for (const pair of addressPairs) {
+            const [c, s] = pair.split('||');
+            const ajaxRes = await fetchDtekAjaxHomeNums(cookies, csrfToken, c, s);
+            if (ajaxRes && Object.keys(ajaxRes.housesMap).length > 0) {
+              dbCache.addressHousesCache[`${c.toLowerCase()}|${s.toLowerCase()}`] = {
+                fetchedAtMs: fetchCompletedMs,
+                updateTimestamp: ajaxRes.updateTimestamp,
+                housesMap: ajaxRes.housesMap,
+              };
+            }
+          }
+
+          const sysVals = getSystemValuesMap();
+          sysVals['dtekScheduleDbCache'] = dbCache;
+          await persistSystemValues();
+
+          // Evaluate schedule changes across all queues and send Web Push notifications if slots changed
+          const { allQueuesSchedules, resolvedTodayDateStr } = buildAllQueuesSchedulesFromFactData(
+            fact.data,
+            new Date(fetchCompletedMs)
+          );
+          void evaluateDtekScheduleChangesAndPush(allQueuesSchedules, resolvedTodayDateStr);
+
+          return {
+            dbCache,
+            didFetchLiveFromDtek: true,
+          };
+        }
+      }
+    } catch {
+      // Fallback to existing DB cache if DTEK is temporarily unreachable
+    }
+    return {
+      dbCache,
+      didFetchLiveFromDtek: false,
+    };
+  })();
+
+  try {
+    return await dtekSyncInFlightPromise;
+  } finally {
+    dtekSyncInFlightPromise = null;
+  }
+}
+
+async function getDtekSession(forceRefresh = false): Promise<DtekCachedSession | null> {
+  const { dbCache } = await syncDtekScheduleWithDatabase();
+  if (dbCache.fact?.data && Object.keys(dbCache.fact.data).length > 0) {
+    return {
+      fetchedAtMs: dbCache.lastFetchedAtMs || Date.now(),
+      cookies: dbCache.cookies || dtekSessionCache?.cookies || '',
+      csrfToken: dbCache.csrfToken || dtekSessionCache?.csrfToken || '',
+      streets: dbCache.streets || {},
+      fact: dbCache.fact,
+      preset: dbCache.preset || {},
+    };
+  }
+  if (forceRefresh && dtekSessionCache) {
     return dtekSessionCache;
   }
+  return dtekSessionCache;
 }
 
 function parseDtekFactHoursForQueue(queueHoursObj?: Record<string, string>) {
@@ -2837,15 +4610,17 @@ function parseDtekFactHoursForQueue(queueHoursObj?: Record<string, string>) {
 
 app.get('/api/utility/dtek-streets', async (req, res) => {
   const city = String(req.query['city'] || 'с-ще Окни').trim();
-  const session = await getDtekSession(false);
-  if (session && session.streets && Object.keys(session.streets).length > 0) {
-    const cities = Object.keys(session.streets);
-    const streets = session.streets[city] || [];
+  const { dbCache } = await syncDtekScheduleWithDatabase({ city });
+  if (dbCache.streets && Object.keys(dbCache.streets).length > 0) {
+    const cities = Object.keys(dbCache.streets);
+    const streets = dbCache.streets[city] || [];
     res.json({
       cities,
       streets,
       totalCities: cities.length,
       citySelected: city,
+      servedFromDatabase: true,
+      lastDtekFetchAt: dbCache.lastFetchedAtKyiv || null,
     });
     return;
   }
@@ -2875,87 +4650,57 @@ app.get('/api/utility/dtek-shutdowns', async (req, res) => {
   const city = String(req.query['city'] || 'с-ще Окни').trim();
   const street = String(req.query['street'] || 'вул. Шкільна').trim();
   const houseNum = String(req.query['houseNum'] || req.query['house'] || '11').trim();
-  const forceRefresh = req.query['refresh'] === 'true';
+  const requestedManualRefresh = req.query['refresh'] === 'true';
 
   const now = new Date();
-  const kyivHourZero =
-    Number(
-      new Intl.DateTimeFormat('en-GB', {
-        hour: '2-digit',
-        hour12: false,
-        timeZone: 'Europe/Kyiv',
-      }).format(now)
-    ) % 24;
-  const currentKyivHour = kyivHourZero + 1;
-  const kyivMinute = Number(
-    new Intl.DateTimeFormat('en-GB', {
-      minute: '2-digit',
-      timeZone: 'Europe/Kyiv',
-    }).format(now)
-  );
-  const kyivSecond = Number(
-    new Intl.DateTimeFormat('en-GB', {
-      second: '2-digit',
-      timeZone: 'Europe/Kyiv',
-    }).format(now)
-  );
-  const kyivDateFormatter = new Intl.DateTimeFormat('uk-UA', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    timeZone: 'Europe/Kyiv',
+  const {
+    currentKyivHour,
+    kyivMinute,
+    kyivDateFormatter,
+    todayStr,
+    kyivTimeStr,
+    fullKyivDateTime,
+  } = getKyivTimeParts(now);
+
+  // Sync with DTEK only if DB cache is empty or >= 20 minutes have passed since lastFetchedAtMs
+  const { dbCache, didFetchLiveFromDtek } = await syncDtekScheduleWithDatabase({
+    city,
+    street,
   });
-  const todayStr = kyivDateFormatter.format(now);
-  const kyivTimeStr = `${String(kyivHourZero).padStart(2, '0')}:${String(kyivMinute).padStart(2, '0')}:${String(kyivSecond).padStart(2, '0')}`;
 
-  let session = await getDtekSession(forceRefresh);
-  let ajaxJson: Record<string, unknown> | null = null;
+  const addrCacheKey = `${city.toLowerCase()}|${street.toLowerCase()}`;
+  let addrEntry = dbCache.addressHousesCache[addrCacheKey];
 
-  const performAjaxLookup = async (sess: DtekCachedSession | null) => {
-    if (!sess || !sess.csrfToken) return null;
-    try {
-      const body = new URLSearchParams();
-      body.set('method', 'getHomeNum');
-      body.set('data[0][name]', 'city');
-      body.set('data[0][value]', city);
-      body.set('data[1][name]', 'street');
-      body.set('data[1][value]', street);
-
-      const rAjax = await fetch('https://www.dtek-oem.com.ua/ua/ajax', {
-        method: 'POST',
-        headers: {
-          'User-Agent': DTEK_USER_AGENT,
-          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-          'X-Requested-With': 'XMLHttpRequest',
-          'X-CSRF-Token': sess.csrfToken,
-          Cookie: sess.cookies,
-          Referer: 'https://www.dtek-oem.com.ua/ua/shutdowns',
-          Origin: 'https://www.dtek-oem.com.ua',
-        },
-        body: body.toString(),
-      });
-      if (!rAjax.ok) return null;
-      return (await rAjax.json()) as Record<string, unknown>;
-    } catch {
-      return null;
+  // If this specific city+street is not yet cached in the DB (or was refreshed alongside a live DTEK sync),
+  // resolve it once and persist in the DB cache so future requests read from DB.
+  if (
+    (!addrEntry || (didFetchLiveFromDtek && Date.now() - addrEntry.fetchedAtMs > 60_000)) &&
+    dbCache.csrfToken &&
+    dbCache.cookies
+  ) {
+    const lookedUp = await fetchDtekAjaxHomeNums(dbCache.cookies, dbCache.csrfToken, city, street);
+    if (lookedUp && Object.keys(lookedUp.housesMap).length > 0) {
+      addrEntry = {
+        fetchedAtMs: Date.now(),
+        updateTimestamp: lookedUp.updateTimestamp,
+        housesMap: lookedUp.housesMap,
+      };
+      dbCache.addressHousesCache[addrCacheKey] = addrEntry;
+      const sysVals = getSystemValuesMap();
+      sysVals['dtekScheduleDbCache'] = dbCache;
+      void persistSystemValues();
     }
-  };
-
-  ajaxJson = await performAjaxLookup(session);
-  if (!ajaxJson || !ajaxJson['data']) {
-    session = await getDtekSession(true);
-    ajaxJson = await performAjaxLookup(session);
   }
 
   let houseData: Record<string, unknown> | null = null;
   let queueGroup = 'GPV4.1';
-  let updateTimestamp = session?.fact?.update || `${ kyivTimeStr.slice(0, 5) } ${todayStr}`;
+  let updateTimestamp =
+    addrEntry?.updateTimestamp ||
+    dbCache.fact?.update ||
+    `${kyivTimeStr.slice(0, 5)} ${todayStr}`;
 
-  if (ajaxJson && typeof ajaxJson['data'] === 'object' && ajaxJson['data'] !== null) {
-    const housesMap = ajaxJson['data'] as Record<string, Record<string, unknown>>;
-    if (typeof ajaxJson['updateTimestamp'] === 'string' && ajaxJson['updateTimestamp']) {
-      updateTimestamp = ajaxJson['updateTimestamp'];
-    }
+  if (addrEntry && addrEntry.housesMap && Object.keys(addrEntry.housesMap).length > 0) {
+    const housesMap = addrEntry.housesMap;
     const cleanTarget = houseNum.toLowerCase();
     const exact = housesMap[houseNum];
     if (exact) {
@@ -2969,23 +4714,24 @@ app.get('/api/utility/dtek-shutdowns', async (req, res) => {
         houseData = housesMap[matchedKey];
       }
     }
-    if (houseData && Array.isArray(houseData['sub_type_reason']) && houseData['sub_type_reason'].length > 0) {
+    if (
+      houseData &&
+      Array.isArray(houseData['sub_type_reason']) &&
+      houseData['sub_type_reason'].length > 0
+    ) {
       queueGroup = String(houseData['sub_type_reason'][0]);
     }
   } else {
-    // Fallback to published homehub3.ai.studio if direct DTEK AJAX failed
-    try {
-      const fbUrl = `https://homehub3.ai.studio/api/utility/dtek-shutdowns?city=${encodeURIComponent(city)}&street=${encodeURIComponent(street)}&houseNum=${encodeURIComponent(houseNum)}`;
-      const fbResp = await fetch(fbUrl);
-      if (fbResp.ok) {
-        const fbData = (await fbResp.json()) as Record<string, unknown>;
-        if (fbData && fbData['success']) {
-          res.status(200).json(fbData);
-          return;
-        }
-      }
-    } catch {
-      // continue with session fact data
+    // Check if house queue is already stored on a matching UtilityAccount in DB
+    const matchedAcc = state.utilityAccounts.find(
+      (a) =>
+        String(a['city'] || '').trim().toLowerCase() === city.toLowerCase() &&
+        String(a['street'] || '').trim().toLowerCase() === street.toLowerCase() &&
+        String(a['houseNum'] || '').trim().toLowerCase() === houseNum.toLowerCase() &&
+        a['dtekQueueGroup']
+    );
+    if (matchedAcc && matchedAcc['dtekQueueGroup']) {
+      queueGroup = String(matchedAcc['dtekQueueGroup']);
     }
   }
 
@@ -2994,7 +4740,7 @@ app.get('/api/utility/dtek-shutdowns', async (req, res) => {
     queueGroup = `GPV${queueGroup}`;
   }
 
-  const factDataMap = session?.fact?.data || {};
+  const factDataMap = dbCache.fact?.data || {};
   const dayTimestamps = Object.keys(factDataMap)
     .map(Number)
     .filter((n) => !isNaN(n))
@@ -3048,58 +4794,14 @@ app.get('/api/utility/dtek-shutdowns', async (req, res) => {
     kyivMinute < 30 ? currentSlot?.firstHalfPower : currentSlot?.secondHalfPower
   );
 
-  // Build allQueuesSchedules (1.1 .. 6.2) from real DTEK fact data
-  const allQueueNumbers = [
-    '1.1', '1.2',
-    '2.1', '2.2',
-    '3.1', '3.2',
-    '4.1', '4.2',
-    '5.1', '5.2',
-    '6.1', '6.2',
-  ];
-  const todayTsKey = dayTimestamps[0] !== undefined ? String(dayTimestamps[0]) : '';
-  const tomorrowTsKey = dayTimestamps[1] !== undefined ? String(dayTimestamps[1]) : '';
+  const { allQueuesSchedules } = buildAllQueuesSchedulesFromFactData(factDataMap, now);
 
-  const allQueuesSchedules = allQueueNumbers.map((qNum) => {
-    const qKey = `GPV${qNum}`;
-    const qTodayRaw = (todayTsKey ? factDataMap[todayTsKey]?.[qKey] : undefined) || {};
-    const qToday = parseDtekFactHoursForQueue(qTodayRaw);
-    const cur =
-      qToday.hours.find((item) => item.hour === currentKyivHour) || qToday.hours[0];
-    const qPowerNow = Boolean(
-      kyivMinute < 30 ? cur?.firstHalfPower : cur?.secondHalfPower
-    );
-
-    let qTomorrowSchedule = null;
-    if (tomorrowTsKey && factDataMap[tomorrowTsKey]?.[qKey]) {
-      const qTom = parseDtekFactHoursForQueue(factDataMap[tomorrowTsKey][qKey]);
-      const tomDateStr = kyivDateFormatter.format(new Date(Number(tomorrowTsKey) * 1000));
-      qTomorrowSchedule = {
-        dateKey: tomorrowTsKey,
-        scheduleDate: tomDateStr,
-        dayLabel: 'Завтра',
-        isToday: false,
-        isTomorrow: true,
-        queueGroup: qKey,
-        totalPowerHours: qTom.totalPowerHours,
-        totalOutageHours: qTom.totalOutageHours,
-        hourlySchedule: qTom.hours,
-      };
-    }
-
-    return {
-      queueKey: qKey,
-      queueNumber: qNum,
-      queueTitle: `Черга ${qNum}`,
-      scheduleDate: todaySchedule.scheduleDate,
-      isPowerAvailableNow: qPowerNow,
-      totalPowerHours: qToday.totalPowerHours,
-      totalOutageHours: qToday.totalOutageHours,
-      outageIntervals: qToday.outageIntervals,
-      hourlySchedule: qToday.hours,
-      tomorrowSchedule: qTomorrowSchedule,
-    };
-  });
+  const lastFetchedMs = dbCache.lastFetchedAtMs || Date.now();
+  const nextAllowedFetchAtMs = lastFetchedMs + DTEK_DB_SYNC_INTERVAL_MS;
+  const remainingMs = Math.max(0, nextAllowedFetchAtMs - Date.now());
+  const minutesUntilNextRefresh = Math.ceil(remainingMs / 60000);
+  const lastDtekFetchAt = dbCache.lastFetchedAtKyiv || fullKyivDateTime;
+  const refreshSkippedByCooldown = requestedManualRefresh && !didFetchLiveFromDtek;
 
   res.status(200).json({
     success: true,
@@ -3108,7 +4810,16 @@ app.get('/api/utility/dtek-shutdowns', async (req, res) => {
     houseNum,
     updateFact: updateTimestamp,
     dtekJsonUpdatedAt: updateTimestamp,
-    fetchedAt: `${todayStr}, ${kyivTimeStr}`,
+    fetchedAt: lastDtekFetchAt,
+    lastDtekFetchAt,
+    lastDtekFetchAtIso: dbCache.lastFetchedAtIso || new Date(lastFetchedMs).toISOString(),
+    lastDtekFetchAtMs: lastFetchedMs,
+    nextAllowedFetchAtMs,
+    minutesUntilNextRefresh,
+    syncIntervalMinutes: 20,
+    servedFromDatabase: true,
+    didFetchLiveFromDtek,
+    refreshSkippedByCooldown,
     houseData,
     startDate: (houseData?.['start_date'] as string) || null,
     endDate: (houseData?.['end_date'] as string) || null,
@@ -3123,9 +4834,401 @@ app.get('/api/utility/dtek-shutdowns', async (req, res) => {
     isPowerAvailableNow,
     currentKyivHour,
     kyivTime: kyivTimeStr,
-    raw: ajaxJson,
+    raw: addrEntry?.housesMap ? { data: addrEntry.housesMap, updateTimestamp } : null,
   });
 });
+
+// ============================================================================
+// WEB PUSH NOTIFICATIONS (VAPID) & DTEK SCHEDULE CHANGE WATCHER
+// ============================================================================
+
+interface StoredPushSubscription {
+  id: string;
+  endpoint: string;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+  userId?: string;
+  userEmail?: string;
+  userName?: string;
+  queueGroup: string; // e.g., 'GPV4.1' or 'ALL'
+  city?: string;
+  street?: string;
+  houseNum?: string;
+  deviceLabel?: string;
+  createdAt: string;
+  lastNotifiedAt?: string;
+}
+
+interface QueueScheduleFingerprint {
+  queueKey: string;
+  scheduleDate: string;
+  todaySignature: string;
+  todayOutageIntervals: string[];
+  todayOutageHours: number;
+  todayPowerHours: number;
+  tomorrowDate?: string;
+  tomorrowSignature?: string;
+  tomorrowOutageIntervals?: string[];
+  tomorrowOutageHours?: number;
+  updatedAt: string;
+}
+
+let vapidInitialized = false;
+
+function ensureVapidKeys(): { publicKey: string; privateKey: string } {
+  const sysVals = getSystemValuesMap();
+  const existing = sysVals['vapidKeys'] as { publicKey?: string; privateKey?: string } | undefined;
+  if (existing?.publicKey && existing?.privateKey) {
+    if (!vapidInitialized) {
+      try {
+        webpush.setVapidDetails(
+          'mailto:admin@homehub.ai.studio',
+          existing.publicKey,
+          existing.privateKey
+        );
+        vapidInitialized = true;
+      } catch (e) {
+        console.warn('[WebPush] Failed to set existing VAPID details:', e);
+      }
+    }
+    return { publicKey: existing.publicKey, privateKey: existing.privateKey };
+  }
+
+  const generated = webpush.generateVAPIDKeys();
+  sysVals['vapidKeys'] = generated;
+  try {
+    webpush.setVapidDetails(
+      'mailto:admin@homehub.ai.studio',
+      generated.publicKey,
+      generated.privateKey
+    );
+    vapidInitialized = true;
+  } catch (e) {
+    console.warn('[WebPush] Failed to initialize generated VAPID details:', e);
+  }
+  void persistSystemValues();
+  return generated;
+}
+
+function getPushSubscriptionsList(): StoredPushSubscription[] {
+  const sysVals = getSystemValuesMap();
+  if (!Array.isArray(sysVals['pushSubscriptions'])) {
+    sysVals['pushSubscriptions'] = [];
+  }
+  return sysVals['pushSubscriptions'] as StoredPushSubscription[];
+}
+
+function getScheduleFingerprintsMap(): Record<string, QueueScheduleFingerprint> {
+  const sysVals = getSystemValuesMap();
+  if (
+    !sysVals['dtekScheduleFingerprints'] ||
+    typeof sysVals['dtekScheduleFingerprints'] !== 'object'
+  ) {
+    sysVals['dtekScheduleFingerprints'] = {};
+  }
+  return sysVals['dtekScheduleFingerprints'] as Record<string, QueueScheduleFingerprint>;
+}
+
+function computeHourlySignature(
+  hours: { hour: number; firstHalfPower: boolean; secondHalfPower: boolean }[]
+): string {
+  return hours
+    .map((h) => `${h.hour}:${h.firstHalfPower ? 1 : 0}${h.secondHalfPower ? 1 : 0}`)
+    .join(',');
+}
+
+async function sendWebPushToSubscription(
+  sub: StoredPushSubscription,
+  payload: Record<string, unknown>
+): Promise<boolean> {
+  ensureVapidKeys();
+  try {
+    await webpush.sendNotification(
+      {
+        endpoint: sub.endpoint,
+        keys: sub.keys,
+      },
+      JSON.stringify(payload),
+      { TTL: 86400, urgency: 'high' }
+    );
+    sub.lastNotifiedAt = new Date().toISOString();
+    return true;
+  } catch (err: unknown) {
+    const statusCode = (err as { statusCode?: number })?.statusCode;
+    if (statusCode === 404 || statusCode === 410) {
+      // Remove expired subscription
+      const sysVals = getSystemValuesMap();
+      sysVals['pushSubscriptions'] = getPushSubscriptionsList().filter(
+        (s) => s.endpoint !== sub.endpoint
+      );
+      void persistSystemValues();
+    }
+    return false;
+  }
+}
+
+async function evaluateDtekScheduleChangesAndPush(
+  allQueuesSchedules: {
+    queueKey: string;
+    queueNumber: string;
+    queueTitle: string;
+    scheduleDate: string;
+    totalPowerHours: number;
+    totalOutageHours: number;
+    outageIntervals: string[];
+    hourlySchedule: { hour: number; firstHalfPower: boolean; secondHalfPower: boolean }[];
+    tomorrowSchedule?: {
+      scheduleDate: string;
+      totalPowerHours: number;
+      totalOutageHours: number;
+      hourlySchedule: { hour: number; firstHalfPower: boolean; secondHalfPower: boolean }[];
+    } | null;
+  }[],
+  todayDateStr: string
+): Promise<{ changedQueues: string[]; notificationsSent: number }> {
+  const fingerprints = getScheduleFingerprintsMap();
+  const subs = getPushSubscriptionsList();
+  const changedQueues: string[] = [];
+  let notificationsSent = 0;
+  let fingerprintsUpdated = false;
+
+  for (const q of allQueuesSchedules) {
+    const qKey = q.queueKey; // e.g. 'GPV4.1'
+    const todaySig = `${q.scheduleDate}|${computeHourlySignature(q.hourlySchedule)}`;
+    const tomSchedule = q.tomorrowSchedule;
+    const tomSig = tomSchedule
+      ? `${tomSchedule.scheduleDate}|${computeHourlySignature(tomSchedule.hourlySchedule)}`
+      : '';
+
+    const prev = fingerprints[qKey];
+
+    if (prev && prev.scheduleDate === q.scheduleDate) {
+      const todayChanged = prev.todaySignature !== todaySig;
+      const tomorrowChanged = Boolean(tomSig && prev.tomorrowSignature && prev.tomorrowSignature !== tomSig);
+      const tomorrowAppeared = Boolean(
+        tomSig && !prev.tomorrowSignature && tomSchedule && tomSchedule.totalOutageHours > 0
+      );
+
+      if (todayChanged || tomorrowChanged || tomorrowAppeared) {
+        changedQueues.push(qKey);
+
+        let title = `⚡ Зміна графіку ДТЕК (${q.queueTitle})`;
+        let body = '';
+        if (todayChanged) {
+          const newIntervals =
+            q.outageIntervals.length > 0 ? q.outageIntervals.join(', ') : 'Без відключень';
+          const oldIntervals =
+            prev.todayOutageIntervals && prev.todayOutageIntervals.length > 0
+              ? prev.todayOutageIntervals.join(', ')
+              : 'Без відключень';
+          body = `Графік на сьогодні (${q.scheduleDate}) змінився! Нові відключення: ${newIntervals} (Світло: ${q.totalPowerHours} год, Відкл.: ${q.totalOutageHours} год). Було: ${oldIntervals}.`;
+        } else if (tomorrowAppeared && tomSchedule) {
+          title = `📅 Графік ДТЕК на завтра (${q.queueTitle})`;
+          body = `З'явився графік на завтра (${tomSchedule.scheduleDate}): без світла ${tomSchedule.totalOutageHours} год, зі світлом ${tomSchedule.totalPowerHours} год.`;
+        } else if (tomorrowChanged && tomSchedule) {
+          title = `⚡ Оновився графік на завтра (${q.queueTitle})`;
+          body = `Змінився графік на завтра (${tomSchedule.scheduleDate}): без світла ${tomSchedule.totalOutageHours} год (було ${prev.tomorrowOutageHours ?? 0} год).`;
+        }
+
+        const targetSubs = subs.filter(
+          (s) =>
+            !s.queueGroup ||
+            s.queueGroup === 'ALL' ||
+            s.queueGroup === qKey ||
+            s.queueGroup.replace('GPV', '') === q.queueNumber
+        );
+
+        for (const sub of targetSubs) {
+          const sent = await sendWebPushToSubscription(sub, {
+            title,
+            body,
+            tag: `dtek-change-${qKey}-${Date.now()}`,
+            url: '/?tab=outage_schedule',
+            queueGroup: qKey,
+          });
+          if (sent) notificationsSent++;
+        }
+      }
+    }
+
+    if (!prev || prev.todaySignature !== todaySig || prev.tomorrowSignature !== tomSig) {
+      fingerprints[qKey] = {
+        queueKey: qKey,
+        scheduleDate: q.scheduleDate || todayDateStr,
+        todaySignature: todaySig,
+        todayOutageIntervals: q.outageIntervals,
+        todayOutageHours: q.totalOutageHours,
+        todayPowerHours: q.totalPowerHours,
+        tomorrowDate: tomSchedule?.scheduleDate,
+        tomorrowSignature: tomSig || undefined,
+        tomorrowOutageHours: tomSchedule?.totalOutageHours,
+        updatedAt: new Date().toISOString(),
+      };
+      fingerprintsUpdated = true;
+    }
+  }
+
+  if (fingerprintsUpdated) {
+    await persistSystemValues();
+  }
+
+  return { changedQueues, notificationsSent };
+}
+
+app.get('/api/push/vapid-public-key', (req, res) => {
+  const { publicKey } = ensureVapidKeys();
+  const subs = getPushSubscriptionsList();
+  const { user } = resolveRequestUser(req);
+  const userId = String(user?.['id'] || '');
+  const mySubs = userId ? subs.filter((s) => s.userId === userId) : subs;
+  res.json({
+    publicKey,
+    totalSubscriptions: subs.length,
+    userSubscriptionsCount: mySubs.length,
+    monitoredQueues: Array.from(new Set(subs.map((s) => s.queueGroup).filter(Boolean))),
+  });
+});
+
+app.post('/api/push/subscribe', async (req, res) => {
+  const { subscription, queueGroup, city, street, houseNum, deviceLabel } = req.body || {};
+  if (!subscription || !subscription.endpoint || !subscription.keys) {
+    res.status(400).json({ error: 'Некоректний обʼєкт Web Push підписки' });
+    return;
+  }
+  ensureVapidKeys();
+  const { user } = resolveRequestUser(req);
+  const subs = getPushSubscriptionsList();
+  const normQueue = String(queueGroup || 'GPV4.1').startsWith('GPV')
+    ? String(queueGroup || 'GPV4.1')
+    : `GPV${queueGroup || '4.1'}`;
+
+  const existingIdx = subs.findIndex((s) => s.endpoint === subscription.endpoint);
+  const record: StoredPushSubscription = {
+    id: existingIdx >= 0 ? subs[existingIdx].id : 'push_' + Date.now(),
+    endpoint: String(subscription.endpoint),
+    keys: {
+      p256dh: String(subscription.keys.p256dh || ''),
+      auth: String(subscription.keys.auth || ''),
+    },
+    userId: user ? String(user['id'] || '') : undefined,
+    userEmail: user ? String(user['email'] || '') : undefined,
+    userName: user ? String(user['name'] || '') : undefined,
+    queueGroup: normQueue,
+    city: city ? String(city) : undefined,
+    street: street ? String(street) : undefined,
+    houseNum: houseNum ? String(houseNum) : undefined,
+    deviceLabel: deviceLabel ? String(deviceLabel) : 'Мій смартфон / Браузер',
+    createdAt: existingIdx >= 0 ? subs[existingIdx].createdAt : new Date().toISOString(),
+  };
+
+  if (existingIdx >= 0) {
+    subs[existingIdx] = record;
+  } else {
+    subs.push(record);
+  }
+  await persistSystemValues();
+  res.json({
+    success: true,
+    subscription: record,
+    totalSubscriptions: subs.length,
+  });
+});
+
+app.post('/api/push/unsubscribe', async (req, res) => {
+  const { endpoint } = req.body || {};
+  const sysVals = getSystemValuesMap();
+  const subs = getPushSubscriptionsList();
+  sysVals['pushSubscriptions'] = subs.filter((s) => s.endpoint !== endpoint);
+  await persistSystemValues();
+  res.json({ success: true, totalSubscriptions: (sysVals['pushSubscriptions'] as unknown[]).length });
+});
+
+app.post('/api/push/test-delayed', (req, res) => {
+  const { endpoint, delaySeconds = 5, queueGroup, simulateScheduleDiff = false } = req.body || {};
+  const subs = getPushSubscriptionsList();
+  const targetSubs = endpoint
+    ? subs.filter((s) => s.endpoint === endpoint)
+    : subs;
+
+  if (targetSubs.length === 0) {
+    res.status(400).json({
+      success: false,
+      error: 'Немає активної підписки Web Push. Спочатку натисніть «Увімкнути фонові сповіщення».',
+    });
+    return;
+  }
+
+  const delayMs = Math.min(Math.max(Number(delaySeconds) || 5, 1), 60) * 1000;
+  const fingerprints = getScheduleFingerprintsMap();
+
+  setTimeout(async () => {
+    for (const sub of targetSubs) {
+      const qKey = String(queueGroup || sub.queueGroup || 'GPV4.1');
+      const fp = fingerprints[qKey];
+      const intervalsText =
+        fp && fp.todayOutageIntervals?.length > 0
+          ? fp.todayOutageIntervals.join(', ')
+          : '10:00–14:00, 19:00–22:00';
+      const title = simulateScheduleDiff
+        ? `⚡ Зміна графіку ДТЕК (${qKey.replace('GPV', 'Черга ')})`
+        : `🔔 Перевірка Web Push (${qKey.replace('GPV', 'Черга ')})`;
+      const body = simulateScheduleDiff
+        ? `Увага! Змінився сам графік відключень (не лише час перевірки). Нові слоти без світла: ${intervalsText}. Натисніть «Відкрити», щоб переглянути.`
+        : `Фонові сповіщення HomeHub працюють! Відстежується реальна зміна графіку ${qKey.replace('GPV', 'Черга ')} (поточні слоти: ${intervalsText}).`;
+
+      await sendWebPushToSubscription(sub, {
+        title,
+        body,
+        tag: `dtek-test-${Date.now()}`,
+        url: '/?tab=outage_schedule',
+        queueGroup: qKey,
+      });
+    }
+  }, delayMs);
+
+  res.json({
+    success: true,
+    scheduledInSeconds: delayMs / 1000,
+    recipientsCount: targetSubs.length,
+  });
+});
+
+app.post('/api/push/snooze', (req, res) => {
+  const { delayMinutes = 15, title, body, queueGroup } = req.body || {};
+  const subs = getPushSubscriptionsList();
+  const delayMs = Math.min(Math.max(Number(delayMinutes) || 15, 1), 120) * 60 * 1000;
+
+  setTimeout(async () => {
+    for (const sub of subs) {
+      await sendWebPushToSubscription(sub, {
+        title: title || '⚡ Нагадування: Графік відключень ДТЕК',
+        body: body || 'Минуло 15 хвилин. Перевірте актуальний графік відключень світла.',
+        tag: `dtek-snooze-${Date.now()}`,
+        url: '/?tab=outage_schedule',
+        queueGroup: queueGroup || sub.queueGroup,
+      });
+    }
+  }, delayMs);
+
+  res.json({ success: true });
+});
+
+// Background DTEK schedule synchronizer (fetches from DTEK website every 20 minutes,
+// saves schedule + lastFetchedAt timestamp in PostgreSQL DB, and sends Web Push if schedule slots changed)
+setInterval(async () => {
+  try {
+    await syncDtekScheduleWithDatabase();
+  } catch {
+    // Silent background check
+  }
+}, DTEK_DB_SYNC_INTERVAL_MS);
+
+// Initial warmup check shortly after startup: if DB has no DTEK schedule or >= 20 min have elapsed, sync once
+setTimeout(() => {
+  void syncDtekScheduleWithDatabase();
+}, 4000);
 
 app.post('/api/utility/recognize-meter', async (req, res) => {
   try {
@@ -3135,31 +5238,40 @@ app.post('/api/utility/recognize-meter', async (req, res) => {
       return;
     }
     const { imageBase64, utilityType, electricityTariffType } = req.body || {};
-    const cleanBase64 = String(imageBase64 || '').replace(/^data:image\/\w+;base64,/, '');
-    const ai = new GoogleGenAI({ apiKey });
+    const mimeMatch = String(imageBase64 || '').match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,/);
+    const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+    const cleanBase64 = String(imageBase64 || '').replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '');
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       contents: [
         {
           inlineData: {
-            mimeType: 'image/jpeg',
+            mimeType,
             data: cleanBase64,
           },
         },
-        `Розпізнай покази лічильника (${utilityType === 'water' ? 'вода м3' : electricityTariffType === 'dual' ? 'двозонний електро День T1 / Ніч T2' : 'електро кВт·год'}). Поверни JSON.`,
+        `Розпізнай покази лічильника (${utilityType === 'water' ? 'вода м³' : electricityTariffType === 'dual' ? 'двозонний електро День T1 / Ніч T2' : 'електро кВт·год'}). Поверни JSON українською мовою.`,
       ],
       config: {
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            readingT1: { type: Type.NUMBER },
-            readingT2: { type: Type.NUMBER },
-            singleReading: { type: Type.NUMBER },
-            readingWater: { type: Type.NUMBER },
-            meterNumber: { type: Type.STRING },
-            confidence: { type: Type.NUMBER },
-            explanation: { type: Type.STRING },
+            readingT1: { type: Type.NUMBER, description: 'Показник День T1 або загальний показник електролічильника' },
+            readingT2: { type: Type.NUMBER, description: 'Показник Ніч T2 для двозонного лічильника' },
+            singleReading: { type: Type.NUMBER, description: 'Загальний показник однозонного лічильника' },
+            readingWater: { type: Type.NUMBER, description: 'Показник лічильника води в м³' },
+            meterNumber: { type: Type.STRING, description: 'Серійний номер лічильника, якщо видно на фото' },
+            confidence: { type: Type.NUMBER, description: 'Впевненість розпізнавання від 0 до 1' },
+            explanation: { type: Type.STRING, description: 'Коротке пояснення розпізнаних показів українською' },
           },
         },
       },
@@ -3180,34 +5292,109 @@ app.post('/api/utility/analyze-device-screenshot', async (req, res) => {
       return;
     }
     const { imageBase64, comment, deviceName, date } = req.body || {};
-    const cleanBase64 = String(imageBase64 || '').replace(/^data:image\/\w+;base64,/, '');
-    const ai = new GoogleGenAI({ apiKey });
+    const mimeMatch = String(imageBase64 || '').match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,/);
+    const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+    const cleanBase64 = String(imageBase64 || '').replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '');
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.8-flash',
       contents: [
         {
           inlineData: {
-            mimeType: 'image/jpeg',
+            mimeType,
             data: cleanBase64,
           },
         },
-        `Проаналізуй скріншот споживання електроприладу "${deviceName || 'Пристрій'}" за дату ${date || ''}. Коментар: ${comment || ''}. Поверни JSON.`,
+        `Проаналізуй скріншот споживання електроенергії приладу "${deviceName || 'Пристрій'}" (базова дата: ${date || 'сьогодні'}). Коментар користувача: "${comment || 'немає'}". Витягни спожиті кВт·год (consumedKwh), режим запису (valueType: 'cumulative_month' якщо це накопичувальний підсумок за місяць, 'single_day' якщо за 1 день, 'period_range' якщо за діапазон дат/часу, 'delta' якщо це різниця), дату (YYYY-MM-DD), час початку/закінчення (HH:mm), тривалість у годинах, потужність у Вт та детальне пояснення українською мовою. Якщо значення у Вт·год (Wh), переведи у кВт·год (поділи на 1000).`,
       ],
       config: {
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            extractedKwh: { type: Type.NUMBER },
-            extractedPowerW: { type: Type.NUMBER },
-            extractedRuntimeHours: { type: Type.NUMBER },
-            summaryUa: { type: Type.STRING },
+            consumedKwh: {
+              type: Type.NUMBER,
+              description: 'Кількість спожитої електроенергії у кВт·год (kWh)',
+            },
+            valueType: {
+              type: Type.STRING,
+              description: "Тип показника: 'cumulative_month', 'single_day', 'period_range' або 'delta'",
+            },
+            detectedDate: {
+              type: Type.STRING,
+              description: 'Дата у форматі YYYY-MM-DD, якщо видно на скріншоті або в коментарі',
+            },
+            detectedEndDate: {
+              type: Type.STRING,
+              description: 'Кінцева дата періоду у форматі YYYY-MM-DD (для period_range)',
+            },
+            detectedStartTime: {
+              type: Type.STRING,
+              description: 'Час початку у форматі HH:mm, якщо вказано',
+            },
+            detectedEndTime: {
+              type: Type.STRING,
+              description: 'Час завершення у форматі HH:mm, якщо вказано',
+            },
+            detectedDurationHours: {
+              type: Type.NUMBER,
+              description: 'Тривалість роботи/споживання у годинах',
+            },
+            detectedDeviceName: {
+              type: Type.STRING,
+              description: 'Назва приладу зі скріншоту, якщо видно',
+            },
+            powerWatts: {
+              type: Type.NUMBER,
+              description: 'Потужність приладу у Ватах (W), якщо видно',
+            },
+            explanation: {
+              type: Type.STRING,
+              description: 'Пояснення українською мовою: що саме розпізнано на скріншоті',
+            },
+            confidence: {
+              type: Type.STRING,
+              description: "Рівень впевненості: 'high', 'medium' або 'low'",
+            },
           },
+          required: ['consumedKwh', 'valueType', 'explanation'],
         },
       },
     });
-    const parsed = JSON.parse(response.text || '{}');
-    res.json({ success: true, ...parsed });
+    const parsed = JSON.parse(response.text || '{}') as Record<string, unknown>;
+    const consumedKwh = Number(parsed['consumedKwh'] ?? parsed['extractedKwh'] ?? 0);
+    const rawType = String(parsed['valueType'] || 'cumulative_month');
+    const valueType =
+      rawType === 'single_day' || rawType === 'period_range' || rawType === 'delta'
+        ? rawType
+        : 'cumulative_month';
+    res.json({
+      success: true,
+      consumedKwh: Number.isFinite(consumedKwh) ? Math.round(consumedKwh * 1000) / 1000 : 0,
+      valueType,
+      detectedDate: parsed['detectedDate'] ? String(parsed['detectedDate']) : undefined,
+      detectedEndDate: parsed['detectedEndDate'] ? String(parsed['detectedEndDate']) : undefined,
+      detectedStartTime: parsed['detectedStartTime'] ? String(parsed['detectedStartTime']) : undefined,
+      detectedEndTime: parsed['detectedEndTime'] ? String(parsed['detectedEndTime']) : undefined,
+      detectedDurationHours:
+        parsed['detectedDurationHours'] !== undefined && parsed['detectedDurationHours'] !== null
+          ? Number(parsed['detectedDurationHours'])
+          : null,
+      detectedDeviceName: parsed['detectedDeviceName'] ? String(parsed['detectedDeviceName']) : undefined,
+      powerWatts:
+        parsed['powerWatts'] !== undefined && parsed['powerWatts'] !== null
+          ? Number(parsed['powerWatts'])
+          : null,
+      explanation: String(parsed['explanation'] || parsed['summaryUa'] || 'Дані успішно розпізнано зі скріншоту'),
+      confidence: String(parsed['confidence'] || 'high'),
+    });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Помилка аналізу скріншота';
     res.status(500).json({ success: false, error: msg });

@@ -29,6 +29,12 @@ export interface ElectricityDeviceLogEntry {
   consumedKwh: number; // Кількість спожитої електроенергії (кВт·год)
   entryMode?: DeviceConsumptionEntryMode; // 'cumulative_month' | 'single_day' | 'period_range' | 'delta'
   tariffSelection?: 'auto_time' | 'night_only' | 'day_only'; // Вибір тарифної зони: 'auto_time' (по часу) | 'night_only' (нічний Т2) | 'day_only' (денний Т1)
+  tempAvgC?: number | null; // Середня температура на вулиці за дату/період (°C)
+  tempMinC?: number | null; // Мінімальна температура за добу (°C)
+  tempMaxC?: number | null; // Максимальна температура за добу (°C)
+  weatherCode?: number | null; // WMO код погоди
+  weatherCondition?: string; // Опис погоди (напр. "Хмарно", "Ясно", "Дощ")
+  weatherIcon?: string; // Емодзі або іконка погоди
   comment?: string; // Коментар користувача (пояснення до фото чи запису)
   aiExplanation?: string; // Пояснення від AI-аналізу скріншоту
   fromScreenshot?: boolean; // Чи додано через аналіз скріншоту
@@ -37,6 +43,8 @@ export interface ElectricityDeviceLogEntry {
 
 export interface ElectricityDevice {
   id: string;
+  accountId?: string; // ID будинку (UtilityAccount.id), до якого прив'язаний пристрій
+  ownerUserId?: string; // ID користувача, якому належить пристрій
   name: string; // Напр. "Кондиціонер (режим обігріву)", "Volkswagen E-Golf 2014 (24 кВт·год)", "Бойлер ванна"
   category: string; // 'boiler' | 'climate' | 'heating_ac' | 'ev' | 'heating' | 'kitchen' | 'laundry' | 'pc' | 'power_station' | 'smart_plug' | 'other'
   icon: string; // Material icon name, e.g. 'water_heater', 'ac_unit', 'electric_car', 'bolt'
@@ -48,6 +56,40 @@ export interface ElectricityDevice {
   logs: ElectricityDeviceLogEntry[];
   createdAt: string;
   updatedAt?: string;
+}
+
+export interface DailyWeatherPoint {
+  date: string; // YYYY-MM-DD
+  tempAvgC: number;
+  tempMinC: number;
+  tempMaxC: number;
+  weatherCode: number;
+  condition: string;
+  icon: string;
+  emoji: string;
+  precipitationMm?: number;
+}
+
+export interface UtilityWeatherResponse {
+  success: boolean;
+  city: string;
+  resolvedLocation: string;
+  latitude: number;
+  longitude: number;
+  updatedAt: string;
+  current: {
+    tempC: number;
+    feelsLikeC: number;
+    humidityPct: number;
+    windSpeedKmh: number;
+    weatherCode: number;
+    condition: string;
+    icon: string;
+    emoji: string;
+    isDay: boolean;
+  };
+  dailyByDate: Record<string, DailyWeatherPoint>;
+  forecastDays: DailyWeatherPoint[];
 }
 
 export interface ElectricityScreenshotAnalysisResult {
@@ -104,6 +146,7 @@ export interface UtilityAccount {
   ooekDiscoveredAccounts?: string[]; // Знайдені особові рахунки в кабінеті ООЕК
   ooekCabinetStatus?: string; // Статус підключення до ООЕК
   ooekCabinetLastSync?: string; // Час останнього оновлення суми з ООЕК
+  ooekBillUpdatedAt?: string | null; // Дата отримання рахунку з сайту ООЕК (span[@class="updated_at"]/a/text())
   devices?: ElectricityDevice[]; // Пристрої моніторингу споживання електроенергії
   createdAt: string;
   updatedAt?: string;
@@ -195,7 +238,8 @@ export type OutageScheduleViewVariant =
   | 'v7_compact_table'
   | 'v8_cyber_scada'
   | 'v9_dual_day_compare'
-  | 'v10_minimal_pills';
+  | 'v10_minimal_pills'
+  | 'v11_dtek_official_sheet';
 
 export interface OutageScheduleVariantMeta {
   id: OutageScheduleViewVariant;
@@ -297,6 +341,15 @@ export const OUTAGE_SCHEDULE_VARIANTS: OutageScheduleVariantMeta[] = [
     description: 'Лаконічний огляд: акцент на поточному стані, скільки годин залишилось до зміни стану та компактна стрічка капсул',
     icon: 'lens_blur',
     accent: 'slate',
+  },
+  {
+    id: 'v11_dtek_official_sheet',
+    number: 11,
+    name: 'Варіант 11: Офіційний графік ДТЕК Одеські Електромережі',
+    shortName: '11. Офіційний ДТЕК',
+    description: 'Фірмова таблиця ДТЕК із вертикальними часовими проміжками (00-01..23-24), іконками перекресленої блискавки та відправкою картинки',
+    icon: 'flash_off',
+    accent: 'amber',
   },
 ];
 
@@ -808,5 +861,409 @@ export function calculateElectricityCost(
     ratioDay: Math.round(ratioDay * 1000) / 10, // %
     ratioNight: Math.round(ratioNight * 1000) / 10, // %
     summaryText,
+  };
+}
+
+export interface DeviceEmpiricalReadingStats {
+  logsCount: number;
+  totalLoggedKwh: number;
+  avgKwhPerReading: number;
+  empiricalHourlyWatts: number | null;
+}
+
+export function isAirConditionerDevice(
+  dev?: Partial<ElectricityDevice> | null,
+  rawNameOrNote?: string
+): boolean {
+  if (dev?.category === 'heating_ac' || dev?.category === 'climate') {
+    return true;
+  }
+  const combined = `${dev?.name || ''} ${rawNameOrNote || ''}`.toLowerCase();
+  return /кондиціонер|спліт|кондей|інвертор.*кондиц|cooper|gree|daikin|mitsubishi|haier/i.test(combined);
+}
+
+export function computeDeviceEmpiricalReadingStats(
+  dev?: Partial<ElectricityDevice> | null
+): DeviceEmpiricalReadingStats {
+  const logs = Array.isArray(dev?.logs) ? dev.logs : [];
+  if (logs.length === 0) {
+    return {
+      logsCount: 0,
+      totalLoggedKwh: 0,
+      avgKwhPerReading: 0,
+      empiricalHourlyWatts: null,
+    };
+  }
+
+  const sorted = [...logs].sort(
+    (a, b) => (a.date || '').localeCompare(b.date || '') || (a.createdAt || '').localeCompare(b.createdAt || '')
+  );
+
+  let sumKwh = 0;
+  let validLogsCount = 0;
+  let sumTimedKwh = 0;
+  let sumTimedHours = 0;
+  const prevCumulativeByMonth = new Map<string, number>();
+
+  for (const l of sorted) {
+    const rawVal = Number(l.consumedKwh) || 0;
+    if (rawVal <= 0) continue;
+    const mKey = l.periodMonth || (l.date ? l.date.slice(0, 7) : 'default');
+    let deltaKwh = rawVal;
+
+    if (!l.entryMode || l.entryMode === 'cumulative_month') {
+      const prev = prevCumulativeByMonth.get(mKey) || 0;
+      deltaKwh = rawVal >= prev && prev > 0 ? Math.max(0.05, rawVal - prev) : rawVal;
+      prevCumulativeByMonth.set(mKey, Math.max(prev, rawVal));
+    }
+
+    sumKwh += deltaKwh;
+    validLogsCount++;
+
+    const durH = Number(l.durationHours) || 0;
+    if (durH > 0) {
+      sumTimedKwh += deltaKwh;
+      sumTimedHours += durH;
+    }
+  }
+
+  const avgKwhPerReading =
+    validLogsCount > 0 ? Math.round((sumKwh / validLogsCount) * 100) / 100 : 0;
+  const empiricalHourlyWatts =
+    sumTimedHours > 0 ? Math.round((sumTimedKwh / sumTimedHours) * 1000) : null;
+
+  return {
+    logsCount: validLogsCount,
+    totalLoggedKwh: Math.round(sumKwh * 100) / 100,
+    avgKwhPerReading,
+    empiricalHourlyWatts,
+  };
+}
+
+export interface AirConditionerPowerProfile {
+  maxPowerWatts: number;
+  steadyOperatingWatts: number;
+  operatingMinWatts: number;
+  operatingMaxWatts: number;
+  effectiveAvgWatts: number;
+  estimatedKwh: number;
+  warmupHours: number;
+  steadyHours: number;
+}
+
+/**
+ * For air conditioners, `maxPowerWatts` is the peak startup/heating power (e.g. 1100-1500 W).
+ * After initial heating/cooling (~45 min), inverter air conditioners transition to steady operating mode
+ * consuming 400-800 Wh (W), adjusted by outdoor temperature and empirical readings.
+ */
+export function resolveAirConditionerPowerProfile(
+  maxPowerWatts: number,
+  durationHours: number,
+  dev?: Partial<ElectricityDevice> | null,
+  outdoorTempC?: number | null
+): AirConditionerPowerProfile {
+  const maxW = maxPowerWatts && maxPowerWatts > 0 ? maxPowerWatts : 1350;
+  const operatingMinWatts = 400;
+  const operatingMaxWatts = 800;
+
+  // Base steady-state operating power within 400-800 W (proportional to max power, ~44% of peak)
+  let steadyW = Math.round(Math.max(operatingMinWatts, Math.min(operatingMaxWatts, maxW * 0.44)));
+
+  // Adjust within [400..800] W if outdoor temperature is known (colder weather -> closer to 650-800 W)
+  if (typeof outdoorTempC === 'number' && !isNaN(outdoorTempC)) {
+    if (outdoorTempC <= -2) {
+      steadyW = Math.min(operatingMaxWatts, Math.max(steadyW, 740));
+    } else if (outdoorTempC <= 3) {
+      steadyW = Math.min(operatingMaxWatts, Math.max(steadyW, 650));
+    } else if (outdoorTempC >= 12) {
+      steadyW = Math.max(operatingMinWatts, Math.min(steadyW, 480));
+    }
+  }
+
+  // Blend with empirical hourly average from existing readings if available
+  const emp = computeDeviceEmpiricalReadingStats(dev);
+  if (emp.empiricalHourlyWatts !== null && emp.empiricalHourlyWatts >= 300 && emp.empiricalHourlyWatts <= 1100) {
+    steadyW = Math.round(
+      Math.max(
+        operatingMinWatts,
+        Math.min(operatingMaxWatts, (steadyW + emp.empiricalHourlyWatts) / 2)
+      )
+    );
+  }
+
+  const dur = Math.max(0, durationHours || 0);
+  // First ~45 minutes (0.75h) at max startup/heating power, remainder in 400-800 Wh operating mode
+  const warmupHours = Math.min(dur, 0.75);
+  const steadyHours = Math.max(0, dur - warmupHours);
+
+  const totalWh = warmupHours * maxW + steadyHours * steadyW;
+  const effectiveAvgWatts = dur > 0 ? Math.round(totalWh / dur) : steadyW;
+  const estimatedKwh = Math.round((totalWh / 1000) * 100) / 100;
+
+  return {
+    maxPowerWatts: maxW,
+    steadyOperatingWatts: steadyW,
+    operatingMinWatts,
+    operatingMaxWatts,
+    effectiveAvgWatts,
+    estimatedKwh,
+    warmupHours: Math.round(warmupHours * 100) / 100,
+    steadyHours: Math.round(steadyHours * 100) / 100,
+  };
+}
+
+export interface ControlReadingNoteAnalysis {
+  hasAnalysis: boolean;
+  rawNote: string;
+  detectedAction: string;
+  matchedDeviceId?: string;
+  matchedDeviceName?: string;
+  matchedDeviceCategory?: string;
+  deviceMatchedFromList: boolean;
+  powerWatts: number;
+  maxPowerWatts?: number;
+  steadyOperatingWatts?: number;
+  isAirConditioner?: boolean;
+  avgKwhPerReading?: number;
+  durationHours: number;
+  timeIntervalText: string;
+  estimatedKwh: number;
+  measuredReadingKwh: number;
+  coveragePercent: number;
+  residualKwh: number;
+  explanation: string;
+  isHeatingDetected: boolean;
+}
+
+export function parseControlReadingNote(
+  rawNote: string | null | undefined,
+  measuredDeltaKwh: number = 0,
+  devices: ElectricityDevice[] = []
+): ControlReadingNoteAnalysis | null {
+  if (!rawNote || !rawNote.trim()) return null;
+  const note = rawNote.trim();
+  const lower = note.toLowerCase();
+
+  // 1. Duration / time interval extraction
+  let durationHours: number | null = null;
+  let timeIntervalText = '';
+  let startHourFormatted = '';
+  let endHourFormatted = '';
+
+  // Pattern A: "з|від [час] до|по [час]"
+  const rangeRegex = /(?:вчора\s+)?(?:з|від)\s+(\d{1,2})(?::(\d{2}))?(?:\s*-[їі]|\s*:00)?(?:\s*(?:години|годин|год|ранку|вечора|ночі))?\s+(?:до|по)\s+(?:сьогодні\s+)?(\d{1,2})(?::(\d{2}))?(?:\s*-[їі]|\s*:00)?(?:\s*(?:години|годин|год|ранку|вечора|ночі))?/i;
+  const rangeMatch = note.match(rangeRegex);
+
+  if (rangeMatch) {
+    const sH = parseInt(rangeMatch[1], 10);
+    const sM = rangeMatch[2] ? parseInt(rangeMatch[2], 10) : 0;
+    const eH = parseInt(rangeMatch[3], 10);
+    const eM = rangeMatch[4] ? parseInt(rangeMatch[4], 10) : 0;
+
+    if (!isNaN(sH) && !isNaN(eH) && sH >= 0 && sH <= 24 && eH >= 0 && eH <= 24) {
+      const sTotal = sH + sM / 60;
+      const eTotal = eH + eM / 60;
+      startHourFormatted = `${String(sH).padStart(2, '0')}:${String(sM).padStart(2, '0')}`;
+      endHourFormatted = `${String(eH).padStart(2, '0')}:${String(eM).padStart(2, '0')}`;
+
+      const mentionsYesterdayToday = /вчора/i.test(note) || /сьогодні/i.test(note);
+      if (mentionsYesterdayToday || sTotal >= eTotal) {
+        durationHours = Math.round(((24 - sTotal) + eTotal) * 10) / 10;
+        timeIntervalText = `з ${startHourFormatted} до ${endHourFormatted} наступного дня (${durationHours} год)`;
+      } else {
+        durationHours = Math.round((eTotal - sTotal) * 10) / 10;
+        timeIntervalText = `з ${startHourFormatted} до ${endHourFormatted} (${durationHours} год)`;
+      }
+    }
+  }
+
+  // Pattern B: explicit duration, e.g. "на 6 годин", "15 годин", "протягом 8 год", "4.5 год"
+  if (durationHours === null) {
+    const explicitDurRegex = /(?:на|протягом|біля|близько|працював[лоа]?|грів|гріло|заряджав[лоа]?|увімкнули)?\s*(\d+(?:[.,]\d+)?)\s*(?:годин[а-я]*|год)/i;
+    const durMatch = note.match(explicitDurRegex);
+    if (durMatch) {
+      const val = parseFloat(durMatch[1].replace(',', '.'));
+      if (!isNaN(val) && val > 0 && val <= 720) {
+        durationHours = Math.round(val * 10) / 10;
+        timeIntervalText = `тривалість ${durationHours} год`;
+      }
+    }
+  }
+
+  // Pattern C: "всю ніч" / "цілу ніч" / "на ніч"
+  if (durationHours === null && (lower.includes('всю ніч') || lower.includes('цілу ніч') || lower.includes('на ніч'))) {
+    durationHours = 8;
+    timeIntervalText = `нічний період (~8 год: 23:00–07:00)`;
+  }
+
+  // Pattern D: "добу" / "цілий день" / "весь день" / "24 години"
+  if (durationHours === null && (lower.includes('добу') || lower.includes('весь день') || lower.includes('цілий день'))) {
+    durationHours = 24;
+    timeIntervalText = `доба (24 год)`;
+  }
+
+  // Pattern E: "півдня" / "пів дня"
+  if (durationHours === null && (lower.includes('півдня') || lower.includes('пів дня'))) {
+    durationHours = 12;
+    timeIntervalText = `пів доби (12 год)`;
+  }
+
+  // 2. Identify Appliance / Action
+  let detectedAction = '';
+  let categoryKey = 'other';
+  let defaultWatts = 1200;
+  let isHeating = false;
+
+  if (/кондиціонер|спліт|кондей/i.test(note)) {
+    detectedAction = 'Кондиціонер (клімат)';
+    categoryKey = 'heating_ac';
+    defaultWatts = 1350;
+    isHeating = true;
+  } else if (/опаленн|обігрів|обігрівач|конвектор|котел|тепл[а-я]\s+підлог|радіатор|батаре/i.test(note)) {
+    detectedAction = 'Опалення та обігрів';
+    categoryKey = 'heating';
+    defaultWatts = 1500;
+    isHeating = true;
+  } else if (/бойлер|водонагрівач|гаряч[а-я]\s+вод|підігрів\s+води|бак/i.test(note)) {
+    detectedAction = 'Підігрів води (бойлер)';
+    categoryKey = 'boiler';
+    defaultWatts = 1800;
+  } else if (/авто|машин|зарядк|електромобіл|golf|гольф|leaf|ліф|tesla|тесла/i.test(note)) {
+    detectedAction = 'Зарядка електромобіля';
+    categoryKey = 'ev';
+    defaultWatts = 3300;
+  } else if (/пралк|пральн|сушарк|сушильн|пранн/i.test(note)) {
+    detectedAction = 'Прання та сушіння';
+    categoryKey = 'laundry';
+    defaultWatts = 1400;
+  } else if (/плит|духовк|посудомийк/i.test(note)) {
+    detectedAction = 'Кухонне обладнання';
+    categoryKey = 'kitchen';
+    defaultWatts = 2000;
+  }
+
+  // Check direct device name matches against `devices` in this account
+  let matchedDevice: ElectricityDevice | undefined;
+  for (const d of devices) {
+    const dNameLower = d.name.toLowerCase();
+    if (lower.includes(dNameLower)) {
+      matchedDevice = d;
+      break;
+    }
+    const nameTokens = dNameLower.split(/[\s,()\-+]+/).filter((t) => t.length >= 4);
+    if (nameTokens.some((token) => lower.includes(token))) {
+      matchedDevice = d;
+      break;
+    }
+  }
+
+  // If no direct name match, match by category
+  if (!matchedDevice && categoryKey !== 'other') {
+    matchedDevice = devices.find((d) => {
+      if (categoryKey === 'heating' && (d.category === 'heating' || d.category === 'heating_ac' || d.category === 'climate')) return true;
+      if (categoryKey === 'heating_ac' && (d.category === 'heating_ac' || d.category === 'climate')) return true;
+      if (categoryKey === 'boiler' && d.category === 'boiler') return true;
+      if (categoryKey === 'ev' && d.category === 'ev') return true;
+      return d.category === categoryKey;
+    });
+  }
+
+  // If still no action detected, but a device in the list is directly mentioned:
+  if (!detectedAction && matchedDevice) {
+    detectedAction = `Робота приладу «${matchedDevice.name}»`;
+    categoryKey = matchedDevice.category;
+    if (categoryKey === 'heating' || categoryKey === 'heating_ac' || categoryKey === 'climate') {
+      isHeating = true;
+    }
+  }
+
+  if (!detectedAction && !matchedDevice) {
+    return null;
+  }
+
+  // Extract explicit power if specified in note (e.g. "потужністю 2 кВт", "1.5 кВт", "2000 Вт")
+  const explicitPowerRegex = /(?:потужністю|по|на|споживає)?\s*(\d+(?:[.,]\d+)?)\s*(?:квт|кw|ват|вт)/i;
+  const powerMatch = note.match(explicitPowerRegex);
+  let maxPowerWatts = matchedDevice?.powerWatts || defaultWatts;
+  if (powerMatch) {
+    const pVal = parseFloat(powerMatch[1].replace(',', '.'));
+    const isKw = /квт|кw/i.test(powerMatch[0]);
+    if (!isNaN(pVal) && pVal > 0) {
+      maxPowerWatts = isKw ? Math.round(pVal * 1000) : Math.round(pVal);
+    }
+  }
+
+  // Determine final duration (default to 8h if unmentioned)
+  const finalDurationHours = durationHours !== null ? durationHours : 8;
+  if (!timeIntervalText) {
+    timeIntervalText = `~${finalDurationHours} год`;
+  }
+
+  const isAc = isAirConditionerDevice(matchedDevice, `${detectedAction} ${note}`);
+  const empStats = computeDeviceEmpiricalReadingStats(matchedDevice);
+
+  let effectivePowerWatts = maxPowerWatts;
+  let steadyOperatingWatts: number | undefined;
+  let estimatedKwh = 0;
+
+  if (isAc && !powerMatch) {
+    const acProfile = resolveAirConditionerPowerProfile(maxPowerWatts, finalDurationHours, matchedDevice);
+    effectivePowerWatts = acProfile.effectiveAvgWatts;
+    steadyOperatingWatts = acProfile.steadyOperatingWatts;
+    estimatedKwh = acProfile.estimatedKwh;
+  } else {
+    estimatedKwh = Math.round(((maxPowerWatts * finalDurationHours) / 1000) * 100) / 100;
+  }
+
+  // Comparison with measured delta
+  let coveragePercent = 100;
+  let residualKwh = 0;
+  if (measuredDeltaKwh > 0) {
+    coveragePercent = Math.min(100, Math.round((estimatedKwh / measuredDeltaKwh) * 100));
+    residualKwh = Math.max(0, Math.round((measuredDeltaKwh - estimatedKwh) * 100) / 100);
+  }
+
+  const empInfoText =
+    empStats.logsCount > 0
+      ? `, середнє за наявними показами (${empStats.logsCount} зап.): ${empStats.avgKwhPerReading.toFixed(2)} кВт·год`
+      : '';
+
+  // Human-readable explanation
+  let explanation = '';
+  if (isAc && steadyOperatingWatts) {
+    const devLabel = matchedDevice ? `кондиціонера «${matchedDevice.name}»` : `кондиціонера`;
+    explanation = `Розпізнано: ${detectedAction} тривалістю ${finalDurationHours} год (${timeIntervalText}). Для ${devLabel} враховано макс. потужність нагріву ${maxPowerWatts} Вт та перехід у робочий режим 400–800 Вт·г (~${steadyOperatingWatts} Вт·г, ефективне середнє ~${effectivePowerWatts} Вт·г${empInfoText}) — розрахункове споживання складає ~${estimatedKwh.toFixed(1)} кВт·год.`;
+  } else {
+    const deviceRefText = matchedDevice
+      ? `приладу зі списку будинку «${matchedDevice.name}» (${maxPowerWatts} Вт${empInfoText})`
+      : `пристрою «${detectedAction}» (${maxPowerWatts} Вт)`;
+    explanation = `Розпізнано: ${detectedAction} тривалістю ${finalDurationHours} год (${timeIntervalText}). Для ${deviceRefText} розрахункове споживання складає ~${estimatedKwh.toFixed(1)} кВт·год.`;
+  }
+
+  if (measuredDeltaKwh > 0) {
+    explanation += ` Це пояснює ${coveragePercent}% контрольного заміру (${measuredDeltaKwh.toFixed(1)} кВт·год), фоновий залишок: ~${residualKwh.toFixed(1)} кВт·год.`;
+  }
+
+  return {
+    hasAnalysis: true,
+    rawNote: note,
+    detectedAction,
+    matchedDeviceId: matchedDevice?.id,
+    matchedDeviceName: matchedDevice?.name,
+    matchedDeviceCategory: matchedDevice?.category || categoryKey,
+    deviceMatchedFromList: Boolean(matchedDevice),
+    powerWatts: effectivePowerWatts,
+    maxPowerWatts,
+    steadyOperatingWatts,
+    isAirConditioner: isAc,
+    avgKwhPerReading: empStats.avgKwhPerReading > 0 ? empStats.avgKwhPerReading : undefined,
+    durationHours: finalDurationHours,
+    timeIntervalText,
+    estimatedKwh,
+    measuredReadingKwh: measuredDeltaKwh,
+    coveragePercent,
+    residualKwh,
+    explanation,
+    isHeatingDetected: isHeating,
   };
 }

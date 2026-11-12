@@ -78,13 +78,13 @@ import { PaymentModal } from '../payment-modal/payment-modal';
                 <p>Немає активних абонентів із запланованими списаннями.</p>
               </div>
             } @else {
-              <!-- Mobile view -->
-              <div class="sm:hidden divide-y divide-slate-100">
+              <!-- Mobile Card View (< md) -->
+              <div class="md:hidden divide-y divide-slate-100">
                 @for (c of upcomingExpirations(); track c.id) {
                   <div class="p-4 space-y-3 hover:bg-slate-50/50 transition-colors">
                     <div class="flex items-start justify-between gap-2">
-                      <div>
-                        <div class="font-bold text-sm text-slate-900">{{ c.fullName }}</div>
+                      <div class="min-w-0">
+                        <div class="font-bold text-sm text-slate-900 truncate">{{ c.fullName }}</div>
                         <div class="text-2xs text-slate-500 font-mono mt-0.5">
                           Логін: {{ c.iptvLogin }} • {{ c.phone || 'Без телефону' }}
                         </div>
@@ -101,14 +101,18 @@ import { PaymentModal } from '../payment-modal/payment-modal';
                       </span>
                     </div>
 
-                    <div class="flex items-center justify-between text-xs bg-slate-50 rounded-xl p-2.5 border border-slate-100">
+                    <div class="grid grid-cols-3 gap-2 text-xs bg-slate-50 rounded-xl p-2.5 border border-slate-100">
                       <div>
-                        <span class="text-slate-400 text-3xs block">Дата списання:</span>
+                        <span class="text-slate-400 text-3xs uppercase font-semibold block">Дата списання</span>
                         <strong class="text-slate-800">{{ formatDate(c.activeUntil) }}</strong>
                       </div>
+                      <div class="text-center border-x border-slate-200/70 px-1">
+                        <span class="text-slate-400 text-3xs uppercase font-semibold block">Тариф</span>
+                        <strong class="text-slate-900 font-bold">{{ c.monthlyPrice }} ₴/міс</strong>
+                      </div>
                       <div class="text-right">
-                        <span class="text-slate-400 text-3xs block">Тариф:</span>
-                        <strong class="text-emerald-700 font-bold">{{ c.monthlyPrice }} ₴/міс</strong>
+                        <span class="text-slate-400 text-3xs uppercase font-semibold block">Баланс</span>
+                        <strong class="text-emerald-700 font-bold">{{ c.balance || 0 }} ₴</strong>
                       </div>
                     </div>
 
@@ -136,8 +140,8 @@ import { PaymentModal } from '../payment-modal/payment-modal';
                 }
               </div>
 
-              <!-- Desktop table view -->
-              <div class="hidden sm:block overflow-x-auto">
+              <!-- Desktop table view (>= md) -->
+              <div class="hidden md:block overflow-x-auto">
                 <table class="w-full text-left text-xs sm:text-sm">
                   <thead class="bg-slate-50 text-slate-600 uppercase tracking-wider text-2xs border-b border-slate-200">
                     <tr>
@@ -248,8 +252,8 @@ import { PaymentModal } from '../payment-modal/payment-modal';
                 <p>Платежів за вашим запитом не знайдено.</p>
               </div>
             } @else {
-              <!-- Mobile Payment History Cards (sm:hidden) -->
-              <div class="sm:hidden divide-y divide-slate-100">
+              <!-- Mobile Payment History Cards (md:hidden) -->
+              <div class="md:hidden divide-y divide-slate-100">
                 @for (p of filteredPayments(); track p.id) {
                   <div class="p-4 hover:bg-slate-50/80 transition-colors space-y-2.5">
                     <div class="flex items-start justify-between gap-2">
@@ -311,8 +315,8 @@ import { PaymentModal } from '../payment-modal/payment-modal';
                 }
               </div>
 
-              <!-- Desktop Table (hidden sm:block) -->
-              <div class="hidden sm:block overflow-x-auto">
+              <!-- Desktop Table (hidden md:block) -->
+              <div class="hidden md:block overflow-x-auto">
                 <table class="w-full text-left text-xs sm:text-sm">
                   <thead class="bg-slate-50 text-slate-600 uppercase tracking-wider text-2xs border-b border-slate-200">
                     <tr>

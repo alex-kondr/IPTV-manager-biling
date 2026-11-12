@@ -14,6 +14,11 @@ import {
   Client,
   ClientGroupView,
   AppTabId,
+  AppUser,
+  HouseholdAccessLevel,
+  MemberRelationTag,
+  MemberRelationTagMeta,
+  MEMBER_RELATION_TAGS,
   formatDateUa,
   getDaysRemaining,
   cleanPhoneNumber,
@@ -31,6 +36,16 @@ import { AuthView } from './components/auth-view/auth-view';
 import { UsersView } from './components/users-view/users-view';
 import { ElectricityView } from './components/electricity-view/electricity-view';
 import { WaterWasteView } from './components/water-waste-view/water-waste-view';
+import { ThemeService } from './services/theme';
+
+export interface BeforeInstallPromptEvent extends Event {
+  readonly platforms: string[];
+  readonly userChoice: Promise<{
+    outcome: 'accepted' | 'dismissed';
+    platform: string;
+  }>;
+  prompt(): Promise<void>;
+}
 
 export type ActiveTab =
   | 'home'
@@ -71,12 +86,13 @@ type FilterStatus = 'all' | 'expiring_soon' | 'expired' | 'active' | 'paused';
 })
 export class App {
   readonly dataService = inject(IptvData);
+  readonly themeService = inject(ThemeService);
   readonly tgApp = inject(TelegramWebApp);
   readonly Math = Math;
 
-  // Application metadata for user tracking (v3.0)
-  readonly appVersion = 'v3.0';
-  readonly publishDateTime = '08.11.2026, 23:55 (Київ)';
+  // Application metadata for user tracking (v4.0)
+  readonly appVersion = 'v4.0';
+  readonly publishDateTime = '12.11.2026 (Київ)';
   readonly sharedAppUrl = 'https://ais-pre-xwrvn3here3zzs7lwxjyvb-427445800479.europe-west2.run.app';
   readonly devAppUrl = 'https://ais-dev-xwrvn3here3zzs7lwxjyvb-427445800479.europe-west2.run.app';
   readonly copiedAppUrl = signal<boolean>(false);
@@ -84,6 +100,31 @@ export class App {
   // IPTV Grouped Tree (Desktop Sidebar) & Drawer (Mobile) State
   readonly isSidebarIptvOpen = signal<boolean>(true);
   readonly isMobileIptvDrawerOpen = signal<boolean>(false);
+
+  // PWA Installation & Offline State
+  readonly isOnline = signal<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  readonly deferredInstallPrompt = signal<BeforeInstallPromptEvent | null>(null);
+  readonly isAppInstalled = signal<boolean>(false);
+  readonly isIOSDevice = signal<boolean>(false);
+  readonly showIOSInstallGuide = signal<boolean>(false);
+
+
+
+  async triggerPwaInstall(): Promise<void> {
+    const promptEvent = this.deferredInstallPrompt();
+    if (promptEvent) {
+      await promptEvent.prompt();
+      const { outcome } = await promptEvent.userChoice;
+      if (outcome === 'accepted') {
+        this.isAppInstalled.set(true);
+        this.deferredInstallPrompt.set(null);
+      }
+    } else if (this.isIOSDevice()) {
+      this.showIOSInstallGuide.set(true);
+    } else {
+      alert('Щоб встановити HomeHub на пристрій:\n\n• На Android / Chrome: Торкніться меню (⋮) ➔ "Встановити додаток" або "Додати на початковий екран".\n• На iPhone / Safari: Торкніться кнопки "Поділитися" (Share) ➔ "На початковий екран".');
+    }
+  }
 
   // User Auth and Permissions
   readonly currentUser = this.dataService.currentUser;
@@ -94,6 +135,7 @@ export class App {
   readonly isImpersonating = this.dataService.isImpersonating;
   readonly isViewer = this.dataService.isViewer;
   readonly isNewUser = this.dataService.isNewUser;
+  readonly isUserBlocked = this.dataService.isUserBlocked;
   readonly canEdit = this.dataService.canEdit;
   readonly canView = this.dataService.canView;
   readonly pendingUsersCount = this.dataService.pendingUsersCount;
@@ -445,6 +487,67 @@ export class App {
         this.activeTab.set('home');
       }
     });
+
+    if (typeof window !== 'undefined') {
+      this.isOnline.set(window.navigator.onLine);
+      window.addEventListener('online', () => {
+        this.isOnline.set(true);
+        void this.dataService.refreshAllData();
+      });
+      window.addEventListener('offline', () => {
+        this.isOnline.set(false);
+      });
+
+      const isStandalone =
+        window.matchMedia('(display-mode: standalone)').matches ||
+        (window.navigator as unknown as { standalone?: boolean }).standalone === true;
+      this.isAppInstalled.set(isStandalone);
+
+      const ua = window.navigator.userAgent.toLowerCase();
+      const isIOS = /iphone|ipad|ipod/.test(ua);
+      this.isIOSDevice.set(isIOS);
+
+      window.addEventListener('beforeinstallprompt', (e: Event) => {
+        e.preventDefault();
+        this.deferredInstallPrompt.set(e as BeforeInstallPromptEvent);
+      });
+
+      window.addEventListener('appinstalled', () => {
+        this.isAppInstalled.set(true);
+        this.deferredInstallPrompt.set(null);
+      });
+
+      // Initialize Web Push & Service Worker
+      void this.dataService.initWebPushState();
+
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.addEventListener('message', (event) => {
+          if (event.data?.type === 'OPEN_TAB' && event.data?.tab) {
+            this.setTab(event.data.tab as ActiveTab);
+          }
+        });
+      }
+
+      // Check URL query params for ?tab=... or ?invite=...
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const tabParam = params.get('tab');
+        if (tabParam === 'outage_schedule' || tabParam === 'electricity' || tabParam === 'budget') {
+          this.activeTab.set(tabParam as ActiveTab);
+        }
+        const inviteParam = params.get('invite');
+        if (inviteParam) {
+          this.joinInviteInputControl.setValue(inviteParam);
+          void this.dataService.fetchInvitePreview(inviteParam).then((inv) => {
+            if (inv) {
+              this.dataService.isSharedHouseholdModalOpen.set(true);
+            }
+          });
+        }
+      } catch {
+        // ignore
+      }
+    }
   }
 
   copyAppLink(): void {
@@ -519,6 +622,105 @@ export class App {
 
   readonly isPaymentModalOpen = signal<boolean>(false);
   readonly selectedClientForPayment = signal<Client | null>(null);
+  readonly isProfileModalOpen = signal<boolean>(false);
+
+  // App Release Update Modal (v3.0 -> v4.0)
+  readonly appReleaseInfo = this.dataService.appReleaseInfo;
+  readonly isUpdateModalOpen = this.dataService.isUpdateModalOpen;
+  readonly isDismissingUpdate = this.dataService.isDismissingUpdate;
+
+  readonly releaseFeaturesV4: {
+    icon: string;
+    badge: string;
+    title: string;
+    description: string;
+    colorClass: string;
+  }[] = [
+    {
+      icon: 'qr_code_2',
+      badge: 'Спільний дім та бюджет',
+      title: 'Приєднання за QR-кодом з вибором ролі та чисте посилання',
+      description:
+        'Миттєва генерація QR-коду для приєднання до спільного будинку й бюджету з вибором типу користувача у випадаючому списку (Дружина, Чоловік, Батько, Мати, Брат, Сестра, Бабуся, Дідусь тощо), а також окреме чисте посилання на застосунок https://homehub3.ai.studio/.',
+      colorClass: 'bg-teal-500/15 text-teal-600 dark:text-teal-300 border-teal-500/30',
+    },
+    {
+      icon: 'notifications_active',
+      badge: 'Графік світла ДТЕК',
+      title: 'Швидка кнопка «Підписатись» / «Відписатись» біля бейджа черги',
+      description:
+        'У вкладці «Графік світла» поруч із бейджем черги (напр. GPV4.1) додано кнопку швидкої підписки на push-сповіщення про зміни графіку. При активній підписці кнопка змінюється на «Відписатись» із перекресленим дзвіночком.',
+      colorClass: 'bg-amber-500/15 text-amber-600 dark:text-amber-300 border-amber-500/30',
+    },
+    {
+      icon: 'cloud_sync',
+      badge: 'Оптимізація та кеш БД',
+      title: 'Централізований кеш графіку ДТЕК у БД (оновлення раз на 20 хв)',
+      description:
+        'Графік відключень тепер централізовано кешується у PostgreSQL для кожної адреси та оновлюється сервером раз на 20 хвилин для всіх користувачів без зайвого навантаження на сайт ДТЕК.',
+      colorClass: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 border-indigo-500/30',
+    },
+    {
+      icon: 'share',
+      badge: '11 варіантів графіку',
+      title: 'Офіційний вигляд ДТЕК (#11) та шеринг обраного варіанту в PNG',
+      description:
+        'Додано 11-й офіційний табличний стиль графіку ДТЕК, а кнопка «Поділитись графіком» тепер генерує якісне PNG-зображення саме того варіанту вигляду (1–11), який ви обрали.',
+      colorClass: 'bg-sky-500/15 text-sky-600 dark:text-sky-300 border-sky-500/30',
+    },
+    {
+      icon: 'wifi_off',
+      badge: 'Мобільний інтерфейс та мережа',
+      title: 'Компактний верхній бар, вікно профілю та індикатор втрати звʼязку',
+      description:
+        'На мобільних пристроях верхній бар оптимізовано без накладань: налаштування («Опції»), «Доступ» для адміністратора та вихід зібрані у вікні профілю, а індикатор мережі стає червоним при втраті звʼязку (Офлайн).',
+      colorClass: 'bg-rose-500/15 text-rose-600 dark:text-rose-300 border-rose-500/30',
+    },
+    {
+      icon: 'electric_meter',
+      badge: 'Облік та налаштування',
+      title: 'Зони «День (Т2)» / «Ніч (Т1)», попередня дата показів та таблиця БД',
+      description:
+        'При внесенні показів автоматично підставляється попередня дата для передачі станом на 1 число, оновлено підписи зон лічильника та додано інтерактивну таблицю системних і користувацьких параметрів БД.',
+      colorClass: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border-emerald-500/30',
+    },
+  ];
+
+  openProfileModal(): void {
+    this.isProfileModalOpen.set(true);
+  }
+
+  closeProfileModal(): void {
+    this.isProfileModalOpen.set(false);
+  }
+
+  openUpdateModal(): void {
+    this.isProfileModalOpen.set(false);
+    this.dataService.openUpdateModal();
+  }
+
+  closeUpdateModal(): void {
+    this.dataService.closeUpdateModal();
+  }
+
+  async dismissUpdateForever(): Promise<void> {
+    await this.dataService.dismissAppReleaseForUser(this.appVersion);
+  }
+
+  openTabFromProfileModal(tab: ActiveTab): void {
+    this.isProfileModalOpen.set(false);
+    this.setTab(tab);
+  }
+
+  openSharedHouseholdFromProfileModal(): void {
+    this.isProfileModalOpen.set(false);
+    this.openSharedHouseholdModal();
+  }
+
+  async logoutFromProfileModal(): Promise<void> {
+    this.isProfileModalOpen.set(false);
+    await this.logout();
+  }
 
   // Client Group Management Modal state
   readonly isGroupModalOpen = signal<boolean>(false);
@@ -551,6 +753,7 @@ export class App {
   readonly providerBalanceHealth = this.dataService.providerBalanceHealth;
 
   async logout(): Promise<void> {
+    this.isProfileModalOpen.set(false);
     await this.dataService.logout();
   }
 
@@ -935,5 +1138,240 @@ export class App {
 
   async autoGroupAllClients(): Promise<void> {
     await this.dataService.autoGroupClients();
+  }
+
+  // ============================================================================
+  // SHARED HOUSEHOLD & BUDGET INVITE MODAL + WEB PUSH HELPERS
+  // ============================================================================
+  readonly isSharedHouseholdModalOpen = this.dataService.isSharedHouseholdModalOpen;
+  readonly householdInvites = this.dataService.householdInvites;
+  readonly sharedHouseholdMembers = this.dataService.sharedHouseholdMembers;
+  readonly pendingInvitePreview = this.dataService.pendingInvitePreview;
+  readonly isCreatingInvite = this.dataService.isCreatingInvite;
+  readonly isAcceptingInvite = this.dataService.isAcceptingInvite;
+  readonly relationTagsCatalog: MemberRelationTagMeta[] = MEMBER_RELATION_TAGS;
+
+  readonly modalInviteAccessLevel = signal<HouseholdAccessLevel>('view_only'); // Default "Тільки для перегляду"
+  readonly modalInviteIncludeBudget = signal<boolean>(true);
+  readonly modalInviteSelectedTags = signal<MemberRelationTag[]>(['family']);
+  readonly modalInviteHouseIds = signal<string[]>([]);
+  readonly joinInviteInputControl = new FormControl<string>('');
+  readonly copiedHouseholdInviteCode = signal<string>('');
+  readonly copiedCleanAppLink = signal<boolean>(false);
+
+  // Instant QR Code & Clean App Link signals from DataService
+  readonly publicAppBaseUrl = this.dataService.publicAppBaseUrl;
+  readonly qrInviteCode = this.dataService.qrInviteCode;
+  readonly qrInviteFullUrl = this.dataService.qrInviteFullUrl;
+  readonly qrInviteDataUrl = this.dataService.qrInviteDataUrl;
+  readonly cleanAppQrDataUrl = this.dataService.cleanAppQrDataUrl;
+  readonly qrInviteUserType = this.dataService.qrInviteUserType;
+  readonly qrInviteAccessLevel = this.dataService.qrInviteAccessLevel;
+  readonly isGeneratingQrInvite = this.dataService.isGeneratingQrInvite;
+
+  // Web Push signals
+  readonly isPushSupported = this.dataService.isPushSupported;
+  readonly isPushSubscribed = this.dataService.isPushSubscribed;
+  readonly isPushLoading = this.dataService.isPushLoading;
+  readonly pushStatusMessage = this.dataService.pushStatusMessage;
+  readonly pushCountdownSeconds = this.dataService.pushCountdownSeconds;
+
+  openSharedHouseholdModal(): void {
+    this.dataService.openSharedHouseholdModal();
+  }
+
+  closeSharedHouseholdModal(): void {
+    this.dataService.closeSharedHouseholdModal();
+  }
+
+  getRelationTagMeta(tagId: string): MemberRelationTagMeta | undefined {
+    return this.relationTagsCatalog.find((t) => t.id === tagId);
+  }
+
+  getSelectedModalInviteRelation(): MemberRelationTag {
+    const tags = this.modalInviteSelectedTags();
+    return tags.length > 0 ? tags[0] : 'family';
+  }
+
+  setModalInviteRelation(tagId: string): void {
+    const clean = (tagId || '').trim() as MemberRelationTag;
+    this.modalInviteSelectedTags.set(clean ? [clean] : ['family']);
+    void this.dataService.updateQrInviteOptions({ userType: clean || 'family' });
+  }
+
+  async setQrInviteUserType(tagId: string): Promise<void> {
+    const clean = (tagId || 'family').trim() as MemberRelationTag;
+    this.modalInviteSelectedTags.set([clean]);
+    await this.dataService.updateQrInviteOptions({ userType: clean });
+  }
+
+  async setQrInviteAccessLevel(level: HouseholdAccessLevel): Promise<void> {
+    this.modalInviteAccessLevel.set(level);
+    await this.dataService.updateQrInviteOptions({ accessLevel: level });
+  }
+
+  async generateNewQrInviteCode(): Promise<void> {
+    const inv = await this.dataService.generateFreshQrInvite(false);
+    if (inv?.code) {
+      this.copyHouseholdInviteLink(inv.code);
+    }
+  }
+
+  copyCleanAppUrl(): void {
+    const url = this.publicAppBaseUrl;
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      void navigator.clipboard.writeText(url);
+      this.copiedCleanAppLink.set(true);
+      setTimeout(() => {
+        this.copiedCleanAppLink.set(false);
+      }, 2500);
+    }
+  }
+
+  async shareCleanAppUrl(): Promise<void> {
+    const url = this.publicAppBaseUrl;
+    const nav = typeof navigator !== 'undefined' ? navigator : null;
+    if (nav && typeof nav.share === 'function') {
+      try {
+        await nav.share({
+          title: 'HomeHub — Комунальні послуги, графік ДТЕК та бюджет',
+          text: 'Застосунок для обліку комунальних послуг, графіків відключень світла ДТЕК та домашнього бюджету:',
+          url,
+        });
+        return;
+      } catch {
+        // fallback to copy
+      }
+    }
+    this.copyCleanAppUrl();
+  }
+
+  async shareQrInviteUrl(): Promise<void> {
+    const code = this.qrInviteCode();
+    const url = this.qrInviteFullUrl();
+    const relMeta = this.getRelationTagMeta(this.qrInviteUserType());
+    const nav = typeof navigator !== 'undefined' ? navigator : null;
+    if (nav && typeof nav.share === 'function') {
+      try {
+        await nav.share({
+          title: 'Запрошення до спільного дому та бюджету — HomeHub',
+          text: `Приєднуйтесь до нашого спільного будинку та бюджету (${relMeta?.label || 'Сімʼя'}) за посиланням:`,
+          url,
+        });
+        return;
+      } catch {
+        // fallback to copy
+      }
+    }
+    if (code) {
+      this.copyHouseholdInviteLink(code);
+    }
+  }
+
+  toggleModalInviteTag(tagId: MemberRelationTag): void {
+    this.modalInviteSelectedTags.set([tagId]);
+  }
+
+  isModalInviteHouseChecked(houseId: string): boolean {
+    const sel = this.modalInviteHouseIds();
+    if (sel.length === 0) return true;
+    return sel.includes(houseId);
+  }
+
+  toggleModalInviteHouse(houseId: string): void {
+    const allIds = this.dataService.utilityAccounts().map((a) => a.id);
+    const curr = this.modalInviteHouseIds().length > 0 ? this.modalInviteHouseIds() : allIds;
+    if (curr.includes(houseId)) {
+      if (curr.length <= 1) return;
+      this.modalInviteHouseIds.set(curr.filter((id) => id !== houseId));
+    } else {
+      this.modalInviteHouseIds.set([...curr, houseId]);
+    }
+  }
+
+  async createHouseholdInviteFromModal(): Promise<void> {
+    const allIds = this.dataService.utilityAccounts().map((a) => a.id);
+    const houseIds = this.modalInviteHouseIds().length > 0 ? this.modalInviteHouseIds() : allIds;
+    const primaryTag = this.getSelectedModalInviteRelation();
+    const inv = await this.dataService.createHouseholdInvite({
+      houseIds,
+      accessLevel: this.modalInviteAccessLevel(),
+      includeSharedBudget: this.modalInviteIncludeBudget(),
+      memberTags: [primaryTag],
+    });
+    if (inv) {
+      this.copyHouseholdInviteLink(inv.code);
+    }
+  }
+
+  getHouseholdInviteUrl(code: string): string {
+    return this.dataService.buildInviteUrl(code);
+  }
+
+  copyHouseholdInviteLink(code: string): void {
+    const url = this.dataService.buildInviteUrl(code);
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      void navigator.clipboard.writeText(url);
+      this.copiedHouseholdInviteCode.set(code);
+      setTimeout(() => {
+        if (this.copiedHouseholdInviteCode() === code) {
+          this.copiedHouseholdInviteCode.set('');
+        }
+      }, 2500);
+    }
+  }
+
+  async deleteHouseholdInviteFromModal(id: string): Promise<void> {
+    await this.dataService.deleteHouseholdInvite(id);
+  }
+
+  async previewOrJoinInviteByCode(): Promise<void> {
+    const raw = (this.joinInviteInputControl.value || '').trim();
+    if (!raw) return;
+    await this.dataService.fetchInvitePreview(raw);
+  }
+
+  async confirmAcceptInvite(code: string): Promise<void> {
+    const ok = await this.dataService.acceptHouseholdInvite(code);
+    if (ok && typeof window !== 'undefined') {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('invite')) {
+        url.searchParams.delete('invite');
+        window.history.replaceState({}, '', url.toString());
+      }
+    }
+  }
+
+  getMemberAccessLevel(member: AppUser): HouseholdAccessLevel {
+    if (member.householdAccessLevel === 'view_only' || member.householdAccessLevel === 'full') {
+      return member.householdAccessLevel;
+    }
+    return member.canManageOwnData === false ? 'view_only' : 'full';
+  }
+
+  async toggleSharedMemberAccessLevel(member: AppUser, level: HouseholdAccessLevel): Promise<void> {
+    await this.dataService.updateUserPermissions(member.id, {
+      householdAccessLevel: level,
+      canManageOwnData: level === 'full',
+    });
+    await this.dataService.fetchHouseholdInvites();
+  }
+
+  getMemberPrimaryRelation(member: AppUser): MemberRelationTag {
+    const list = Array.isArray(member.memberTags) ? member.memberTags : [];
+    return list.length > 0 ? list[0] : 'family';
+  }
+
+  async setSharedMemberRelation(member: AppUser, tagId: string): Promise<void> {
+    const clean = (tagId || '').trim() as MemberRelationTag;
+    const next: MemberRelationTag[] = clean ? [clean] : ['family'];
+    await this.dataService.updateUserPermissions(member.id, {
+      memberTags: next,
+    });
+    await this.dataService.fetchHouseholdInvites();
+  }
+
+  async toggleSharedMemberTag(member: AppUser, tagId: MemberRelationTag): Promise<void> {
+    await this.setSharedMemberRelation(member, tagId);
   }
 }

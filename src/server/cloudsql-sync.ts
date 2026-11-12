@@ -21,6 +21,8 @@ import {
   providerBalanceAdjustments,
   accountDeductionOverrides,
   users,
+  userSettings,
+  systemSettingsConfig,
 } from '../db/schema';
 import { eq } from 'drizzle-orm';
 
@@ -383,15 +385,52 @@ ALTER TABLE clients ADD COLUMN IF NOT EXISTS owner_user_id TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS group_name TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS group_balance REAL DEFAULT 0;
 ALTER TABLE provider_accounts ADD COLUMN IF NOT EXISTS owner_user_id TEXT;
+
+ALTER TABLE account_deduction_overrides ADD COLUMN IF NOT EXISTS is_excluded BOOLEAN DEFAULT false;
+ALTER TABLE account_deduction_overrides ADD COLUMN IF NOT EXISTS amount_usd REAL;
+ALTER TABLE account_deduction_overrides ADD COLUMN IF NOT EXISTS amount_uah REAL;
+ALTER TABLE account_deduction_overrides ADD COLUMN IF NOT EXISTS date TEXT;
+ALTER TABLE account_deduction_overrides ADD COLUMN IF NOT EXISTS title TEXT;
+ALTER TABLE account_deduction_overrides ADD COLUMN IF NOT EXISTS subtitle TEXT;
+ALTER TABLE account_deduction_overrides ADD COLUMN IF NOT EXISTS note TEXT;
+ALTER TABLE account_deduction_overrides ADD COLUMN IF NOT EXISTS created_at TEXT;
+
+CREATE TABLE IF NOT EXISTS user_settings (
+  user_id TEXT PRIMARY KEY,
+  theme_mode TEXT NOT NULL DEFAULT 'light',
+  outage_schedule_view_variant TEXT NOT NULL DEFAULT 'v10_minimal_pills',
+  hidden_house_tabs JSONB NOT NULL DEFAULT '{}'::jsonb,
+  electricity_tariffs JSONB,
+  water_tariffs JSONB,
+  waste_tariffs JSONB,
+  custom_preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS system_settings_config (
+  id TEXT PRIMARY KEY,
+  scopes_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+  system_values JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at TEXT NOT NULL
+);
 `;
-    await targetPool.query(ddl);
+    const statements = ddl
+      .split(';')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    for (const stmt of statements) {
+      try {
+        await targetPool.query(stmt);
+      } catch {
+        // Ignore individual statement permission/owner errors on existing tables
+      }
+    }
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('permission denied for schema public') || msg.includes('must be owner')) {
       return true;
     }
-    console.warn(`[PostgreSQL:${targetMode}] Schema initialization warning:`, msg);
     return false;
   }
 }
@@ -404,7 +443,6 @@ async function trySelect<T>(queryPromise: Promise<T[]>): Promise<QueryResult<T>>
     return { ok: true, rows };
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e);
-    console.error('[PostgreSQL] Query warning:', err);
     return { ok: false, error: err };
   }
 }
@@ -420,6 +458,8 @@ export interface CloudSqlLoadResult {
   providerBalanceAdjustments: Record<string, unknown>[];
   accountDeductionOverrides: Record<string, unknown>[];
   users: Record<string, unknown>[];
+  userSettings: Record<string, unknown>[];
+  systemSettingsConfig: Record<string, unknown> | null;
   settings: Record<string, unknown> | null;
   settingsReadSuccess: boolean;
 }
@@ -442,6 +482,8 @@ export async function loadAllFromCloudSql(): Promise<CloudSqlLoadResult | null> 
       adjustmentsRes,
       overridesRes,
       usersRes,
+      userSettingsRes,
+      systemSettingsConfigRes,
     ] = await Promise.all([
       trySelect(db.select().from(clients)),
       trySelect(db.select().from(payments)),
@@ -454,6 +496,8 @@ export async function loadAllFromCloudSql(): Promise<CloudSqlLoadResult | null> 
       trySelect(db.select().from(providerBalanceAdjustments)),
       trySelect(db.select().from(accountDeductionOverrides)),
       trySelect(db.select().from(users)),
+      trySelect(db.select().from(userSettings)),
+      trySelect(db.select().from(systemSettingsConfig)),
     ]);
 
     if (settingsRes.ok) {
@@ -503,21 +547,67 @@ export async function loadAllFromCloudSql(): Promise<CloudSqlLoadResult | null> 
             .filter((x) => typeof x === 'string' && x.startsWith('variant:'))
             .map((x) => x.slice('variant:'.length))[0]
         : null;
+      const memberTags = rawTabs
+        ? rawTabs
+            .filter((x) => typeof x === 'string' && x.startsWith('tag:'))
+            .map((x) => x.slice('tag:'.length))
+        : [];
+      const accessTag = rawTabs
+        ? rawTabs
+            .filter((x) => typeof x === 'string' && x.startsWith('access:'))
+            .map((x) => x.slice('access:'.length))[0]
+        : null;
+      const invitedByUserId = rawTabs
+        ? rawTabs
+            .filter((x) => typeof x === 'string' && x.startsWith('invitedBy:'))
+            .map((x) => x.slice('invitedBy:'.length))[0]
+        : undefined;
+      const invitedByUserName = rawTabs
+        ? rawTabs
+            .filter((x) => typeof x === 'string' && x.startsWith('invitedByName:'))
+            .map((x) => x.slice('invitedByName:'.length))[0]
+        : undefined;
       const cleanTabs = rawTabs
         ? rawTabs.filter(
-            (x) => typeof x === 'string' && !x.startsWith('settings:') && !x.startsWith('variant:')
+            (x) =>
+              typeof x === 'string' &&
+              !x.startsWith('settings:') &&
+              !x.startsWith('variant:') &&
+              !x.startsWith('tag:') &&
+              !x.startsWith('access:') &&
+              !x.startsWith('invitedBy:') &&
+              !x.startsWith('invitedByName:')
           )
         : null;
       const tariffs = (settingsObj?.['utilityTariffsSettings'] as Record<string, unknown>) || {};
       const userVariantsMap = (tariffs['userOutageVariants'] as Record<string, string>) || {};
       const resolvedVariant = userVariant || userVariantsMap[String(row.id)] || 'v10_minimal_pills';
+      const resolvedAccess =
+        accessTag === 'view_only' || accessTag === 'full'
+          ? accessTag
+          : row.canManageOwnData === false
+            ? 'view_only'
+            : 'full';
       return {
         ...row,
         allowedTabs: cleanTabs,
         allowedSettings,
         outageScheduleViewVariant: resolvedVariant,
+        memberTags,
+        householdAccessLevel: resolvedAccess,
+        ...(invitedByUserId ? { invitedByUserId } : {}),
+        ...(invitedByUserName ? { invitedByUserName } : {}),
       } as Record<string, unknown>;
     });
+
+    let systemConfigObj: Record<string, unknown> | null = null;
+    if (systemSettingsConfigRes.ok && systemSettingsConfigRes.rows.length > 0) {
+      const globalCfg =
+        systemSettingsConfigRes.rows.find((s) => s.id === 'global') || systemSettingsConfigRes.rows[0];
+      if (globalCfg) {
+        systemConfigObj = { ...globalCfg } as Record<string, unknown>;
+      }
+    }
 
     return {
       clients: (clientsRes.ok ? clientsRes.rows : []) as Record<string, unknown>[],
@@ -530,6 +620,8 @@ export async function loadAllFromCloudSql(): Promise<CloudSqlLoadResult | null> 
       providerBalanceAdjustments: (adjustmentsRes.ok ? adjustmentsRes.rows : []) as Record<string, unknown>[],
       accountDeductionOverrides: (overridesRes.ok ? overridesRes.rows : []) as Record<string, unknown>[],
       users: mappedUsers,
+      userSettings: (userSettingsRes.ok ? userSettingsRes.rows : []) as Record<string, unknown>[],
+      systemSettingsConfig: systemConfigObj,
       settings: settingsObj,
       settingsReadSuccess: settingsRes.ok,
     };
@@ -1054,7 +1146,14 @@ export async function saveUserToCloudSql(user: Record<string, unknown>, mode?: D
     const targetDb = getDbForMode(targetMode);
     const baseTabs = Array.isArray(user['allowedTabs'])
       ? (user['allowedTabs'] as string[]).filter(
-          (x) => typeof x === 'string' && !x.startsWith('settings:') && !x.startsWith('variant:')
+          (x) =>
+            typeof x === 'string' &&
+            !x.startsWith('settings:') &&
+            !x.startsWith('variant:') &&
+            !x.startsWith('tag:') &&
+            !x.startsWith('access:') &&
+            !x.startsWith('invitedBy:') &&
+            !x.startsWith('invitedByName:')
         )
       : null;
     const allowedSettings = Array.isArray(user['allowedSettings'])
@@ -1063,12 +1162,33 @@ export async function saveUserToCloudSql(user: Record<string, unknown>, mode?: D
     const variantTag = user['outageScheduleViewVariant']
       ? [`variant:${user['outageScheduleViewVariant']}`]
       : [];
+    const memberTags = Array.isArray(user['memberTags'])
+      ? (user['memberTags'] as string[]).filter(Boolean).map((t) => `tag:${t}`)
+      : [];
+    const accessTag = user['householdAccessLevel']
+      ? [`access:${user['householdAccessLevel']}`]
+      : [];
+    const invitedByTag = user['invitedByUserId']
+      ? [`invitedBy:${user['invitedByUserId']}`]
+      : [];
+    const invitedByNameTag = user['invitedByUserName']
+      ? [`invitedByName:${user['invitedByUserName']}`]
+      : [];
     const serializedAllowedTabs =
-      baseTabs !== null || allowedSettings.length > 0 || variantTag.length > 0
+      baseTabs !== null ||
+      allowedSettings.length > 0 ||
+      variantTag.length > 0 ||
+      memberTags.length > 0 ||
+      accessTag.length > 0 ||
+      invitedByTag.length > 0
         ? [
             ...(baseTabs || ['electricity', 'water', 'waste', 'water_waste']),
             ...allowedSettings.map((s) => `settings:${s}`),
             ...variantTag,
+            ...memberTags,
+            ...accessTag,
+            ...invitedByTag,
+            ...invitedByNameTag,
           ]
         : null;
 
@@ -1168,6 +1288,96 @@ export async function saveSettingsToCloudSql(settingsObj: Record<string, unknown
   }
 }
 
+export async function saveUserSettingsToCloudSql(
+  row: Record<string, unknown>,
+  mode?: DatabaseMode
+): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
+  try {
+    const targetDb = getDbForMode(targetMode);
+    const data = {
+      userId: String(row['userId']),
+      themeMode: String(row['themeMode'] || 'light'),
+      outageScheduleViewVariant: String(row['outageScheduleViewVariant'] || 'v10_minimal_pills'),
+      hiddenHouseTabs:
+        row['hiddenHouseTabs'] && typeof row['hiddenHouseTabs'] === 'object'
+          ? (row['hiddenHouseTabs'] as Record<string, string[]>)
+          : {},
+      electricityTariffs:
+        row['electricityTariffs'] && typeof row['electricityTariffs'] === 'object'
+          ? (row['electricityTariffs'] as Record<string, unknown>)
+          : null,
+      waterTariffs:
+        row['waterTariffs'] && typeof row['waterTariffs'] === 'object'
+          ? (row['waterTariffs'] as Record<string, unknown>)
+          : null,
+      wasteTariffs:
+        row['wasteTariffs'] && typeof row['wasteTariffs'] === 'object'
+          ? (row['wasteTariffs'] as Record<string, unknown>)
+          : null,
+      customPreferences:
+        row['customPreferences'] && typeof row['customPreferences'] === 'object'
+          ? (row['customPreferences'] as Record<string, unknown>)
+          : {},
+      updatedAt: String(row['updatedAt'] || new Date().toISOString()),
+    };
+
+    await targetDb
+      .insert(userSettings)
+      .values(data)
+      .onConflictDoUpdate({
+        target: userSettings.userId,
+        set: data,
+      });
+
+    lastSyncTimestamp = new Date().toISOString();
+    return true;
+  } catch (err: unknown) {
+    console.error(`[PostgreSQL:${targetMode}] saveUserSettings error:`, err);
+    return false;
+  }
+}
+
+export async function saveSystemSettingsConfigToCloudSql(
+  cfg: Record<string, unknown>,
+  mode?: DatabaseMode
+): Promise<boolean> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local') return true;
+  if (!isCloudSqlAvailable(targetMode)) return false;
+  try {
+    const targetDb = getDbForMode(targetMode);
+    const data = {
+      id: String(cfg['id'] || 'global'),
+      scopesConfig:
+        cfg['scopesConfig'] && typeof cfg['scopesConfig'] === 'object'
+          ? (cfg['scopesConfig'] as Record<string, 'user' | 'system'>)
+          : {},
+      systemValues:
+        cfg['systemValues'] && typeof cfg['systemValues'] === 'object'
+          ? (cfg['systemValues'] as Record<string, unknown>)
+          : {},
+      updatedAt: String(cfg['updatedAt'] || new Date().toISOString()),
+    };
+
+    await targetDb
+      .insert(systemSettingsConfig)
+      .values(data)
+      .onConflictDoUpdate({
+        target: systemSettingsConfig.id,
+        set: data,
+      });
+
+    lastSyncTimestamp = new Date().toISOString();
+    return true;
+  } catch (err: unknown) {
+    console.error(`[PostgreSQL:${targetMode}] saveSystemSettingsConfig error:`, err);
+    return false;
+  }
+}
+
 export async function getSettingsFromCloudSql(): Promise<Record<string, unknown> | null> {
   if (!isCloudSqlAvailable()) return null;
   try {
@@ -1221,6 +1431,17 @@ export async function seedInitialDataToCloudSql(fullDb: Record<string, unknown>,
     }
     if (Array.isArray(fullDb['users'])) {
       for (const u of fullDb['users']) await saveUserToCloudSql(u as Record<string, unknown>);
+    }
+    if (fullDb['userSettings'] && typeof fullDb['userSettings'] === 'object') {
+      const entries = Array.isArray(fullDb['userSettings'])
+        ? (fullDb['userSettings'] as Record<string, unknown>[])
+        : (Object.values(fullDb['userSettings'] as Record<string, unknown>) as Record<string, unknown>[]);
+      for (const us of entries) {
+        if (us && us['userId']) await saveUserSettingsToCloudSql(us);
+      }
+    }
+    if (fullDb['systemSettingsConfig'] && typeof fullDb['systemSettingsConfig'] === 'object') {
+      await saveSystemSettingsConfigToCloudSql(fullDb['systemSettingsConfig'] as Record<string, unknown>);
     }
     console.log(`[PostgreSQL:${targetMode}] Full database initialized in PostgreSQL`);
     return true;
@@ -1544,6 +1765,30 @@ export async function copyAllBetweenDatabases(
     }
     for (const row of usersRows) {
       await targetDb.insert(users).values(row).onConflictDoUpdate({ target: users.id, set: row });
+    }
+
+    try {
+      const userSettingsRows = await sourceDb.select().from(userSettings);
+      for (const row of userSettingsRows) {
+        await targetDb
+          .insert(userSettings)
+          .values(row)
+          .onConflictDoUpdate({ target: userSettings.userId, set: row });
+      }
+    } catch {
+      // ignore if not present
+    }
+
+    try {
+      const sysCfgRows = await sourceDb.select().from(systemSettingsConfig);
+      for (const row of sysCfgRows) {
+        await targetDb
+          .insert(systemSettingsConfig)
+          .values(row)
+          .onConflictDoUpdate({ target: systemSettingsConfig.id, set: row });
+      }
+    } catch {
+      // ignore if not present
     }
 
     const counts = {

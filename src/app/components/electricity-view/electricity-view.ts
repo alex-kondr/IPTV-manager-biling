@@ -24,11 +24,18 @@ import {
   ElectricityDevice,
   ElectricityDeviceLogEntry,
   ElectricityScreenshotAnalysisResult,
+  DailyWeatherPoint,
+  UtilityWeatherResponse,
   DeviceConsumptionEntryMode,
   OutageScheduleViewVariant,
   OUTAGE_SCHEDULE_VARIANTS,
   OutageScheduleVariantMeta,
   UtilityServiceTabId,
+  ControlReadingNoteAnalysis,
+  parseControlReadingNote,
+  isAirConditionerDevice,
+  computeDeviceEmpiricalReadingStats,
+  resolveAirConditionerPowerProfile,
 } from '../../models/utility.model';
 import { formatDateUa } from '../../models/client.model';
 import { MeterCameraModal, AppliedMeterReading } from '../meter-camera-modal/meter-camera-modal';
@@ -238,10 +245,43 @@ import {
                   <div class="flex items-center gap-2 flex-wrap text-xs text-slate-600 mt-1">
                     <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-900 border border-emerald-200 font-semibold">
                       <mat-icon class="text-xs text-emerald-600 leading-none">update</mat-icon>
-                      <span>Останнє оновлення: <strong>{{ dtekInfo()?.dtekJsonUpdatedAt || dtekInfo()?.updateFact || '—' }}</strong></span>
+                      <span>Оновлено ДТЕК: <strong>{{ dtekInfo()?.dtekJsonUpdatedAt || dtekInfo()?.updateFact || '—' }}</strong></span>
                     </span>
+                    @if (dtekInfo()?.lastDtekFetchAt || dtekInfo()?.fetchedAt) {
+                      <span
+                        class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 text-amber-900 border border-amber-200 font-semibold"
+                        title="Графік зберігається у спільній базі даних та оновлюється з сайту ДТЕК кожні 20 хвилин"
+                      >
+                        <mat-icon class="text-xs text-amber-600 leading-none">storage</mat-icon>
+                        <span>Запит у БД: <strong>{{ dtekInfo()?.lastDtekFetchAt || dtekInfo()?.fetchedAt }}</strong> (інтервал 20 хв)</span>
+                      </span>
+                    }
                     <span>•</span>
-                    <span class="text-slate-500">Натисніть на плитку черги, щоб відкрити графік як випадаючий список</span>
+                    <span class="text-indigo-600 font-mono font-bold inline-flex items-center gap-1.5 bg-indigo-50 px-2.5 py-0.5 rounded-lg border border-indigo-200/80 shadow-2xs">
+                      <span class="relative flex h-2 w-2">
+                        <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                      </span>
+                      <span>Київський час: {{ liveKyivTime() || dtekInfo()?.kyivTime || '—' }}</span>
+                    </span>
+                    @if (weatherData(); as w) {
+                      <span>•</span>
+                      <span
+                        class="text-sky-700 dark:text-sky-300 font-medium inline-flex items-center gap-1.5 bg-sky-50 dark:bg-slate-800 px-2.5 py-0.5 rounded-lg border border-sky-200/80 dark:border-slate-700 shadow-2xs text-2xs"
+                        [title]="'Погода зараз (' + (w.resolvedLocation || w.city) + '): ' + w.current.condition + ', вітер ' + w.current.windSpeedKmh + ' км/год, вологість ' + w.current.humidityPct + '%'"
+                      >
+                        <mat-icon class="text-sm text-sky-600 dark:text-sky-400 leading-none">{{ w.current.icon || 'wb_sunny' }}</mat-icon>
+                        <span class="font-bold font-mono text-slate-900 dark:text-white">
+                          {{ w.current.tempC > 0 ? '+' : '' }}{{ w.current.tempC }}°C
+                        </span>
+                        <span class="text-slate-500 dark:text-slate-400">({{ w.current.condition }})</span>
+                        @if (w.resolvedLocation || w.city) {
+                          <span class="hidden md:inline text-slate-400 dark:text-slate-500">• {{ w.resolvedLocation || w.city }}</span>
+                        }
+                      </span>
+                    }
+                    <span>•</span>
+                    <span class="text-slate-500">Натисніть на плитку черги, щоб відкрити графік</span>
                   </div>
                 </div>
               </div>
@@ -491,6 +531,69 @@ import {
                               }
                             </div>
                           }
+                          @case ('v11_dtek_official_sheet') {
+                            <div class="p-3 sm:p-4 rounded-xl bg-white border border-slate-200 space-y-3 overflow-x-auto">
+                              <div class="min-w-[660px] border border-slate-300 rounded-xl overflow-hidden bg-white">
+                                <div class="flex border-b border-slate-300 bg-white">
+                                  <div class="w-28 sm:w-32 shrink-0 px-2.5 py-2 border-r border-slate-300 flex flex-col justify-center text-left">
+                                    <span class="text-2xs font-bold text-slate-900 leading-tight">Часові</span>
+                                    <span class="text-2xs font-bold text-slate-900 leading-tight">проміжки</span>
+                                  </div>
+                                  @for (hItem of q.hourlySchedule; track hItem.hour) {
+                                    <div class="flex-1 min-w-[22px] h-14 border-r last:border-r-0 border-slate-300 flex items-center justify-center bg-white select-none">
+                                      <span class="text-[10px] font-bold text-slate-900 tracking-tight whitespace-nowrap -rotate-90">
+                                        {{ hItem.fromTime.substring(0, 2) }}-{{ hItem.toTime.substring(0, 2) }}
+                                      </span>
+                                    </div>
+                                  }
+                                </div>
+                                <div class="flex bg-white">
+                                  <div class="w-28 sm:w-32 shrink-0 px-2.5 py-2 border-r border-slate-300 flex items-center text-left">
+                                    <span class="text-2xs font-bold text-slate-950 whitespace-nowrap">
+                                      Сьогодні {{ (q.scheduleDate || dtekStatus()?.scheduleDate || '').slice(0, 5) }}
+                                    </span>
+                                  </div>
+                                  @for (hItem of q.hourlySchedule; track hItem.hour) {
+                                    @let isFullPower = hItem.firstHalfPower && hItem.secondHalfPower;
+                                    @let isFullOutage = !hItem.firstHalfPower && !hItem.secondHalfPower;
+                                    @let isFirstHalfOutage = !hItem.firstHalfPower && hItem.secondHalfPower;
+                                    @let isSecondHalfOutage = hItem.firstHalfPower && !hItem.secondHalfPower;
+                                    <div
+                                      class="flex-1 min-w-[22px] h-11 border-r last:border-r-0 border-slate-300 relative flex items-center justify-center overflow-hidden"
+                                      [class.bg-white]="isFullPower"
+                                      [class.bg-[#d6d8db]]="isFullOutage"
+                                      [title]="hItem.timeLabel + ': ' + hItem.statusLabel"
+                                    >
+                                      @if (isFirstHalfOutage) {
+                                        <div class="absolute inset-0 flex pointer-events-none">
+                                          <div class="w-1/2 h-full bg-[#d6d8db]"></div>
+                                          <div class="w-1/2 h-full bg-white"></div>
+                                        </div>
+                                      }
+                                      @if (isSecondHalfOutage) {
+                                        <div class="absolute inset-0 flex pointer-events-none">
+                                          <div class="w-1/2 h-full bg-white"></div>
+                                          <div class="w-1/2 h-full bg-[#d6d8db]"></div>
+                                        </div>
+                                      }
+                                      @if (isFullOutage) {
+                                        <svg viewBox="0 0 24 24" class="w-3.5 h-3.5 relative z-10" aria-hidden="true">
+                                          <path d="M13 2L4.5 13.5H11L10 22L19.5 10.5H13L13 2Z" fill="#1e293b" />
+                                          <line x1="3.5" y1="5.5" x2="20.5" y2="18.5" stroke="#1e293b" stroke-width="2.2" stroke-linecap="round" />
+                                        </svg>
+                                      }
+                                      @if (isFirstHalfOutage || isSecondHalfOutage) {
+                                        <svg viewBox="0 0 24 24" class="w-3.5 h-3.5 relative z-10" aria-hidden="true">
+                                          <path d="M13 2L4.5 13.5H11L10 22L19.5 10.5H13L13 2Z" fill="#eab308" stroke="#1e293b" stroke-width="1.2" stroke-linejoin="round" />
+                                          <line x1="3.5" y1="5.5" x2="20.5" y2="18.5" stroke="#1e293b" stroke-width="2" stroke-linecap="round" />
+                                        </svg>
+                                      }
+                                    </div>
+                                  }
+                                </div>
+                              </div>
+                            </div>
+                          }
                           @default {
                             <!-- Today 24-Hour Timeline inside Dropdown -->
                             <div class="space-y-1.5">
@@ -552,9 +655,9 @@ import {
                           }
                         }
 
-                        <!-- Tomorrow 24-Hour Timeline inside Dropdown (if available) -->
+                        <!-- Tomorrow 24-Hour Timeline inside Dropdown (if available) — uses the same activeOutageVariant() style -->
                         @if (q.tomorrowSchedule; as tom) {
-                          <div class="space-y-1.5 pt-2.5 border-t border-slate-200/80">
+                          <div class="space-y-2 pt-2.5 border-t border-slate-200/80">
                             <div class="flex items-center gap-2 flex-wrap">
                               <span class="px-2 py-0.5 rounded bg-amber-500 text-white text-3xs font-bold uppercase">
                                 Завтра ({{ tom.scheduleDate }})
@@ -562,38 +665,179 @@ import {
                               <span class="text-3xs font-bold text-emerald-700">Світло: {{ tom.totalPowerHours }} год</span>
                               <span class="text-3xs font-bold text-rose-700">Відключення: {{ tom.totalOutageHours }} год</span>
                             </div>
-                            <div class="grid grid-cols-6 sm:grid-cols-12 lg:grid-cols-24 gap-1">
-                              @for (hItem of tom.hourlySchedule; track hItem.hour) {
-                                <div
-                                  class="p-1 rounded-lg border border-slate-200 bg-white flex flex-col items-center justify-between text-center"
-                                  [title]="'Завтра ' + hItem.timeLabel + ': ' + hItem.statusLabel"
-                                >
-                                  <span class="text-3xs font-mono font-bold leading-none mb-1 text-slate-600">
-                                    {{ hItem.fromTime.substring(0, 2) }}
-                                  </span>
-                                  <div class="w-full h-4 rounded flex overflow-hidden gap-0.5 p-0.5 bg-slate-100">
+
+                            @switch (activeOutageVariant()) {
+                              @case ('v5_interval_cards') {
+                                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                                  @for (iv of getGroupedIntervals(tom.hourlySchedule, 0, 0); track iv.id) {
                                     <div
-                                      class="h-full flex-1 rounded-xs"
-                                      [class.bg-emerald-500]="hItem.firstHalfPower"
-                                      [class.bg-rose-500]="!hItem.firstHalfPower"
-                                    ></div>
-                                    <div
-                                      class="h-full flex-1 rounded-xs"
-                                      [class.bg-emerald-500]="hItem.secondHalfPower"
-                                      [class.bg-rose-500]="!hItem.secondHalfPower"
-                                    ></div>
-                                  </div>
-                                  <span
-                                    class="text-4xs font-bold leading-tight mt-0.5"
-                                    [class.text-emerald-700]="hItem.firstHalfPower && hItem.secondHalfPower"
-                                    [class.text-rose-700]="!hItem.firstHalfPower && !hItem.secondHalfPower"
-                                    [class.text-amber-700]="hItem.firstHalfPower !== hItem.secondHalfPower"
-                                  >
-                                    {{ hItem.statusKey === 'yes' ? 'Є' : (hItem.statusKey === 'no' ? 'Ні' : '0.5h') }}
-                                  </span>
+                                      class="p-2.5 rounded-xl border flex items-center justify-between gap-2"
+                                      [class.bg-emerald-50]="iv.state === 'on'"
+                                      [class.border-emerald-200]="iv.state === 'on'"
+                                      [class.bg-rose-50]="iv.state === 'off'"
+                                      [class.border-rose-300]="iv.state === 'off'"
+                                    >
+                                      <div>
+                                        <div class="text-xs font-mono font-black text-slate-900">{{ iv.fromTime }} – {{ iv.toTime }}</div>
+                                        <div class="text-3xs font-bold" [class.text-emerald-700]="iv.state === 'on'" [class.text-rose-700]="iv.state === 'off'">
+                                          {{ iv.state === 'on' ? '⚡ Світло є' : '🔌 Відключення' }}
+                                        </div>
+                                      </div>
+                                      <span class="px-2 py-0.5 rounded-lg text-2xs font-mono font-extrabold bg-white border border-slate-200 text-slate-800">
+                                        {{ iv.durationHours }} год
+                                      </span>
+                                    </div>
+                                  }
                                 </div>
                               }
-                            </div>
+                              @case ('v4_shift_quadrants') {
+                                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                                  @for (sh of getShiftQuadrants(tom.hourlySchedule, 0); track sh.id) {
+                                    <div class="p-3 rounded-xl border border-slate-200 bg-white space-y-2">
+                                      <div class="flex items-center justify-between">
+                                        <span class="text-xs font-bold text-slate-900">{{ sh.title }} ({{ sh.timeRange }})</span>
+                                        <span class="text-3xs font-mono font-bold text-emerald-700">+{{ sh.powerHours }}г / -{{ sh.outageHours }}г</span>
+                                      </div>
+                                      <div class="grid grid-cols-6 gap-1">
+                                        @for (hItem of sh.hours; track hItem.hour) {
+                                          <div class="p-1 rounded border border-slate-200 text-center">
+                                            <div class="text-4xs font-mono font-bold">{{ hItem.fromTime.substring(0, 2) }}</div>
+                                            <div class="h-2 rounded-xs mt-0.5"
+                                              [class.bg-emerald-500]="hItem.firstHalfPower && hItem.secondHalfPower"
+                                              [class.bg-rose-500]="!hItem.firstHalfPower && !hItem.secondHalfPower"
+                                              [class.bg-amber-500]="hItem.firstHalfPower !== hItem.secondHalfPower"
+                                            ></div>
+                                          </div>
+                                        }
+                                      </div>
+                                    </div>
+                                  }
+                                </div>
+                              }
+                              @case ('v10_minimal_pills') {
+                                <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-2">
+                                  @for (hItem of tom.hourlySchedule; track hItem.hour) {
+                                    @let isFullPower = hItem.firstHalfPower && hItem.secondHalfPower;
+                                    @let isFullOutage = !hItem.firstHalfPower && !hItem.secondHalfPower;
+                                    @let isMixed = !isFullPower && !isFullOutage;
+                                    <div
+                                      class="h-8 px-2.5 rounded-full border text-2xs font-mono font-bold flex items-center justify-center transition-all select-none w-full shadow-2xs relative overflow-hidden"
+                                      [class.bg-emerald-500]="isFullPower"
+                                      [class.border-emerald-600]="isFullPower"
+                                      [class.bg-rose-600]="isFullOutage"
+                                      [class.border-rose-700]="isFullOutage"
+                                      [class.border-amber-500]="isMixed"
+                                      [title]="'Завтра ' + hItem.timeLabel + ': ' + hItem.statusLabel"
+                                    >
+                                      @if (isMixed) {
+                                        <div class="absolute inset-0 flex pointer-events-none">
+                                          <div class="w-1/2 h-full border-r border-black/10" [class.bg-emerald-500]="hItem.firstHalfPower" [class.bg-rose-600]="!hItem.firstHalfPower"></div>
+                                          <div class="w-1/2 h-full" [class.bg-emerald-500]="hItem.secondHalfPower" [class.bg-rose-600]="!hItem.secondHalfPower"></div>
+                                        </div>
+                                      }
+                                      <span class="relative z-10 text-white leading-none tracking-tight">{{ hItem.fromTime }}–{{ hItem.toTime }}</span>
+                                    </div>
+                                  }
+                                </div>
+                              }
+                              @case ('v11_dtek_official_sheet') {
+                                <div class="p-3 sm:p-4 rounded-xl bg-white border border-slate-200 overflow-x-auto">
+                                  <div class="min-w-[660px] border border-slate-300 rounded-xl overflow-hidden bg-white">
+                                    <div class="flex border-b border-slate-300 bg-white">
+                                      <div class="w-28 sm:w-32 shrink-0 px-2.5 py-2 border-r border-slate-300 flex flex-col justify-center text-left">
+                                        <span class="text-2xs font-bold text-slate-900 leading-tight">Часові</span>
+                                        <span class="text-2xs font-bold text-slate-900 leading-tight">проміжки</span>
+                                      </div>
+                                      @for (hItem of tom.hourlySchedule; track hItem.hour) {
+                                        <div class="flex-1 min-w-[22px] h-14 border-r last:border-r-0 border-slate-300 flex items-center justify-center bg-white select-none">
+                                          <span class="text-[10px] font-bold text-slate-900 tracking-tight whitespace-nowrap -rotate-90">
+                                            {{ hItem.fromTime.substring(0, 2) }}-{{ hItem.toTime.substring(0, 2) }}
+                                          </span>
+                                        </div>
+                                      }
+                                    </div>
+                                    <div class="flex bg-white">
+                                      <div class="w-28 sm:w-32 shrink-0 px-2.5 py-2 border-r border-slate-300 flex items-center text-left">
+                                        <span class="text-2xs font-bold text-slate-950 whitespace-nowrap">
+                                          Завтра {{ (tom.scheduleDate || '').slice(0, 5) }}
+                                        </span>
+                                      </div>
+                                      @for (hItem of tom.hourlySchedule; track hItem.hour) {
+                                        @let isFullPower = hItem.firstHalfPower && hItem.secondHalfPower;
+                                        @let isFullOutage = !hItem.firstHalfPower && !hItem.secondHalfPower;
+                                        @let isFirstHalfOutage = !hItem.firstHalfPower && hItem.secondHalfPower;
+                                        @let isSecondHalfOutage = hItem.firstHalfPower && !hItem.secondHalfPower;
+                                        <div
+                                          class="flex-1 min-w-[22px] h-11 border-r last:border-r-0 border-slate-300 relative flex items-center justify-center overflow-hidden"
+                                          [class.bg-white]="isFullPower"
+                                          [class.bg-[#d6d8db]]="isFullOutage"
+                                          [title]="'Завтра ' + hItem.timeLabel + ': ' + hItem.statusLabel"
+                                        >
+                                          @if (isFirstHalfOutage) {
+                                            <div class="absolute inset-0 flex pointer-events-none">
+                                              <div class="w-1/2 h-full bg-[#d6d8db]"></div>
+                                              <div class="w-1/2 h-full bg-white"></div>
+                                            </div>
+                                          }
+                                          @if (isSecondHalfOutage) {
+                                            <div class="absolute inset-0 flex pointer-events-none">
+                                              <div class="w-1/2 h-full bg-white"></div>
+                                              <div class="w-1/2 h-full bg-[#d6d8db]"></div>
+                                            </div>
+                                          }
+                                          @if (isFullOutage) {
+                                            <svg viewBox="0 0 24 24" class="w-3.5 h-3.5 relative z-10" aria-hidden="true">
+                                              <path d="M13 2L4.5 13.5H11L10 22L19.5 10.5H13L13 2Z" fill="#1e293b" />
+                                              <line x1="3.5" y1="5.5" x2="20.5" y2="18.5" stroke="#1e293b" stroke-width="2.2" stroke-linecap="round" />
+                                            </svg>
+                                          }
+                                          @if (isFirstHalfOutage || isSecondHalfOutage) {
+                                            <svg viewBox="0 0 24 24" class="w-3.5 h-3.5 relative z-10" aria-hidden="true">
+                                              <path d="M13 2L4.5 13.5H11L10 22L19.5 10.5H13L13 2Z" fill="#eab308" stroke="#1e293b" stroke-width="1.2" stroke-linejoin="round" />
+                                              <line x1="3.5" y1="5.5" x2="20.5" y2="18.5" stroke="#1e293b" stroke-width="2" stroke-linecap="round" />
+                                            </svg>
+                                          }
+                                        </div>
+                                      }
+                                    </div>
+                                  </div>
+                                </div>
+                              }
+                              @default {
+                                <div class="grid grid-cols-6 sm:grid-cols-12 lg:grid-cols-24 gap-1">
+                                  @for (hItem of tom.hourlySchedule; track hItem.hour) {
+                                    <div
+                                      class="p-1 rounded-lg border border-slate-200 bg-white flex flex-col items-center justify-between text-center"
+                                      [title]="'Завтра ' + hItem.timeLabel + ': ' + hItem.statusLabel"
+                                    >
+                                      <span class="text-3xs font-mono font-bold leading-none mb-1 text-slate-600">
+                                        {{ hItem.fromTime.substring(0, 2) }}
+                                      </span>
+                                      <div class="w-full h-4 rounded flex overflow-hidden gap-0.5 p-0.5 bg-slate-100">
+                                        <div
+                                          class="h-full flex-1 rounded-xs"
+                                          [class.bg-emerald-500]="hItem.firstHalfPower"
+                                          [class.bg-rose-500]="!hItem.firstHalfPower"
+                                        ></div>
+                                        <div
+                                          class="h-full flex-1 rounded-xs"
+                                          [class.bg-emerald-500]="hItem.secondHalfPower"
+                                          [class.bg-rose-500]="!hItem.secondHalfPower"
+                                        ></div>
+                                      </div>
+                                      <span
+                                        class="text-4xs font-bold leading-tight mt-0.5"
+                                        [class.text-emerald-700]="hItem.firstHalfPower && hItem.secondHalfPower"
+                                        [class.text-rose-700]="!hItem.firstHalfPower && !hItem.secondHalfPower"
+                                        [class.text-amber-700]="hItem.firstHalfPower !== hItem.secondHalfPower"
+                                      >
+                                        {{ hItem.statusKey === 'yes' ? 'Є' : (hItem.statusKey === 'no' ? 'Ні' : '0.5h') }}
+                                      </span>
+                                    </div>
+                                  }
+                                </div>
+                              }
+                            }
                           </div>
                         }
                       </div>
@@ -616,16 +860,33 @@ import {
             >
               <mat-icon class="text-sm leading-none">{{ dtekStatus()?.isPowerAvailableNow ? 'lightbulb' : 'power_off' }}</mat-icon>
             </div>
-            <div class="flex items-center gap-2 text-xs font-semibold text-slate-700">
+            <div class="flex items-center gap-2 text-xs font-semibold text-slate-700 flex-wrap">
               <span>Графік погодинних відключень ДТЕК</span>
               <span class="text-slate-300">•</span>
-              <span class="text-indigo-600 font-mono font-bold inline-flex items-center gap-1.5 bg-indigo-50 px-2.5 py-0.5 rounded-lg border border-indigo-200/80 shadow-2xs">
-                <span class="relative flex h-2 w-2">
-                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                  <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              <div class="flex flex-col sm:flex-row sm:items-center gap-1.5">
+                <span class="text-indigo-600 font-mono font-bold inline-flex items-center gap-1.5 bg-indigo-50 px-2.5 py-0.5 rounded-lg border border-indigo-200/80 shadow-2xs">
+                  <span class="relative flex h-2 w-2">
+                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                  </span>
+                  <span>Київський час: {{ liveKyivTime() || dtekInfo()?.kyivTime || '—' }}</span>
                 </span>
-                <span>Київський час: {{ liveKyivTime() || dtekInfo()?.kyivTime || '—' }}</span>
-              </span>
+                @if (weatherData(); as w) {
+                  <span
+                    class="text-sky-700 dark:text-sky-300 font-medium inline-flex items-center gap-1.5 bg-sky-50 dark:bg-slate-800 px-2.5 py-0.5 rounded-lg border border-sky-200/80 dark:border-slate-700 shadow-2xs text-2xs"
+                    [title]="'Погода зараз (' + (w.resolvedLocation || w.city) + '): ' + w.current.condition + ', вітер ' + w.current.windSpeedKmh + ' км/год, вологість ' + w.current.humidityPct + '%'"
+                  >
+                    <mat-icon class="text-sm text-sky-600 dark:text-sky-400 leading-none">{{ w.current.icon || 'wb_sunny' }}</mat-icon>
+                    <span class="font-bold font-mono text-slate-900 dark:text-white">
+                      {{ w.current.tempC > 0 ? '+' : '' }}{{ w.current.tempC }}°C
+                    </span>
+                    <span class="text-slate-500 dark:text-slate-400">({{ w.current.condition }})</span>
+                    @if (w.resolvedLocation || w.city) {
+                      <span class="hidden md:inline text-slate-400 dark:text-slate-500">• {{ w.resolvedLocation || w.city }}</span>
+                    }
+                  </span>
+                }
+              </div>
             </div>
           </div>
 
@@ -633,10 +894,10 @@ import {
             <button
               type="button"
               (click)="forceShowQueuesMode.set(true)"
-              class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-900 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
+              class="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-500 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
               title="Переглянути графік по всіх чергах ДТЕК (1.1 – 6.2)"
             >
-              <mat-icon class="text-base text-indigo-600 leading-none">view_comfy_alt</mat-icon>
+              <mat-icon class="text-base text-amber-300 leading-none">view_comfy_alt</mat-icon>
               <span>Всі черги ДТЕК</span>
             </button>
           </div>
@@ -886,6 +1147,8 @@ import {
             [status]="status"
             [kyivTime]="liveKyivTime() || dtekInfo()?.kyivTime || ''"
             [lastUpdated]="dtekInfo()?.dtekJsonUpdatedAt || dtekInfo()?.updateFact || ''"
+            [lastDtekFetchAt]="dtekInfo()?.lastDtekFetchAt || dtekInfo()?.fetchedAt || ''"
+            [minutesUntilNextRefresh]="dtekInfo()?.minutesUntilNextRefresh || 0"
             [isRefreshing]="isDtekLoading()"
             (refresh)="refreshDtekSchedule()"
           />
@@ -920,39 +1183,68 @@ import {
 
       @if (currentAccount(); as acc) {
         <!-- Active Account Details Card -->
-        <div class="p-5 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-4">
-          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
-            <div>
-              <div class="flex items-center gap-2 flex-wrap">
-                <h3 class="text-base font-bold text-slate-900">{{ acc.name }}</h3>
-                <span class="px-2.5 py-0.5 rounded-full text-2xs font-bold"
-                  [class.bg-emerald-100]="acc.electricityTariffType === 'dual'"
-                  [class.text-emerald-800]="acc.electricityTariffType === 'dual'"
-                  [class.bg-blue-100]="acc.electricityTariffType === 'single'"
-                  [class.text-blue-800]="acc.electricityTariffType === 'single'"
-                >
-                  {{ acc.electricityTariffType === 'dual' ? 'Двотарифний (День / Ніч)' : 'Однотарифний (Єдиний)' }}
-                </span>
-                @if (acc.meterNumber) {
-                  <span class="text-2xs text-slate-500 font-mono bg-slate-100 px-2 py-0.5 rounded">
-                    Лічильник № {{ acc.meterNumber }}
+        <div class="p-4 sm:p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-2xs space-y-4">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+            <div class="flex items-center gap-2.5 flex-1 min-w-0">
+              <button
+                type="button"
+                (click)="isAccountCardExpanded.update(v => !v)"
+                class="w-8 h-8 rounded-xl bg-amber-500/10 dark:bg-amber-400/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                [title]="isAccountCardExpanded() ? 'Згорнути покази та кабінети будинку' : 'Розгорнути покази та кабінети будинку'"
+              >
+                <mat-icon class="text-xl leading-none transition-transform duration-200" [class.rotate-180]="!isAccountCardExpanded()">
+                  expand_more
+                </mat-icon>
+              </button>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <h3
+                    class="text-base font-bold text-slate-900 dark:text-white cursor-pointer hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+                    (click)="isAccountCardExpanded.update(v => !v)"
+                  >
+                    {{ acc.name }}
+                  </h3>
+                  <span class="px-2.5 py-0.5 rounded-full text-2xs font-bold"
+                    [class.bg-emerald-100]="acc.electricityTariffType === 'dual'"
+                    [class.text-emerald-800]="acc.electricityTariffType === 'dual'"
+                    [class.bg-blue-100]="acc.electricityTariffType === 'single'"
+                    [class.text-blue-800]="acc.electricityTariffType === 'single'"
+                  >
+                    {{ acc.electricityTariffType === 'dual' ? 'Двотарифний (День / Ніч)' : 'Однотарифний (Єдиний)' }}
                   </span>
-                }
+                  @if (acc.meterNumber) {
+                    <span class="text-2xs text-slate-500 dark:text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
+                      Лічильник № {{ acc.meterNumber }}
+                    </span>
+                  }
+                </div>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                  Особовий рахунок: <span class="font-semibold text-slate-700 dark:text-slate-300 font-mono">{{ acc.accountNumber }}</span>
+                  @if (acc.address) {
+                    • <span class="text-slate-600 dark:text-slate-300">{{ acc.address }}</span>
+                  }
+                </p>
               </div>
-              <p class="text-xs text-slate-500 mt-0.5">
-                Особовий рахунок: <span class="font-semibold text-slate-700 font-mono">{{ acc.accountNumber }}</span>
-                @if (acc.address) {
-                  • <span class="text-slate-600">{{ acc.address }}</span>
-                }
-              </p>
             </div>
 
-            @if (canEdit()) {
-              <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 shrink-0 flex-wrap">
+              @if (!isAccountCardExpanded()) {
+                @if (latestAnyReading(); as lr) {
+                  <span class="text-2xs font-mono font-bold text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded-lg">
+                    Показ: {{ totalConsumedKwh(lr) }} кВт·г
+                  </span>
+                }
+                @if (acc.ooekBalanceUah !== undefined && acc.ooekBalanceUah !== null) {
+                  <span class="text-2xs font-bold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/60 px-2.5 py-1 rounded-lg border border-amber-200 dark:border-amber-800">
+                    ООЕК: {{ acc.ooekBalanceUah.toFixed(2) }} грн
+                  </span>
+                }
+              }
+              @if (canEdit()) {
                 <button
                   type="button"
                   (click)="openAccountModal(acc)"
-                  class="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-100 border border-slate-200 flex items-center gap-1 transition-colors cursor-pointer"
+                  class="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center gap-1 transition-colors cursor-pointer"
                 >
                   <mat-icon class="text-sm">edit</mat-icon>
                   <span>Редагувати</span>
@@ -960,16 +1252,17 @@ import {
                 <button
                   type="button"
                   (click)="confirmDeleteAccount(acc)"
-                  class="px-3 py-1.5 rounded-lg text-xs font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 flex items-center gap-1 transition-colors cursor-pointer"
+                  class="px-3 py-1.5 rounded-lg text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 border border-rose-200 dark:border-rose-800 flex items-center gap-1 transition-colors cursor-pointer"
                 >
                   <mat-icon class="text-sm">delete</mat-icon>
                   <span>Видалити</span>
                 </button>
-              </div>
-            }
+              }
+            </div>
           </div>
 
-          <!-- Stat Cards -->
+          @if (isAccountCardExpanded()) {
+            <!-- Stat Cards -->
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
             <!-- Latest Reading -->
             <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
@@ -977,10 +1270,10 @@ import {
               @if (latestAnyReading(); as lr) {
                 @if (acc.electricityTariffType === 'dual') {
                   <div class="text-sm font-extrabold text-slate-900 mt-1">
-                    Т1: {{ lr.readingT1 }} <span class="text-2xs font-normal text-slate-500">кВт·г</span>
+                    День (Т2): {{ lr.readingT1 }} <span class="text-2xs font-normal text-slate-500">кВт·г</span>
                   </div>
                   <div class="text-sm font-extrabold text-slate-900">
-                    Т2: {{ lr.readingT2 }} <span class="text-2xs font-normal text-slate-500">кВт·г</span>
+                    Ніч (Т1): {{ lr.readingT2 }} <span class="text-2xs font-normal text-slate-500">кВт·г</span>
                   </div>
                 } @else {
                   <div class="text-base font-extrabold text-slate-900 mt-1">
@@ -1025,11 +1318,14 @@ import {
             <!-- Last Billing Accrual / Paid Status (Only official billing readings) -->
             <div class="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200/80">
               <span class="text-3xs font-semibold uppercase tracking-wider text-emerald-800 block">Сума за останній розрахунок</span>
-              @if (latestBillingReading(); as lbr) {
-                <div class="text-base font-extrabold text-emerald-950 mt-1">
-                  {{ lbr.totalCost.toFixed(2) }} <span class="text-xs font-normal text-emerald-700">грн</span>
-                </div>
-                <div class="mt-1 flex items-center justify-between">
+              @let lbr = latestBillingReading();
+              @let predictedAmt = lbr ? lbr.totalCost.toFixed(2) : '0.00';
+              @let ooekAmt = (acc.ooekBalanceUah !== undefined && acc.ooekBalanceUah !== null) ? acc.ooekBalanceUah.toFixed(2) : '—';
+              <div class="text-xs sm:text-sm font-extrabold text-emerald-950 mt-1 leading-snug">
+                Прогнозована {{ predictedAmt }} грн / ООЕК {{ ooekAmt }} грн
+              </div>
+              <div class="mt-1 flex items-center justify-between gap-1 flex-wrap">
+                @if (lbr) {
                   @if (lbr.isPaid) {
                     <span class="inline-flex items-center gap-1 text-3xs font-bold text-emerald-700 bg-emerald-100/90 px-2 py-0.5 rounded">
                       <mat-icon class="text-xs leading-none">check_circle</mat-icon> Оплачено
@@ -1039,11 +1335,13 @@ import {
                       <mat-icon class="text-xs leading-none">pending</mat-icon> До сплати
                     </span>
                   }
-                  <span class="text-3xs text-slate-500 font-mono">{{ formatDate(lbr.date) }}</span>
-                </div>
-              } @else {
-                <div class="text-xs text-emerald-600 mt-1 italic">0.00 грн (немає оплат)</div>
-              }
+                  <span class="text-3xs text-slate-500 font-mono">{{ acc.ooekBillUpdatedAt || formatDate(lbr.date) }}</span>
+                } @else if (acc.ooekBillUpdatedAt) {
+                  <span class="text-3xs text-emerald-800 font-mono">Рахунок ООЕК: {{ acc.ooekBillUpdatedAt }}</span>
+                } @else {
+                  <span class="text-3xs text-emerald-600 italic">Немає розрахунків</span>
+                }
+              </div>
             </div>
 
             <!-- Current Tariff Applied -->
@@ -1074,29 +1372,34 @@ import {
           </div>
 
           <!-- Personal Cabinets Integration: DTEK OEM & OOEK (Encrypted Credentials) -->
-          <div class="pt-3 border-t border-slate-100 space-y-3">
-            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-slate-50/90 p-3.5 rounded-xl border border-slate-200/90">
+          <div class="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-slate-50 dark:bg-slate-800/90 p-3.5 rounded-xl border border-slate-200/90 dark:border-slate-700">
               <div class="flex items-start sm:items-center gap-3">
                 <div class="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
                   <mat-icon class="text-lg">vpn_key</mat-icon>
                 </div>
                 <div>
                   <div class="flex items-center gap-2 flex-wrap">
-                    <h4 class="text-xs sm:text-sm font-bold text-slate-900">
+                    <h4 class="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
                       Особисті кабінети будинку: ДТЕК ОЕМ та ТОВ «ООЕК»
                     </h4>
-                    <span class="px-2 py-0.5 rounded-full text-3xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 inline-flex items-center gap-1">
+                    <span class="px-2 py-0.5 rounded-full text-3xs font-bold bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-700 inline-flex items-center gap-1">
                       <mat-icon class="text-3xs leading-none">enhanced_encryption</mat-icon>
                       <span>AES-256-GCM шифрування</span>
                     </span>
                     @if (acc.ooekBalanceUah !== undefined && acc.ooekBalanceUah !== null) {
-                      <span class="px-2.5 py-0.5 rounded-full text-2xs font-extrabold bg-amber-100 text-amber-900 border border-amber-300">
-                        ООЕК до сплати: {{ acc.ooekBalanceUah.toFixed(2) }} грн
+                      <span class="px-2.5 py-0.5 rounded-full text-2xs font-extrabold bg-amber-100 dark:bg-amber-950/80 text-amber-900 dark:text-amber-300 border border-amber-300 dark:border-amber-700 inline-flex items-center gap-1.5 flex-wrap">
+                        <span>ООЕК до сплати: {{ acc.ooekBalanceUah.toFixed(2) }} грн</span>
+                        @if (acc.ooekBillUpdatedAt) {
+                          <span class="text-3xs font-semibold text-amber-800 dark:text-amber-200">({{ acc.ooekBillUpdatedAt }})</span>
+                        } @else if (acc.ooekCabinetLastSync) {
+                          <span class="text-3xs font-semibold text-amber-800 dark:text-amber-200">({{ formatDate(acc.ooekCabinetLastSync) }})</span>
+                        }
                       </span>
                     }
                   </div>
-                  <p class="text-2xs text-slate-500 mt-0.5">
-                    Безпечне збереження облікових даних для <span class="font-mono text-slate-700">auth.my.dtek-oem.com.ua</span> (показники) та <span class="font-mono text-slate-700">personal.ooek.od.ua</span> (нарахована сума до сплати)
+                  <p class="text-2xs text-slate-600 dark:text-slate-300 mt-0.5">
+                    Безпечне збереження облікових даних для <span class="font-mono text-slate-800 dark:text-slate-200">auth.my.dtek-oem.com.ua</span> (показники) та <span class="font-mono text-slate-800 dark:text-slate-200">personal.ooek.od.ua</span> (нарахована сума до сплати)
                   </p>
                 </div>
               </div>
@@ -1107,7 +1410,7 @@ import {
                   (click)="syncOoekForCurrentAccount()"
                   [disabled]="isSyncingOoek()"
                   class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-2xs"
-                  title="Підключитися до personal.ooek.od.ua/home/abonbook/cards та оновити нараховану суму, історію оплат і споживання по особовому рахунку"
+                  title="Підключитися до personal.ooek.od.ua/home/accounts та оновити нараховану суму до сплати по особовому рахунку"
                 >
                   <mat-icon class="text-sm leading-none" [class.animate-spin]="isSyncingOoek()">receipt_long</mat-icon>
                   <span>{{ isSyncingOoek() ? 'Запит ООЕК...' : 'Оновити з ООЕК' }}</span>
@@ -1117,9 +1420,9 @@ import {
                   type="button"
                   (click)="toggleCabinetPanel()"
                   class="px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors flex items-center gap-1.5 cursor-pointer"
-                  [class.bg-slate-900]="isCabinetPanelOpen()"
+                  [class.bg-indigo-600]="isCabinetPanelOpen()"
                   [class.text-white]="isCabinetPanelOpen()"
-                  [class.border-slate-900]="isCabinetPanelOpen()"
+                  [class.border-indigo-500]="isCabinetPanelOpen()"
                   [class.bg-white]="!isCabinetPanelOpen()"
                   [class.text-slate-700]="!isCabinetPanelOpen()"
                   [class.border-slate-300]="!isCabinetPanelOpen()"
@@ -1130,180 +1433,18 @@ import {
               </div>
             </div>
 
-            <!-- Collapsible OOEK Payment & Electricity Consumption History (from https://personal.ooek.od.ua/home/abonbook/cards by Personal Account) -->
-            <div class="rounded-xl border border-emerald-200/90 bg-emerald-50/40 overflow-hidden transition-all">
-              <div
-                class="px-3.5 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-emerald-50/80 transition-colors"
-              >
-                <div class="flex items-center gap-2.5 flex-wrap">
-                  <div class="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0">
-                    <mat-icon class="text-sm leading-none">history_edu</mat-icon>
-                  </div>
-                  <div>
-                    <div class="flex items-center gap-2 flex-wrap">
-                      <span class="text-xs font-bold text-slate-900">
-                        Абонкнижка ООЕК: історія оплат та спожитої електроенергії
-                      </span>
-                      <span class="px-2 py-0.5 rounded-md bg-white border border-emerald-300 text-emerald-900 text-3xs font-mono font-bold">
-                        О/р: {{ acc.ooekAccountNumber || acc.accountNumber }}
-                      </span>
-                      <span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-3xs font-bold">
-                        {{ (acc.ooekHistory || []).length }} зап.
-                      </span>
-                    </div>
-                    <p class="text-3xs text-slate-500">
-                      Дані зі сторінки <span class="font-mono text-slate-700">personal.ooek.od.ua/home/abonbook/cards</span> для обраної домівки по особовому рахунку
-                    </p>
-                  </div>
-                </div>
-
-                <div class="flex items-center gap-2 shrink-0 self-end sm:self-center">
-                  @if ((acc.ooekHistory || []).length > 0) {
-                    @let latestH = (acc.ooekHistory || [])[0];
-                    <div class="hidden md:flex items-center gap-2 text-2xs font-mono">
-                      @if (latestH.consumedKwh !== undefined && latestH.consumedKwh !== null) {
-                        <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-900 font-bold">
-                          {{ latestH.consumedKwh }} кВт·год
-                        </span>
-                      }
-                      @if (latestH.paidUah !== undefined && latestH.paidUah !== null) {
-                        <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-900 font-bold">
-                          Оплата: {{ latestH.paidUah.toFixed(2) }} грн
-                        </span>
-                      }
-                    </div>
-                  }
-                  <button
-                    type="button"
-                    (click)="toggleOoekHistoryExpanded()"
-                    class="px-2.5 py-1 rounded-lg bg-white hover:bg-emerald-100/70 text-emerald-900 border border-emerald-300 text-2xs font-bold inline-flex items-center gap-1 cursor-pointer transition-colors"
-                  >
-                    <span>{{ isOoekHistoryExpanded() ? 'Згорнути список' : 'Розгорнути список' }}</span>
-                    <mat-icon class="text-sm leading-none transition-transform duration-200" [class.rotate-180]="isOoekHistoryExpanded()">
-                      expand_more
-                    </mat-icon>
-                  </button>
-                </div>
-              </div>
-
-              @if (isOoekHistoryExpanded()) {
-                <div class="border-t border-emerald-200/80 bg-white p-3.5 space-y-3">
-                  <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <div class="flex items-center gap-2 flex-wrap text-2xs text-slate-600">
-                      <span>Особовий рахунок для вибірки з <code class="font-mono text-emerald-800">abonbook/cards</code>:</span>
-                      <span class="font-mono font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                        {{ acc.ooekAccountNumber || acc.accountNumber }}
-                      </span>
-                      @if (acc.ooekCabinetLastSync) {
-                        <span class="text-3xs text-slate-400">• Синхр.: {{ formatDate(acc.ooekCabinetLastSync) }}</span>
-                      }
-                    </div>
-                    <div class="flex items-center gap-2">
-                      <a
-                        href="https://personal.ooek.od.ua/home/abonbook/cards"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        class="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-2xs font-semibold inline-flex items-center gap-1"
-                      >
-                        <span>Відкрити abonbook/cards</span>
-                        <mat-icon class="text-3xs leading-none">open_in_new</mat-icon>
-                      </a>
-                      <button
-                        type="button"
-                        (click)="syncOoekForCurrentAccount()"
-                        [disabled]="isSyncingOoek()"
-                        class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-2xs font-bold inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                      >
-                        <mat-icon class="text-xs leading-none" [class.animate-spin]="isSyncingOoek()">sync</mat-icon>
-                        <span>{{ isSyncingOoek() ? 'Оновлення...' : 'Завантажити з сайту' }}</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  @if ((acc.ooekHistory || []).length > 0) {
-                    <div class="overflow-x-auto rounded-xl border border-slate-200">
-                      <table class="w-full text-left border-collapse">
-                        <thead>
-                          <tr class="bg-slate-50 text-slate-500 text-3xs font-extrabold uppercase tracking-wider border-b border-slate-200">
-                            <th class="py-2 px-3">Період / Дата</th>
-                            <th class="py-2 px-3 text-right">Спожито (кВт·год)</th>
-                            <th class="py-2 px-3 text-right">Нараховано (грн)</th>
-                            <th class="py-2 px-3 text-right">Оплачено (грн)</th>
-                            <th class="py-2 px-3 text-right">Сальдо / Борг (грн)</th>
-                          </tr>
-                        </thead>
-                        <tbody class="divide-y divide-slate-100 text-xs">
-                          @for (item of (acc.ooekHistory || []); track item.id) {
-                            <tr class="hover:bg-slate-50/90 transition-colors">
-                              <td class="py-2 px-3 font-semibold text-slate-900 whitespace-nowrap">
-                                <div>{{ item.period }}</div>
-                                @if (item.date && item.date !== item.period) {
-                                  <div class="text-3xs text-slate-400 font-mono">{{ item.date }}</div>
-                                }
-                              </td>
-                              <td class="py-2 px-3 text-right font-mono">
-                                @if (item.consumedKwh !== undefined && item.consumedKwh !== null) {
-                                  <span class="px-2 py-0.5 rounded bg-amber-50 text-amber-900 font-bold border border-amber-200/80">
-                                    {{ item.consumedKwh }} кВт·г
-                                  </span>
-                                } @else {
-                                  <span class="text-slate-300">—</span>
-                                }
-                              </td>
-                              <td class="py-2 px-3 text-right font-mono font-semibold text-slate-700">
-                                @if (item.accruedUah !== undefined && item.accruedUah !== null) {
-                                  {{ item.accruedUah.toFixed(2) }} грн
-                                } @else {
-                                  <span class="text-slate-300">—</span>
-                                }
-                              </td>
-                              <td class="py-2 px-3 text-right font-mono font-bold text-emerald-700">
-                                @if (item.paidUah !== undefined && item.paidUah !== null) {
-                                  +{{ item.paidUah.toFixed(2) }} грн
-                                } @else {
-                                  <span class="text-slate-300">—</span>
-                                }
-                              </td>
-                              <td class="py-2 px-3 text-right font-mono font-semibold">
-                                @if (item.balanceUah !== undefined && item.balanceUah !== null) {
-                                  <span [class.text-rose-700]="item.balanceUah > 0" [class.text-emerald-700]="item.balanceUah <= 0">
-                                    {{ item.balanceUah.toFixed(2) }} грн
-                                  </span>
-                                } @else {
-                                  <span class="text-slate-300">—</span>
-                                }
-                              </td>
-                            </tr>
-                          }
-                        </tbody>
-                      </table>
-                    </div>
-                  } @else {
-                    <div class="p-4 rounded-xl bg-slate-50 border border-slate-200/80 text-center space-y-2">
-                      <p class="text-xs font-semibold text-slate-700">
-                        Історія оплат та споживання з абонкнижки ООЕК для особового рахунку <span class="font-mono font-bold">{{ acc.ooekAccountNumber || acc.accountNumber }}</span> ще не завантажена.
-                      </p>
-                      <p class="text-2xs text-slate-500">
-                        Збережіть логін/пароль ООЕК та натисніть «Завантажити з сайту», щоб отримати інформацію з <span class="font-mono">personal.ooek.od.ua/home/abonbook/cards</span>.
-                      </p>
-                    </div>
-                  }
-                </div>
-              }
-            </div>
-
             @if (isCabinetPanelOpen()) {
-              <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 p-4 rounded-2xl bg-slate-50/70 border border-slate-200">
+              <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700">
                 <!-- Left Card: OOEK Personal Cabinet (https://personal.ooek.od.ua/home/) -->
-                <div class="p-4 rounded-xl bg-white border border-slate-200/90 shadow-2xs space-y-3 flex flex-col justify-between">
+                <div class="p-4 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-700 shadow-2xs space-y-3 flex flex-col justify-between">
                   <div class="space-y-3">
-                    <div class="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-100">
+                    <div class="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-100 dark:border-slate-800">
                       <div>
                         <div class="flex items-center gap-2 flex-wrap">
                           <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-3xs font-bold uppercase">
                             Пряма інтеграція працює
                           </span>
-                          <h5 class="text-xs sm:text-sm font-bold text-slate-900">
+                          <h5 class="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
                             Кабінет ТОВ «ООЕК» (Сума + Абонкнижка)
                           </h5>
                         </div>
@@ -1312,7 +1453,7 @@ import {
                             href="https://personal.ooek.od.ua/home/"
                             target="_blank"
                             rel="noopener noreferrer"
-                            class="text-2xs text-indigo-600 hover:underline font-mono inline-flex items-center gap-1"
+                            class="text-2xs text-indigo-600 dark:text-indigo-400 hover:underline font-mono inline-flex items-center gap-1"
                           >
                             <span>personal.ooek.od.ua/home</span>
                             <mat-icon class="text-3xs">open_in_new</mat-icon>
@@ -1321,7 +1462,7 @@ import {
                             href="https://personal.ooek.od.ua/home/abonbook/cards"
                             target="_blank"
                             rel="noopener noreferrer"
-                            class="text-2xs text-emerald-700 hover:underline font-mono inline-flex items-center gap-1"
+                            class="text-2xs text-emerald-700 dark:text-emerald-400 hover:underline font-mono inline-flex items-center gap-1"
                           >
                             <span>/home/abonbook/cards</span>
                             <mat-icon class="text-3xs">open_in_new</mat-icon>
@@ -1338,55 +1479,63 @@ import {
                     </div>
 
                     <!-- Accrued Amount Display Box -->
-                    <div class="p-3 rounded-xl bg-emerald-50/80 border border-emerald-200 flex items-center justify-between">
-                      <div>
-                        <span class="text-3xs font-bold uppercase tracking-wider text-emerald-800 block">
-                          Нарахована сума до сплати (ООЕК)
+                    <div class="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between gap-3 flex-wrap">
+                      <div class="space-y-0.5">
+                        <span class="text-3xs font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300 block">
+                          Нарахована сума до сплати (ООЕК • о/р {{ acc.ooekAccountNumber || acc.accountNumber }})
                         </span>
+                        @if (acc.ooekBillUpdatedAt) {
+                          <span class="text-2xs font-semibold text-emerald-900 dark:text-emerald-200 block">
+                            Дата отримання рахунку: {{ acc.ooekBillUpdatedAt }}
+                          </span>
+                        }
                         @if (acc.ooekCabinetLastSync) {
-                          <span class="text-3xs text-emerald-700">
-                            Оновлено: {{ formatDate(acc.ooekCabinetLastSync) }}
+                          <span class="text-3xs text-emerald-700 dark:text-emerald-300 block">
+                            Останнє оновлення: {{ formatDate(acc.ooekCabinetLastSync) }}
                           </span>
                         } @else {
-                          <span class="text-3xs text-slate-500">Ще не синхронізовано</span>
+                          <span class="text-3xs text-slate-500 dark:text-slate-400 block">Ще не синхронізовано</span>
                         }
                       </div>
-                      <div class="text-right">
+                      <div class="text-right shrink-0 flex flex-col items-end gap-1">
                         @if (acc.ooekBalanceUah !== undefined && acc.ooekBalanceUah !== null) {
-                          <span class="text-lg font-extrabold font-mono text-emerald-950">
+                          <span class="text-lg font-extrabold font-mono text-emerald-950 dark:text-emerald-300 leading-tight">
                             {{ acc.ooekBalanceUah.toFixed(2) }} грн
                           </span>
+                          @if (acc.ooekBalanceUah > 0) {
+                            <span class="text-3xs font-mono font-semibold text-emerald-800 dark:text-emerald-300">
+                              ~{{ getEstimatedKwhFromOoekBalance(acc) }} кВт·г (за тарифом)
+                            </span>
+                          }
                         } @else {
                           <span class="text-xs font-semibold text-slate-400 italic">— грн</span>
+                        }
+                        @if (canEdit()) {
+                          <button
+                            type="button"
+                            (click)="addOoekAccruedAmountToHistory(acc)"
+                            [disabled]="isSubmitting() || acc.ooekBalanceUah === undefined || acc.ooekBalanceUah === null || acc.ooekBalanceUah <= 0"
+                            class="mt-0.5 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-3xs font-bold inline-flex items-center gap-1 cursor-pointer transition-colors shadow-2xs disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Додати нараховану суму у блок «Історія передачі показів та розрахунків» (якщо показників немає — кВт·г розраховуються на основі суми та тарифу)"
+                          >
+                            <mat-icon class="text-xs leading-none">playlist_add</mat-icon>
+                            <span>Додати до історії</span>
+                          </button>
                         }
                       </div>
                     </div>
 
                     @if (acc.ooekCabinetStatus) {
-                      <div class="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-2xs text-slate-700 flex items-start gap-1.5">
-                        <mat-icon class="text-sm text-indigo-600 shrink-0 mt-0.5">info</mat-icon>
+                      <div class="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-2xs text-slate-700 dark:text-slate-200 flex items-start gap-1.5">
+                        <mat-icon class="text-sm text-indigo-600 dark:text-indigo-400 shrink-0 mt-0.5">info</mat-icon>
                         <span>{{ acc.ooekCabinetStatus }}</span>
                       </div>
                     }
 
-                    <!-- OOEK Credentials & Personal Account Number Inputs -->
-                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                    <!-- OOEK Credentials Inputs (Account Number is automatically taken from House Settings) -->
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                       <div>
-                        <label for="cabinet-ooek-acc-input" class="block text-3xs font-bold text-slate-600 uppercase mb-1">
-                          Особовий рахунок ООЕК (домівка)
-                        </label>
-                        <input
-                          id="cabinet-ooek-acc-input"
-                          type="text"
-                          [value]="cabinetOoekAccountNumber()"
-                          (input)="cabinetOoekAccountNumber.set($any($event.target).value)"
-                          [placeholder]="acc.accountNumber || '572000...'"
-                          autocomplete="off"
-                          class="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-300 text-xs text-slate-900 font-mono focus:outline-none focus:border-emerald-500"
-                        />
-                      </div>
-                      <div>
-                        <label for="cabinet-ooek-login-input" class="block text-3xs font-bold text-slate-600 uppercase mb-1">
+                        <label for="cabinet-ooek-login-input" class="block text-3xs font-bold text-slate-600 dark:text-slate-300 uppercase mb-1">
                           Логін (Email або телефон ООЕК)
                         </label>
                         <input
@@ -1400,7 +1549,7 @@ import {
                         />
                       </div>
                       <div>
-                        <label for="cabinet-ooek-password-input" class="block text-3xs font-bold text-slate-600 uppercase mb-1">
+                        <label for="cabinet-ooek-password-input" class="block text-3xs font-bold text-slate-600 dark:text-slate-300 uppercase mb-1">
                           Пароль ООЕК {{ acc.hasOoekPassword ? '(збережено)' : '' }}
                         </label>
                         <input
@@ -1414,33 +1563,14 @@ import {
                         />
                       </div>
                     </div>
-
-                    @if ((acc.ooekDiscoveredAccounts || []).length > 1) {
-                      <div class="p-2 rounded-lg bg-emerald-50/70 border border-emerald-200/80 flex items-center gap-1.5 flex-wrap">
-                        <span class="text-3xs font-bold text-emerald-900">Знайдені рахунки в кабінеті:</span>
-                        @for (discAcc of (acc.ooekDiscoveredAccounts || []); track discAcc) {
-                          <button
-                            type="button"
-                            (click)="cabinetOoekAccountNumber.set(discAcc)"
-                            [class.bg-emerald-600]="cabinetOoekAccountNumber() === discAcc"
-                            [class.text-white]="cabinetOoekAccountNumber() === discAcc"
-                            [class.bg-white]="cabinetOoekAccountNumber() !== discAcc"
-                            [class.text-emerald-900]="cabinetOoekAccountNumber() !== discAcc"
-                            class="px-2 py-0.5 rounded text-3xs font-mono font-bold border border-emerald-300 cursor-pointer transition-colors"
-                          >
-                            {{ discAcc }}
-                          </button>
-                        }
-                      </div>
-                    }
                   </div>
 
-                  <div class="pt-3 border-t border-slate-100 flex items-center justify-between gap-2 flex-wrap">
+                  <div class="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2 flex-wrap">
                     <button
                       type="button"
                       (click)="saveCabinetCredentialsForCurrentAccount()"
                       [disabled]="isSavingCabinet()"
-                      class="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                      class="px-3 py-2 rounded-xl bg-slate-900 dark:bg-slate-700 hover:bg-slate-800 dark:hover:bg-slate-600 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                     >
                       <mat-icon class="text-sm leading-none">lock</mat-icon>
                       <span>Зберегти зашифровано</span>
@@ -1453,190 +1583,167 @@ import {
                       class="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-2xs"
                     >
                       <mat-icon class="text-sm leading-none" [class.animate-spin]="isSyncingOoek()">sync</mat-icon>
-                      <span>{{ isSyncingOoek() ? 'Підключення...' : 'Отримати суму та історію' }}</span>
+                      <span>{{ isSyncingOoek() ? 'Підключення...' : 'Отримати суму до сплати' }}</span>
                     </button>
                   </div>
                 </div>
 
-                <!-- Right Card: DTEK OEM Personal Cabinet (https://auth.my.dtek-oem.com.ua/login) -->
-                <div class="p-4 rounded-xl bg-white border border-slate-200/90 shadow-2xs space-y-3 flex flex-col justify-between">
+                <!-- Right Card: DTEK OEM Direct Reading Submission (Greyed out "В розробці...") -->
+                <div class="p-4 rounded-xl bg-slate-100 dark:bg-slate-900/90 border border-slate-300 dark:border-slate-700 shadow-2xs space-y-3 flex flex-col justify-between opacity-80 select-none">
                   <div class="space-y-3">
-                    <div class="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-100">
+                    <div class="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-200 dark:border-slate-800">
                       <div>
                         <div class="flex items-center gap-2 flex-wrap">
-                          <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-3xs font-bold uppercase">
-                            OAuth API + захист Imperva WAF
+                          <span class="px-2 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-300 dark:border-slate-700 text-3xs font-bold uppercase inline-flex items-center gap-1">
+                            <mat-icon class="text-xs leading-none">construction</mat-icon>
+                            <span>В розробці...</span>
                           </span>
-                          <h5 class="text-xs sm:text-sm font-bold text-slate-900">
-                            Кабінет ДТЕК ОЕМ (Показники)
+                          <h5 class="text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-200">
+                            Передача показів лічильника ДТЕК ОЕМ
                           </h5>
                         </div>
-                        <a
-                          href="https://auth.my.dtek-oem.com.ua/login"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          class="text-2xs text-indigo-600 hover:underline font-mono inline-flex items-center gap-1 mt-0.5"
-                        >
-                          <span>https://auth.my.dtek-oem.com.ua/login</span>
-                          <mat-icon class="text-3xs">open_in_new</mat-icon>
-                        </a>
+                        <p class="text-2xs text-slate-500 dark:text-slate-400 mt-0.5">
+                          Швидка передача показів без входу в акаунт за особовим рахунком будинку (<span class="font-mono font-semibold text-slate-600 dark:text-slate-300">{{ acc.accountNumber }}</span>)
+                        </p>
                       </div>
-
-                      @if (acc.hasDtekPassword) {
-                        <span class="px-2 py-0.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700 text-3xs font-bold flex items-center gap-1 shrink-0">
-                          <mat-icon class="text-xs leading-none">lock</mat-icon>
-                          <span>Пароль зашифровано</span>
-                        </span>
-                      }
                     </div>
 
-                    <!-- Technical Security & WAF Explanation Box -->
-                    <div class="p-2.5 rounded-xl bg-amber-50/80 border border-amber-200 text-2xs text-amber-950 space-y-1">
-                      <div class="font-bold flex items-center gap-1">
-                        <mat-icon class="text-xs text-amber-700 leading-none">security</mat-icon>
-                        <span>Як захищені паролі та особливість сайту ДТЕК:</span>
+                    <!-- Meter Reading Inputs (1 field for single-zone, 2 fields for dual-zone) -->
+                    @if (acc.electricityTariffType === 'dual') {
+                      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                          <label class="block text-3xs font-bold text-slate-500 uppercase mb-1">
+                            Покази День (Т2), кВт·год
+                          </label>
+                          <input
+                            type="number"
+                            disabled
+                            [placeholder]="latestAnyReading()?.readingT1 || 0"
+                            class="w-full px-3 py-2 rounded-lg bg-slate-200/70 border border-slate-300 text-xs text-slate-500 font-mono cursor-not-allowed"
+                          />
+                        </div>
+                        <div>
+                          <label class="block text-3xs font-bold text-slate-500 uppercase mb-1">
+                            Покази Ніч (Т1), кВт·год
+                          </label>
+                          <input
+                            type="number"
+                            disabled
+                            [placeholder]="latestAnyReading()?.readingT2 || 0"
+                            class="w-full px-3 py-2 rounded-lg bg-slate-200/70 border border-slate-300 text-xs text-slate-500 font-mono cursor-not-allowed"
+                          />
+                        </div>
                       </div>
-                      <p class="text-3xs text-amber-900 leading-relaxed">
-                        Паролі шифруються на сервері алгоритмом <strong>AES-256-GCM</strong> (ключ <span class="font-mono">CABINET_ENCRYPTION_KEY</span> у <span class="font-mono">.env</span>) і ніколи не повертаються у браузер у відкритому вигляді. Сайт <span class="font-mono">auth.my.dtek-oem.com.ua</span> використовує захист <strong>Imperva Incapsula WAF</strong> проти серверних запитів: сервер пробує прямий вхід через <span class="font-mono">/api/oauth/api/auth/login</span>, а якщо WAF вимагає браузерну перевірку — фіксує покази в базі та відкриває кабінет для підтвердження.
-                      </p>
-                    </div>
-
-                    @if (acc.dtekCabinetStatus) {
-                      <div class="p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-2xs text-slate-700 flex items-start gap-1.5">
-                        <mat-icon class="text-sm text-amber-600 shrink-0 mt-0.5">info</mat-icon>
-                        <span>{{ acc.dtekCabinetStatus }}</span>
+                    } @else {
+                      <div>
+                        <label class="block text-3xs font-bold text-slate-500 uppercase mb-1">
+                          Покази лічильника (Загальний Т1, кВт·год)
+                        </label>
+                        <input
+                          type="number"
+                          disabled
+                          [placeholder]="latestAnyReading()?.readingT1 || 0"
+                          class="w-full px-3 py-2 rounded-lg bg-slate-200/70 border border-slate-300 text-xs text-slate-500 font-mono cursor-not-allowed"
+                        />
                       </div>
                     }
 
-                    <!-- DTEK Credentials Inputs -->
-                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                      <div>
-                        <label for="cabinet-dtek-login-input" class="block text-3xs font-bold text-slate-600 uppercase mb-1">
-                          Логін ДТЕК (+380XXXXXXXXX або Email)
-                        </label>
-                        <input
-                          id="cabinet-dtek-login-input"
-                          type="text"
-                          [value]="cabinetDtekLogin()"
-                          (input)="cabinetDtekLogin.set($any($event.target).value)"
-                          placeholder="+380671234567"
-                          autocomplete="off"
-                          class="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-300 text-xs text-slate-900 font-mono focus:outline-none focus:border-amber-500"
-                        />
-                      </div>
-                      <div>
-                        <label for="cabinet-dtek-password-input" class="block text-3xs font-bold text-slate-600 uppercase mb-1">
-                          Пароль ДТЕК {{ acc.hasDtekPassword ? '(збережено)' : '' }}
-                        </label>
-                        <input
-                          id="cabinet-dtek-password-input"
-                          type="password"
-                          [value]="cabinetDtekPassword()"
-                          (input)="cabinetDtekPassword.set($any($event.target).value)"
-                          [placeholder]="acc.hasDtekPassword ? '•••••••• (залиште порожнім без змін)' : 'Введіть пароль кабінету ДТЕК'"
-                          autocomplete="new-password"
-                          class="w-full px-3 py-2 rounded-lg bg-slate-50 border border-slate-300 text-xs text-slate-900 focus:outline-none focus:border-amber-500"
-                        />
-                      </div>
+                    <div class="p-2.5 rounded-lg bg-slate-200/60 border border-slate-300/80 text-2xs text-slate-600 flex items-center gap-2">
+                      <mat-icon class="text-sm text-slate-500 shrink-0">hourglass_top</mat-icon>
+                      <span>В розробці... Прямий запит передачі показів за особовим рахунком буде підключено найближчим часом.</span>
                     </div>
                   </div>
 
-                  <div class="pt-3 border-t border-slate-100 flex items-center justify-between gap-2 flex-wrap">
+                  <div class="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
                     <button
                       type="button"
-                      (click)="syncDtekCabinetForCurrentAccount()"
-                      [disabled]="isSyncingDtekCabinet()"
-                      class="px-3 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-2xs"
+                      disabled
+                      class="px-3.5 py-2 rounded-xl bg-slate-400 text-white text-xs font-bold flex items-center gap-1.5 cursor-not-allowed opacity-80"
                     >
-                      <mat-icon class="text-sm leading-none" [class.animate-spin]="isSyncingDtekCabinet()">sync</mat-icon>
-                      <span>{{ isSyncingDtekCabinet() ? 'Перевірка...' : 'Перевірити вхід ДТЕК' }}</span>
+                      <mat-icon class="text-sm leading-none">send</mat-icon>
+                      <span>Відправити покази</span>
                     </button>
-
-                    @if (latestAnyReading(); as lr) {
-                      <button
-                        type="button"
-                        (click)="submitLatestReadingToDtek(lr)"
-                        [disabled]="isSyncingDtekCabinet()"
-                        class="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-2xs"
-                        title="Передати останні внесені покази в кабінет ДТЕК"
-                      >
-                        <mat-icon class="text-sm leading-none">send</mat-icon>
-                        <span>Передати покази ({{ lr.readingT1 }}{{ acc.electricityTariffType === 'dual' ? '/' + lr.readingT2 : '' }})</span>
-                      </button>
-                    }
                   </div>
                 </div>
               </div>
             }
           </div>
-        </div>
+        }
+      </div>
 
         <!-- Mode Switcher: History Table vs Devices vs Trend Analytics -->
-        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-white p-2.5 rounded-2xl border border-slate-200/90 shadow-2xs">
-          <div class="flex items-center overflow-x-auto rounded-xl bg-slate-100 p-1 text-2xs sm:text-xs font-semibold gap-1 scrollbar-thin">
-            <button
-              type="button"
-              (click)="activeTab.set('table')"
-              [class.bg-white]="activeTab() === 'table'"
-              [class.text-slate-900]="activeTab() === 'table'"
-              [class.shadow-2xs]="activeTab() === 'table'"
-              [class.text-slate-600]="activeTab() !== 'table'"
-              class="px-2.5 sm:px-3.5 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
-            >
-              <mat-icon class="text-sm sm:text-base text-amber-500">table_chart</mat-icon>
-              <span>Журнал ({{ accountReadings().length }})</span>
-            </button>
-            <button
-              type="button"
-              (click)="activeTab.set('devices')"
-              [class.bg-white]="activeTab() === 'devices'"
-              [class.text-slate-900]="activeTab() === 'devices'"
-              [class.shadow-2xs]="activeTab() === 'devices'"
-              [class.text-slate-600]="activeTab() !== 'devices'"
-              class="px-2.5 sm:px-3.5 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
-            >
-              <mat-icon class="text-sm sm:text-base text-emerald-600">electrical_services</mat-icon>
-              <span>Пристрої ({{ accountDevices().length }})</span>
-            </button>
-            <button
-              type="button"
-              (click)="activeTab.set('analytics')"
-              [class.bg-white]="activeTab() === 'analytics'"
-              [class.text-slate-900]="activeTab() === 'analytics'"
-              [class.shadow-2xs]="activeTab() === 'analytics'"
-              [class.text-slate-600]="activeTab() !== 'analytics'"
-              class="px-2.5 sm:px-3.5 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
-            >
-              <mat-icon class="text-sm sm:text-base text-indigo-600">query_stats</mat-icon>
-              <span>Графіки</span>
-            </button>
+        <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3 rounded-2xl border border-slate-200/90 dark:border-slate-800 shadow-2xs">
+          <!-- Left: Mode Dropdown & Context Period Picker -->
+          <div class="flex flex-wrap items-center gap-2.5">
+            <div class="relative flex items-center min-w-[200px] sm:min-w-[230px]">
+              <mat-icon
+                class="text-base pointer-events-none absolute left-3"
+                [class.text-amber-500]="activeTab() === 'table'"
+                [class.text-emerald-600]="activeTab() === 'devices'"
+                [class.text-indigo-600]="activeTab() === 'analytics'"
+              >
+                {{ activeTab() === 'table' ? 'table_chart' : activeTab() === 'devices' ? 'electrical_services' : 'query_stats' }}
+              </mat-icon>
+              <select
+                aria-label="Режим перегляду електроенергії"
+                [value]="activeTab()"
+                (change)="activeTab.set($any($event.target).value)"
+                class="h-9 w-full appearance-none pl-9 pr-8 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200/70 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-xs sm:text-sm font-bold text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 cursor-pointer transition-colors"
+              >
+                <option value="table" [selected]="activeTab() === 'table'">
+                  Журнал ({{ accountReadings().length }})
+                </option>
+                <option value="devices" [selected]="activeTab() === 'devices'">
+                  Пристрої ({{ accountDevices().length }})
+                </option>
+                <option value="analytics" [selected]="activeTab() === 'analytics'">
+                  Графіки
+                </option>
+              </select>
+              <mat-icon class="text-base text-slate-500 dark:text-slate-400 pointer-events-none absolute right-2.5">
+                expand_more
+              </mat-icon>
+            </div>
+
+            @if (activeTab() === 'devices') {
+              <div class="h-9 flex items-center gap-2 bg-slate-100 dark:bg-slate-800 px-3 rounded-xl border border-slate-200 dark:border-slate-700">
+                <mat-icon class="text-sm text-slate-500 dark:text-slate-400 leading-none">calendar_month</mat-icon>
+                <span class="text-3xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Місяць:</span>
+                <input
+                  type="month"
+                  [value]="deviceSelectedMonth()"
+                  (change)="onDeviceMonthChange($any($event.target).value)"
+                  class="bg-transparent text-xs font-bold text-slate-900 dark:text-white focus:outline-none cursor-pointer"
+                />
+              </div>
+            }
           </div>
 
+          <!-- Right: Contextual Actions / Filters -->
           @if (activeTab() === 'table') {
             <div class="flex items-center justify-between sm:justify-end gap-2 flex-wrap">
-              <!-- Quick AI Screenshot & Devices shortcut -->
               @if (canEdit()) {
                 <button
                   type="button"
                   (click)="openScreenshotModal()"
-                  class="px-2.5 py-1 rounded-lg text-2xs font-bold bg-emerald-50 border border-emerald-300 text-emerald-800 hover:bg-emerald-100 flex items-center gap-1 cursor-pointer transition-colors"
+                  class="h-9 px-3 rounded-xl text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 flex items-center gap-1.5 cursor-pointer transition-colors shrink-0"
                   title="Завантажити скріншот споживання пристрою з коментарем для AI-аналізу"
                 >
-                  <mat-icon class="text-xs leading-none text-emerald-600">add_photo_alternate</mat-icon>
-                  <span>Скріншот пристрою (ШІ)</span>
+                  <mat-icon class="text-sm leading-none text-emerald-600 dark:text-emerald-400">add_photo_alternate</mat-icon>
+                  <span>Скріншот (ШІ)</span>
                 </button>
               }
               <!-- Filter Pills -->
-              <div class="flex items-center gap-1.5 overflow-x-auto text-2xs">
-                <span class="text-slate-400 text-3xs uppercase font-semibold">Показати:</span>
+              <div class="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-200/80 dark:border-slate-700 overflow-x-auto text-2xs">
                 <button
                   type="button"
                   (click)="filterPurpose.set('all')"
                   [class.bg-slate-900]="filterPurpose() === 'all'"
                   [class.text-white]="filterPurpose() === 'all'"
-                  [class.bg-slate-100]="filterPurpose() !== 'all'"
+                  [class.dark:bg-slate-700]="filterPurpose() === 'all'"
                   [class.text-slate-600]="filterPurpose() !== 'all'"
-                  class="px-2.5 py-1 rounded-lg font-semibold cursor-pointer transition-colors"
+                  [class.dark:text-slate-300]="filterPurpose() !== 'all'"
+                  class="px-2.5 py-1 rounded-lg font-semibold cursor-pointer transition-colors shrink-0"
                 >
                   Всі ({{ accountReadings().length }})
                 </button>
@@ -1645,9 +1752,9 @@ import {
                   (click)="filterPurpose.set('billing')"
                   [class.bg-amber-600]="filterPurpose() === 'billing'"
                   [class.text-white]="filterPurpose() === 'billing'"
-                  [class.bg-amber-50]="filterPurpose() !== 'billing'"
                   [class.text-amber-800]="filterPurpose() !== 'billing'"
-                  class="px-2.5 py-1 rounded-lg font-semibold cursor-pointer transition-colors"
+                  [class.dark:text-amber-300]="filterPurpose() !== 'billing'"
+                  class="px-2.5 py-1 rounded-lg font-semibold cursor-pointer transition-colors shrink-0"
                 >
                   ⚡ Офіційні ({{ billingReadingsCount() }})
                 </button>
@@ -1656,52 +1763,45 @@ import {
                   (click)="filterPurpose.set('control')"
                   [class.bg-indigo-600]="filterPurpose() === 'control'"
                   [class.text-white]="filterPurpose() === 'control'"
-                  [class.bg-indigo-50]="filterPurpose() !== 'control'"
                   [class.text-indigo-800]="filterPurpose() !== 'control'"
-                  class="px-2.5 py-1 rounded-lg font-semibold cursor-pointer transition-colors"
+                  [class.dark:text-indigo-300]="filterPurpose() !== 'control'"
+                  class="px-2.5 py-1 rounded-lg font-semibold cursor-pointer transition-colors shrink-0"
                 >
                   👁️ Контрольні ({{ controlReadingsCount() }})
                 </button>
               </div>
             </div>
-          } @else if (activeTab() === 'devices') {
-            <div class="flex items-center gap-2 flex-wrap">
-              <div class="flex items-center gap-1.5 bg-slate-100 px-2.5 py-1 rounded-xl border border-slate-200">
-                <mat-icon class="text-xs text-slate-500 leading-none">calendar_month</mat-icon>
-                <span class="text-3xs font-bold uppercase text-slate-500">Місяць:</span>
-                <input
-                  type="month"
-                  [value]="deviceSelectedMonth()"
-                  (change)="onDeviceMonthChange($any($event.target).value)"
-                  class="bg-transparent text-xs font-bold text-slate-900 focus:outline-none cursor-pointer"
-                />
-              </div>
-              @if (canEdit()) {
-                <button
-                  type="button"
-                  (click)="openScreenshotModal()"
-                  class="px-3 py-1.5 rounded-xl text-xs font-bold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer"
-                >
-                  <mat-icon class="text-sm leading-none">add_photo_alternate</mat-icon>
-                  <span>Завантажити скріншот + коментар</span>
-                </button>
-                <button
-                  type="button"
-                  (click)="openAddDeviceLogModal()"
-                  class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-amber-50 border border-amber-300 text-amber-900 hover:bg-amber-100 transition-colors flex items-center gap-1.5 cursor-pointer"
-                >
-                  <mat-icon class="text-sm text-amber-600 leading-none">playlist_add</mat-icon>
-                  <span>+ Споживання на дату</span>
-                </button>
-                <button
-                  type="button"
-                  (click)="openDeviceModal()"
-                  class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white transition-colors flex items-center gap-1.5 cursor-pointer"
-                >
-                  <mat-icon class="text-sm leading-none">add</mat-icon>
-                  <span>Додати пристрій</span>
-                </button>
-              }
+          } @else if (activeTab() === 'devices' && canEdit()) {
+            <div class="flex items-center gap-2 flex-wrap sm:justify-end">
+              <button
+                type="button"
+                (click)="openAddDeviceLogModal()"
+                class="h-9 px-3 rounded-xl text-xs font-semibold bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+                title="Внести споживання приладу на обрану дату або період"
+              >
+                <mat-icon class="text-sm text-amber-600 dark:text-amber-400 leading-none">playlist_add</mat-icon>
+                <span>+ Споживання на дату</span>
+              </button>
+
+              <button
+                type="button"
+                (click)="openScreenshotModal()"
+                class="h-9 px-3 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors inline-flex items-center gap-1.5 shadow-2xs cursor-pointer shrink-0"
+                title="Завантажити скріншот з розумної розетки та додати коментар для ШІ-аналізу"
+              >
+                <mat-icon class="text-sm leading-none">add_photo_alternate</mat-icon>
+                <span>Скріншот + ШІ</span>
+              </button>
+
+              <button
+                type="button"
+                (click)="openDeviceModal()"
+                class="h-9 px-3 rounded-xl text-xs font-semibold bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white border border-slate-800 dark:border-slate-700 transition-colors inline-flex items-center gap-1.5 shadow-2xs cursor-pointer shrink-0"
+                title="Додати новий електроприлад до будинку"
+              >
+                <mat-icon class="text-sm leading-none">add</mat-icon>
+                <span>Додати пристрій</span>
+              </button>
             </div>
           }
         </div>
@@ -1713,458 +1813,1659 @@ import {
           <!-- ======================================================== -->
           <div class="space-y-5">
             <!-- Top Overview Banner & KPIs -->
-            <div class="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-5">
-              <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+            <div class="p-4 sm:p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-2xs space-y-4">
+              <div
+                class="flex flex-col lg:flex-row lg:items-center justify-between gap-3"
+                [class.border-b]="isOverviewKpiExpanded()"
+                [class.border-slate-100]="isOverviewKpiExpanded()"
+                [class.dark:border-slate-800]="isOverviewKpiExpanded()"
+                [class.pb-3]="isOverviewKpiExpanded()"
+              >
                 <div class="flex items-start gap-3">
-                  <div class="w-11 h-11 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-700 flex items-center justify-center shrink-0">
-                    <mat-icon class="text-2xl">electrical_services</mat-icon>
-                  </div>
+                  <button
+                    type="button"
+                    (click)="isOverviewKpiExpanded.update(v => !v)"
+                    class="w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-700 dark:text-emerald-400 flex items-center justify-center shrink-0 cursor-pointer hover:bg-emerald-500/25 transition-colors"
+                    [title]="isOverviewKpiExpanded() ? 'Згорнути блок моніторингу' : 'Розгорнути блок моніторингу'"
+                  >
+                    <mat-icon class="text-xl transition-transform duration-200" [class.rotate-180]="!isOverviewKpiExpanded()">
+                      expand_more
+                    </mat-icon>
+                  </button>
                   <div>
                     <div class="flex items-center gap-2 flex-wrap">
-                      <h3 class="text-base sm:text-lg font-bold text-slate-900">
+                      <h3
+                        class="text-base sm:text-lg font-bold text-slate-900 dark:text-white cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
+                        (click)="isOverviewKpiExpanded.update(v => !v)"
+                      >
                         Моніторинг електроприладів та AI-аналіз за {{ dSummary.monthLabel }}
                       </h3>
-                      <span class="px-2 py-0.5 rounded-md text-3xs font-bold uppercase tracking-wider bg-emerald-100 text-emerald-800 border border-emerald-200">
+                      <span class="px-2 py-0.5 rounded-md text-3xs font-bold uppercase tracking-wider bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
                         Станом на {{ formatDate(dSummary.referenceDate) }} (день {{ dSummary.daysElapsed }} з {{ dSummary.daysInMonth }})
                       </span>
+                      <span class="px-2 py-0.5 rounded-md text-3xs font-bold bg-indigo-100 dark:bg-indigo-950/80 text-indigo-800 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 inline-flex items-center gap-1">
+                        <mat-icon class="text-3xs leading-none">home_pin</mat-icon>
+                        <span>Будинок: {{ acc.name }} • Прилади будинку</span>
+                      </span>
                     </div>
-                    <p class="text-xs text-slate-500 mt-0.5">
-                      Додавайте спожиту електроенергію по окремих приладах на обрану дату або завантажуйте скріншоти з розумних розеток (Tuya, Tapo, EcoFlow) з вашим коментарем
-                    </p>
+                    @if (isOverviewKpiExpanded()) {
+                      <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                        Додавайте спожиту електроенергію по окремих приладах або завантажуйте скріншоти розумних розеток з коментарем для ШІ-аналізу
+                      </p>
+                    }
                   </div>
                 </div>
 
-                <!-- Reference Total House kWh Override / Indicator -->
-                <div class="flex items-center gap-2 bg-slate-50 px-3.5 py-2 rounded-xl border border-slate-200 shrink-0">
-                  <div>
-                    <div class="text-3xs font-bold uppercase tracking-wider text-slate-500">
-                      Загальне споживання дому ({{ dSummary.houseSourceLabel }})
-                    </div>
-                    <div class="flex items-center gap-2 mt-0.5">
-                      <input
-                        type="number"
-                        step="0.1"
-                        min="0"
-                        [value]="customMonthHouseKwh() !== null ? customMonthHouseKwh() : dSummary.houseReferenceKwh"
-                        (change)="onCustomMonthHouseKwhChange($any($event.target).value)"
-                        title="Ви можете уточнити загальне споживання будинку на цю дату для точного порівняння з пристроями"
-                        class="w-24 px-2 py-1 bg-white border border-slate-300 rounded-lg text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-emerald-500"
-                      />
-                      <span class="text-xs font-bold text-slate-700">кВт·год</span>
-                      @if (customMonthHouseKwh() !== null) {
-                        <button
-                          type="button"
-                          (click)="customMonthHouseKwh.set(null)"
-                          class="text-3xs text-slate-500 hover:text-rose-600 underline cursor-pointer"
-                          title="Скинути до автоматичного розрахунку за лічильником"
-                        >
-                          Авто
-                        </button>
-                      }
+                <!-- Reference Total House kWh Override -->
+                <div class="flex items-center gap-2.5 shrink-0 flex-wrap">
+                  <div class="flex items-center gap-2 bg-slate-50 dark:bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700">
+                    <div>
+                      <div class="text-3xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        Загальне споживання дому ({{ dSummary.houseSourceLabel }})
+                      </div>
+                      <div class="flex items-center gap-2 mt-0.5">
+                        <input
+                          type="number"
+                          step="0.1"
+                          min="0"
+                          [value]="customMonthHouseKwh() !== null ? customMonthHouseKwh() : dSummary.houseReferenceKwh"
+                          (change)="onCustomMonthHouseKwhChange($any($event.target).value)"
+                          title="Уточнити загальне споживання будинку на цю дату"
+                          class="w-24 px-2 py-0.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg text-xs font-mono font-bold text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
+                        />
+                        <span class="text-xs font-bold text-slate-700 dark:text-slate-300">кВт·год</span>
+                        @if (customMonthHouseKwh() !== null) {
+                          <button
+                            type="button"
+                            (click)="customMonthHouseKwh.set(null)"
+                            class="text-3xs text-slate-500 hover:text-rose-600 underline cursor-pointer"
+                            title="Скинути до автоматичного розрахунку"
+                          >
+                            Авто
+                          </button>
+                        }
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
 
-              <!-- 4 KPI Cards: House Total vs Devices Total vs Untracked vs Month Forecast -->
-              <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-                <!-- Card 1: Total House Consumption -->
-                <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200/90 flex flex-col justify-between">
-                  <div class="flex items-center justify-between gap-2">
-                    <span class="text-3xs font-bold uppercase tracking-wider text-slate-500">
-                      Загалом по будинку
-                    </span>
-                    <mat-icon class="text-amber-500 text-lg leading-none">home_iot_device</mat-icon>
-                  </div>
-                  <div class="mt-2">
-                    <div class="text-xl font-black font-mono text-slate-900">
-                      {{ dSummary.houseReferenceKwh.toFixed(1) }}
-                      <span class="text-xs font-semibold text-slate-500">кВт·год</span>
-                    </div>
-                    <div class="text-xs font-bold text-amber-700 mt-0.5">
-                      ≈ {{ dSummary.houseReferenceCostUah.toFixed(2) }} грн
-                    </div>
-                  </div>
-                  <div class="mt-2 pt-2 border-t border-slate-200/70 flex items-center justify-between text-3xs text-slate-500">
-                    <span>Темп: ~{{ dSummary.houseDailyPace.toFixed(2) }} кВт·г/добу</span>
-                    <span class="font-semibold text-slate-700">{{ dSummary.houseSourceLabel }}</span>
-                  </div>
-                </div>
-
-                <!-- Card 2: Consumed by Tracked Devices -->
-                <div class="p-4 rounded-2xl bg-emerald-50/60 border border-emerald-200 flex flex-col justify-between">
-                  <div class="flex items-center justify-between gap-2">
-                    <span class="text-3xs font-bold uppercase tracking-wider text-emerald-800">
-                      Окремі пристрої ({{ accountDevices().length }})
-                    </span>
-                    <mat-icon class="text-emerald-600 text-lg leading-none">power</mat-icon>
-                  </div>
-                  <div class="mt-2">
-                    <div class="flex items-baseline gap-2">
-                      <span class="text-xl font-black font-mono text-emerald-950">
-                        {{ dSummary.totalDevicesKwh.toFixed(2) }}
-                      </span>
-                      <span class="text-xs font-semibold text-emerald-700">кВт·год</span>
-                      <span class="ml-auto px-2 py-0.5 rounded-full text-2xs font-extrabold bg-emerald-200/80 text-emerald-900">
-                        {{ dSummary.devicesSharePercent.toFixed(1) }}%
-                      </span>
-                    </div>
-                    <div class="text-xs font-bold text-emerald-800 mt-0.5">
-                      ≈ {{ dSummary.totalDevicesCostUah.toFixed(2) }} грн
-                    </div>
-                  </div>
-                  <div class="mt-2 pt-2 border-t border-emerald-200/70 flex items-center justify-between text-3xs text-emerald-800">
-                    <span>Темп приладів: {{ dSummary.devicesDailyPace.toFixed(2) }} кВт·г/добу</span>
-                    <span>Записів: {{ dSummary.totalLogsInMonth }}</span>
-                  </div>
-                </div>
-
-                <!-- Card 3: Untracked / Other Household Consumption -->
-                <div class="p-4 rounded-2xl bg-indigo-50/50 border border-indigo-200/80 flex flex-col justify-between">
-                  <div class="flex items-center justify-between gap-2">
-                    <span class="text-3xs font-bold uppercase tracking-wider text-indigo-800">
-                      Інші прилади (поза моніторингом)
-                    </span>
-                    <mat-icon class="text-indigo-600 text-lg leading-none">lightbulb</mat-icon>
-                  </div>
-                  <div class="mt-2">
-                    <div class="flex items-baseline gap-2">
-                      <span class="text-xl font-black font-mono text-indigo-950">
-                        {{ dSummary.untrackedKwh.toFixed(2) }}
-                      </span>
-                      <span class="text-xs font-semibold text-indigo-700">кВт·год</span>
-                      <span class="ml-auto px-2 py-0.5 rounded-full text-2xs font-extrabold bg-indigo-200/70 text-indigo-900">
-                        {{ dSummary.untrackedSharePercent.toFixed(1) }}%
-                      </span>
-                    </div>
-                    <div class="text-xs font-bold text-indigo-800 mt-0.5">
-                      ≈ {{ dSummary.untrackedCostUah.toFixed(2) }} грн
-                    </div>
-                  </div>
-                  <div class="mt-2 pt-2 border-t border-indigo-200/60 text-3xs text-indigo-700">
-                    Освітлення, роутер, зарядки, дрібна побутова техніка
-                  </div>
-                </div>
-
-                <!-- Card 4: End-of-Month Forecast -->
-                <div class="p-4 rounded-2xl bg-gradient-to-br from-amber-50 via-orange-50/50 to-white border border-amber-300/80 flex flex-col justify-between">
-                  <div class="flex items-center justify-between gap-2">
-                    <span class="text-3xs font-bold uppercase tracking-wider text-amber-900">
-                      Прогноз на кінець місяця ({{ dSummary.daysInMonth }} дн.)
-                    </span>
-                    <mat-icon class="text-amber-600 text-lg leading-none">trending_up</mat-icon>
-                  </div>
-                  <div class="mt-2">
-                    <div class="text-xl font-black font-mono text-slate-900">
-                      {{ dSummary.projectedHouseMonthKwh.toFixed(0) }}
-                      <span class="text-xs font-semibold text-slate-600">кВт·год</span>
-                    </div>
-                    <div class="text-xs font-bold text-amber-800 mt-0.5">
-                      Очікуваний рахунок: ~{{ dSummary.projectedHouseMonthCostUah.toFixed(0) }} грн
-                    </div>
-                  </div>
-                  <div class="mt-2 pt-2 border-t border-amber-200/80 flex items-center justify-between text-3xs text-amber-900">
-                    <span>Пристрої: ~{{ dSummary.projectedDevicesMonthKwh.toFixed(0) }} кВт·г</span>
-                    <span class="font-bold">({{ dSummary.projectedDevicesMonthCostUah.toFixed(0) }} грн)</span>
-                  </div>
-                </div>
-              </div>
-
-
-            </div>
-
-            <!-- ======================================================== -->
-            <!-- INDIVIDUAL DEVICE CARDS & DATE CONSUMPTION LOGS          -->
-            <!-- ======================================================== -->
-            @if (dSummary.deviceRows.length > 0) {
-              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                @for (item of dSummary.deviceRows; track item.device.id) {
-                  <div class="p-5 rounded-2xl bg-white border border-slate-200/90 shadow-2xs flex flex-col justify-between gap-4 hover:border-slate-300 transition-all">
-                    <!-- Device Header -->
-                    <div class="flex items-start justify-between gap-3">
+              @if (isOverviewKpiExpanded()) {
+                <!-- ======================================================== -->
+                <!-- WEATHER NOW, 7-DAY FORECAST & TEMPERATURE CORRELATION    -->
+                <!-- ======================================================== -->
+                @if (weatherData(); as weather) {
+                  <div class="p-3.5 sm:p-4 rounded-2xl bg-sky-50/70 dark:bg-slate-800/90 border border-sky-200 dark:border-slate-700 space-y-3">
+                    <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-2 border-b border-sky-200/70 dark:border-slate-700">
+                      <!-- Current Weather Now -->
                       <div class="flex items-center gap-3">
-                        <div
-                          class="w-11 h-11 rounded-xl flex items-center justify-center text-white shadow-2xs shrink-0"
-                          [style.background-color]="item.device.color || '#10b981'"
-                        >
-                          <mat-icon class="text-xl">{{ item.device.icon || 'bolt' }}</mat-icon>
-                        </div>
                         <div>
                           <div class="flex items-center gap-2 flex-wrap">
-                            <h4 class="text-sm sm:text-base font-bold text-slate-900">{{ item.device.name }}</h4>
-                            @if (item.device.powerWatts) {
-                              <span class="px-2 py-0.5 rounded-md text-3xs font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
-                                {{ item.device.powerWatts }} Вт
-                              </span>
-                            }
-                            @if (item.device.batteryCapacityKwh) {
-                              <span class="px-2 py-0.5 rounded-md text-3xs font-mono font-bold bg-blue-50 text-blue-700 border border-blue-200 flex items-center gap-0.5">
-                                <mat-icon class="text-3xs leading-none">battery_charging_full</mat-icon>
-                                <span>{{ item.device.batteryCapacityKwh }} кВт·год</span>
-                              </span>
-                            }
-                            @if (item.device.category === 'heating_ac') {
-                              <span class="px-2 py-0.5 rounded-md text-3xs font-bold bg-orange-50 text-orange-700 border border-orange-200 flex items-center gap-0.5">
-                                <mat-icon class="text-3xs leading-none">mode_heat</mat-icon>
-                                <span>Обігрів</span>
-                              </span>
-                            }
-                            @if (item.device.isNightFriendly) {
-                              <span
-                                class="px-2 py-0.5 rounded-md text-3xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-0.5"
-                                title="Прилад підходить для роботи у нічний тариф (23:00–07:00)"
-                              >
-                                <mat-icon class="text-3xs leading-none">dark_mode</mat-icon>
-                                <span>Нічний тариф</span>
-                              </span>
-                            }
+                            <span
+                              class="text-xs font-bold uppercase tracking-wider text-sky-900 dark:text-sky-300 cursor-pointer hover:underline"
+                              (click)="isWeatherSectionExpanded.update(v => !v)"
+                            >
+                              Погода зараз ({{ weather.resolvedLocation || weather.city }}):
+                            </span>
+                            <span class="text-base sm:text-lg font-black font-mono text-slate-900 dark:text-white">
+                              {{ weather.current.tempC > 0 ? '+' : '' }}{{ weather.current.tempC }}°C
+                            </span>
+                            <span class="px-2 py-0.5 rounded-full text-2xs font-bold bg-sky-100 dark:bg-sky-950 text-sky-900 dark:text-sky-200 border border-sky-300 dark:border-sky-700">
+                              {{ weather.current.condition }}
+                            </span>
                           </div>
-                          <div class="text-3xs text-slate-500 mt-0.5 flex items-center gap-2 flex-wrap">
-                            @if (item.latestLogDate) {
-                              <span>Останній запис: <b>{{ formatDate(item.latestLogDate) }}</b></span>
-                            } @else {
-                              <span>Немає записів за {{ dSummary.monthLabel }}</span>
-                            }
-                            @if (item.device.notes) {
-                              <span>• {{ item.device.notes }}</span>
-                            }
+                          <div class="text-2xs text-slate-600 dark:text-slate-300 mt-0.5 flex items-center gap-2 flex-wrap">
+                            <span>Відчувається: <strong class="font-mono text-slate-900 dark:text-white">{{ weather.current.feelsLikeC > 0 ? '+' : '' }}{{ weather.current.feelsLikeC }}°C</strong></span>
+                            <span>•</span>
+                            <span>Вітер: <strong>{{ weather.current.windSpeedKmh }} км/г</strong></span>
+                            <span>•</span>
+                            <span>Вологість: <strong>{{ weather.current.humidityPct }}%</strong></span>
                           </div>
                         </div>
                       </div>
 
-                      @if (canEdit()) {
-                        <div class="flex items-center gap-1 shrink-0">
-                          <button
-                            type="button"
-                            (click)="openEditDeviceModal(item.device)"
-                            class="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
-                            title="Редагувати пристрій"
-                          >
-                            <mat-icon class="text-base leading-none">edit</mat-icon>
-                          </button>
-                          <button
-                            type="button"
-                            (click)="deleteDevice(item.device.id)"
-                            class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                            title="Видалити пристрій"
-                          >
-                            <mat-icon class="text-base leading-none">delete</mat-icon>
-                          </button>
+                      <!-- Temperature Impact Summary Pill & Refresh -->
+                      <div class="flex items-center gap-2 flex-wrap">
+                        <div class="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-sky-200 dark:border-slate-700 text-2xs space-y-0.5">
+                          <div class="text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1">
+                            <mat-icon class="text-xs text-amber-500 leading-none">thermostat</mat-icon>
+                            <span>Температурний тренд ({{ dSummary.monthLabel }}):</span>
+                          </div>
+                          <div class="font-mono font-bold text-slate-900 dark:text-slate-100">
+                            Минулі: {{ dSummary.avgElapsedMonthTempC !== null ? ((dSummary.avgElapsedMonthTempC > 0 ? '+' : '') + dSummary.avgElapsedMonthTempC + '°C') : '—' }}
+                            → Залишок: {{ dSummary.avgForecastRemainingTempC !== null ? ((dSummary.avgForecastRemainingTempC > 0 ? '+' : '') + dSummary.avgForecastRemainingTempC + '°C') : '—' }}
+                            @if (dSummary.monthTempDropC > 0.5) {
+                              <span class="text-sky-700 dark:text-sky-300 ml-1">(❄️ похолодання -{{ dSummary.monthTempDropC }}°C)</span>
+                            } @else if (dSummary.monthTempDropC < -0.5) {
+                              <span class="text-amber-700 dark:text-amber-300 ml-1">(☀️ потепління +{{ (-dSummary.monthTempDropC).toFixed(1) }}°C)</span>
+                            }
+                          </div>
                         </div>
-                      }
-                    </div>
 
-                    <!-- Metrics & Progress Bar -->
-                    <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 space-y-2.5">
-                      <div class="grid grid-cols-3 gap-2">
-                        <div>
-                          <div class="text-3xs font-semibold uppercase text-slate-400">Спожито за місяць</div>
-                          <div class="text-base sm:text-lg font-black font-mono text-slate-900">
-                            {{ item.monthKwh.toFixed(2) }}
-                            <span class="text-3xs font-normal text-slate-500">кВт·г</span>
-                          </div>
-                          <div class="text-2xs font-bold text-emerald-700">
-                            {{ item.monthCostUah.toFixed(2) }} грн
-                          </div>
-                        </div>
-                        <div>
-                          <div class="text-3xs font-semibold uppercase text-slate-400">Середньодобово</div>
-                          <div class="text-sm sm:text-base font-bold font-mono text-slate-800">
-                            {{ item.dailyPaceKwh.toFixed(2) }}
-                            <span class="text-3xs font-normal text-slate-500">кВт·г/д</span>
-                          </div>
-                          @if (item.estimatedHoursPerDay !== null) {
-                            <div class="text-3xs text-slate-500">
-                              ~{{ item.estimatedHoursPerDay.toFixed(1) }} год/добу роботи
-                            </div>
-                          }
-                        </div>
-                        <div>
-                          <div class="text-3xs font-semibold uppercase text-slate-400">Прогноз на місяць</div>
-                          <div class="text-sm sm:text-base font-bold font-mono text-amber-800">
-                            {{ item.projectedMonthKwh.toFixed(1) }}
-                            <span class="text-3xs font-normal text-amber-700">кВт·г</span>
-                          </div>
-                          <div class="text-2xs font-semibold text-amber-700">
-                            ~{{ item.projectedMonthCostUah.toFixed(0) }} грн
-                          </div>
-                        </div>
-                      </div>
-
-                      <!-- Share Progress Bar -->
-                      <div class="space-y-1">
-                        <div class="flex items-center justify-between text-3xs font-semibold">
-                          <span class="text-slate-600">Частка від загального споживання будинку</span>
-                          <span class="font-mono font-bold text-slate-900">{{ item.shareOfHousePercent.toFixed(1) }}%</span>
-                        </div>
-                        <div class="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
-                          <div
-                            class="h-full rounded-full transition-all duration-500"
-                            [style.width.%]="Math.min(100, item.shareOfHousePercent)"
-                            [style.background-color]="item.device.color || '#10b981'"
-                          ></div>
-                        </div>
+                        <button
+                          type="button"
+                          (click)="loadWeatherForCurrentAccount()"
+                          [disabled]="isWeatherLoading()"
+                          class="p-2 rounded-xl bg-white dark:bg-slate-900 hover:bg-sky-100 dark:hover:bg-slate-700 border border-sky-200 dark:border-slate-700 text-sky-700 dark:text-sky-300 cursor-pointer transition-colors"
+                          title="Оновити метеодані"
+                        >
+                          <mat-icon class="text-base leading-none" [class.animate-spin]="isWeatherLoading()">refresh</mat-icon>
+                        </button>
                       </div>
                     </div>
 
-                    <!-- Action Buttons & Collapsible History -->
-                    <div class="flex items-center justify-between gap-2 flex-wrap pt-1">
-                      @if (canEdit()) {
-                        <div class="flex items-center gap-1.5 flex-wrap">
-                          <button
-                            type="button"
-                            (click)="openAddDeviceLogModal(item.device.id)"
-                            class="px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
-                          >
-                            <mat-icon class="text-sm leading-none">add</mat-icon>
-                            <span>Внести кВт·г (доба / час / дата)</span>
-                          </button>
-                          <button
-                            type="button"
-                            (click)="openScreenshotModal(item.device.id)"
-                            class="px-2.5 py-1.5 rounded-xl text-xs font-semibold bg-emerald-50 border border-emerald-300 text-emerald-900 hover:bg-emerald-100 transition-colors flex items-center gap-1 cursor-pointer"
-                            title="Завантажити скріншот та коментар для цього пристрою"
-                          >
-                            <mat-icon class="text-sm text-emerald-600 leading-none">add_photo_alternate</mat-icon>
-                            <span>Скріншот + коментар</span>
-                          </button>
-                        </div>
-                      }
-
-                      <button
-                        type="button"
-                        (click)="toggleDeviceLogsExpand(item.device.id)"
-                        class="px-2.5 py-1.5 rounded-xl text-2xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center gap-1 cursor-pointer transition-colors ml-auto"
-                      >
-                        <mat-icon class="text-sm leading-none">
-                          {{ isDeviceLogsExpanded(item.device.id) ? 'expand_less' : 'history' }}
-                        </mat-icon>
-                        <span>Записи за місяць ({{ item.monthLogs.length }})</span>
-                      </button>
-                    </div>
-
-                    <!-- Expanded Logs for this Device in Selected Month -->
-                    @if (isDeviceLogsExpanded(item.device.id)) {
-                      <div class="border-t border-slate-200 pt-3 space-y-2">
-                        @if (item.monthLogs.length > 0) {
-                          <div class="max-h-60 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-xl bg-slate-50/60">
-                            @for (log of item.monthLogs; track log.id) {
-                              <div class="p-2.5 flex items-start justify-between gap-2 text-xs">
-                                <div class="space-y-0.5">
-                                  <div class="flex items-center gap-1.5 flex-wrap">
-                                    <span class="font-bold text-slate-900">{{ getDeviceLogDateLabel(log) }}</span>
-                                    <span
-                                      class="px-1.5 py-0.2 rounded text-3xs font-bold"
-                                      [class.bg-emerald-100]="log.entryMode === 'cumulative_month' || !log.entryMode"
-                                      [class.text-emerald-800]="log.entryMode === 'cumulative_month' || !log.entryMode"
-                                      [class.bg-sky-100]="log.entryMode === 'single_day'"
-                                      [class.text-sky-800]="log.entryMode === 'single_day'"
-                                      [class.bg-indigo-100]="log.entryMode === 'period_range'"
-                                      [class.text-indigo-800]="log.entryMode === 'period_range'"
-                                      [class.bg-amber-100]="log.entryMode === 'delta'"
-                                      [class.text-amber-800]="log.entryMode === 'delta'"
-                                    >
-                                      {{ getDeviceLogModeBadge(log) }}
-                                    </span>
-                                    @if (log.tariffSelection) {
-                                      <span
-                                        class="px-1.5 py-0.2 rounded text-3xs font-bold"
-                                        [class.bg-indigo-100]="log.tariffSelection === 'night_only'"
-                                        [class.text-indigo-800]="log.tariffSelection === 'night_only'"
-                                        [class.bg-amber-100]="log.tariffSelection === 'day_only'"
-                                        [class.text-amber-800]="log.tariffSelection === 'day_only'"
-                                        [class.bg-slate-100]="log.tariffSelection === 'auto_time'"
-                                        [class.text-slate-700]="log.tariffSelection === 'auto_time'"
-                                      >
-                                        {{ getDeviceLogTariffBadge(log) }}
-                                      </span>
-                                    }
-                                    @if (log.startTime || log.endTime || log.durationHours) {
-                                      <span class="px-1.5 py-0.2 rounded bg-slate-200/80 text-slate-800 text-3xs font-mono font-semibold flex items-center gap-0.5">
-                                        <mat-icon class="text-3xs leading-none">schedule</mat-icon>
-                                        <span>{{ getDeviceLogTimeIntervalBadge(log) }}</span>
-                                      </span>
-                                    }
-                                    @if (log.fromScreenshot) {
-                                      <span class="px-1.5 py-0.2 rounded bg-teal-100 text-teal-800 text-3xs font-bold flex items-center gap-0.5">
-                                        <mat-icon class="text-3xs leading-none">auto_awesome</mat-icon>
-                                        <span>AI Скріншот</span>
-                                      </span>
-                                    }
-                                  </div>
-                                  @if (log.comment) {
-                                    <div class="text-2xs text-slate-700">
-                                      <span class="font-semibold text-slate-500">Коментар:</span> {{ log.comment }}
-                                    </div>
-                                  }
-                                  @if (log.aiExplanation) {
-                                    <div class="text-3xs text-teal-800 bg-teal-50/80 px-2 py-1 rounded border border-teal-200/70 mt-1">
-                                      <span class="font-bold">AI:</span> {{ log.aiExplanation }}
-                                    </div>
-                                  }
+                    @if (isWeatherSectionExpanded()) {
+                      <!-- 7-Day Weather Forecast Strip -->
+                      @if (weather.forecastDays.length > 0) {
+                        <div>
+                          <div class="flex items-center justify-between text-2xs font-bold text-slate-700 dark:text-slate-300 mb-2">
+                            <span>Прогноз погоди на найближчі дні:</span>
+                            <span class="text-3xs text-slate-500 dark:text-slate-400">Нижча температура → більше споживання тепла</span>
+                          </div>
+                          <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+                            @for (day of weather.forecastDays; track day.date; let idx = $index) {
+                              <div class="p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-700 flex flex-col justify-between gap-1 text-center">
+                                <div class="text-3xs font-bold text-slate-600 dark:text-slate-300">
+                                  {{ idx === 0 ? 'Сьогодні' : formatDate(day.date) }}
                                 </div>
-                                <div class="flex items-center gap-2 shrink-0">
-                                  <span class="font-mono font-bold text-slate-900 text-sm">
-                                    {{ log.entryMode && log.entryMode !== 'cumulative_month' ? '+' : '' }}{{ log.consumedKwh }} кВт·г
+                                <div class="flex items-center justify-center gap-1 my-0.5">
+                                  <mat-icon class="text-base text-sky-600 dark:text-sky-400 leading-none">{{ day.icon }}</mat-icon>
+                                  <span class="text-xs font-black font-mono text-slate-900 dark:text-white">
+                                    {{ day.tempAvgC > 0 ? '+' : '' }}{{ day.tempAvgC }}°C
                                   </span>
-                                  @if (canEdit()) {
-                                    <button
-                                      type="button"
-                                      (click)="deleteDeviceLog(item.device.id, log.id)"
-                                      class="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"
-                                      title="Видалити запис"
-                                    >
-                                      <mat-icon class="text-sm leading-none">delete_outline</mat-icon>
-                                    </button>
-                                  }
+                                </div>
+                                <div class="text-3xs font-mono text-slate-500 dark:text-slate-400">
+                                  {{ day.tempMinC > 0 ? '+' : '' }}{{ day.tempMinC }}° .. {{ day.tempMaxC > 0 ? '+' : '' }}{{ day.tempMaxC }}°C
+                                </div>
+                                <div class="text-3xs font-semibold text-sky-800 dark:text-sky-300 truncate" [title]="day.condition">
+                                  {{ day.condition }}
                                 </div>
                               </div>
                             }
                           </div>
-                        } @else {
-                          <div class="text-center py-3 text-2xs text-slate-400">
-                            За {{ dSummary.monthLabel }} ще немає записів споживання для цього пристрою.
+                        </div>
+                      }
+
+                      <!-- Weather-Correlated Consumption Forecast Breakdown -->
+                      <div class="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
+                        <div class="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-2">
+                          <div>
+                            <span class="text-3xs font-bold uppercase text-slate-500 dark:text-slate-400 block">Холодні vs Теплі дні</span>
+                            @if (dSummary.coldDaysAvgKwh !== null && dSummary.warmDaysAvgKwh !== null) {
+                              <div class="text-xs font-bold text-slate-900 dark:text-white mt-0.5">
+                                ❄️ {{ dSummary.coldDaysAvgKwh.toFixed(2) }} кВт·г vs ☀️ {{ dSummary.warmDaysAvgKwh.toFixed(2) }} кВт·г
+                              </div>
+                              <span class="text-3xs text-slate-500 dark:text-slate-400">середнє за запис по погоді</span>
+                            } @else {
+                              <div class="text-xs font-bold text-slate-900 dark:text-white mt-0.5">
+                                Вплив погоди: {{ dSummary.weatherHouseImpactPct > 0 ? '+' : '' }}{{ dSummary.weatherHouseImpactPct }}% до прогнозу
+                              </div>
+                              <span class="text-3xs text-slate-500 dark:text-slate-400">модель теплового навантаження дому</span>
+                            }
+                          </div>
+                          <mat-icon class="text-sky-600 dark:text-sky-400 text-xl shrink-0">ac_unit</mat-icon>
+                        </div>
+
+                        <div class="p-3 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-2">
+                          <div>
+                            <span class="text-3xs font-bold uppercase text-slate-500 dark:text-slate-400 block">Лінійний прогноз (без погоди)</span>
+                            <div class="text-xs sm:text-sm font-black font-mono text-slate-900 dark:text-white mt-0.5">
+                              {{ dSummary.projectedHouseMonthKwh.toFixed(0) }} кВт·год (~{{ dSummary.projectedHouseMonthCostUah.toFixed(0) }} грн)
+                            </div>
+                            <span class="text-3xs text-slate-500 dark:text-slate-400">При незмінній температурі</span>
+                          </div>
+                          <mat-icon class="text-slate-400 text-xl shrink-0">trending_flat</mat-icon>
+                        </div>
+
+                        <div class="p-3 rounded-xl bg-amber-50/80 dark:bg-slate-900 border border-amber-300 dark:border-amber-700 flex items-center justify-between gap-2">
+                          <div>
+                            <span class="text-3xs font-bold uppercase text-amber-900 dark:text-amber-300 block">Точний прогноз за погодою</span>
+                            <div class="text-xs sm:text-sm font-black font-mono text-slate-900 dark:text-white mt-0.5">
+                              {{ dSummary.weatherProjectedHouseMonthKwh.toFixed(0) }} кВт·год (~{{ dSummary.weatherProjectedHouseMonthCostUah.toFixed(0) }} грн)
+                            </div>
+                            <span class="text-3xs font-semibold text-amber-800 dark:text-amber-300">
+                              @let diffKwh = dSummary.weatherProjectedHouseMonthKwh - dSummary.projectedHouseMonthKwh;
+                              @if (Math.abs(diffKwh) >= 1) {
+                                {{ diffKwh > 0 ? '+' : '' }}{{ diffKwh.toFixed(0) }} кВт·г через зміну температури
+                              } @else {
+                                Температура стабільна — без відхилень
+                              }
+                            </span>
+                          </div>
+                          <mat-icon class="text-amber-600 dark:text-amber-400 text-xl shrink-0">wb_twilight</mat-icon>
+                        </div>
+                      </div>
+                    }
+                  </div>
+                }
+
+                <!-- 4 KPI Cards: House Total vs Devices Total vs Untracked vs Month Forecast -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                  <!-- Card 1: Total House Consumption -->
+                  <div class="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200/90 dark:border-slate-700 flex flex-col justify-between">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="text-3xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        Загалом по будинку
+                      </span>
+                      <mat-icon class="text-amber-500 text-lg leading-none">home_iot_device</mat-icon>
+                    </div>
+                    <div class="mt-2">
+                      <div class="text-xl font-black font-mono text-slate-900 dark:text-white">
+                        {{ dSummary.houseReferenceKwh.toFixed(1) }}
+                        <span class="text-xs font-semibold text-slate-500 dark:text-slate-400">кВт·год</span>
+                      </div>
+                      <div class="text-xs font-bold text-amber-700 dark:text-amber-400 mt-0.5">
+                        ≈ {{ dSummary.houseReferenceCostUah.toFixed(2) }} грн
+                      </div>
+                    </div>
+                    <div class="mt-2 pt-2 border-t border-slate-200/70 dark:border-slate-700 flex items-center justify-between text-3xs text-slate-500 dark:text-slate-400">
+                      <span>Темп: ~{{ dSummary.houseDailyPace.toFixed(2) }} кВт·г/добу</span>
+                      <span class="font-semibold text-slate-700 dark:text-slate-300">{{ dSummary.houseSourceLabel }}</span>
+                    </div>
+                  </div>
+
+                  <!-- Card 2: Consumed by Tracked Devices -->
+                  <div class="p-4 rounded-2xl bg-emerald-50/60 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 flex flex-col justify-between">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="text-3xs font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300">
+                        Окремі пристрої ({{ accountDevices().length }})
+                      </span>
+                      <mat-icon class="text-emerald-600 dark:text-emerald-400 text-lg leading-none">power</mat-icon>
+                    </div>
+                    <div class="mt-2">
+                      <div class="flex items-baseline gap-2">
+                        <span class="text-xl font-black font-mono text-emerald-950 dark:text-emerald-200">
+                          {{ dSummary.totalDevicesKwh.toFixed(2) }}
+                        </span>
+                        <span class="text-xs font-semibold text-emerald-700 dark:text-emerald-400">кВт·год</span>
+                        <span class="ml-auto px-2 py-0.5 rounded-full text-2xs font-extrabold bg-emerald-200/80 dark:bg-emerald-800 text-emerald-900 dark:text-emerald-100">
+                          {{ dSummary.devicesSharePercent.toFixed(1) }}%
+                        </span>
+                      </div>
+                      <div class="text-xs font-bold text-emerald-800 dark:text-emerald-300 mt-0.5">
+                        ≈ {{ dSummary.totalDevicesCostUah.toFixed(2) }} грн
+                      </div>
+                    </div>
+                    <div class="mt-2 pt-2 border-t border-emerald-200/70 dark:border-emerald-800 flex items-center justify-between text-3xs text-emerald-800 dark:text-emerald-300">
+                      <span>Темп: {{ dSummary.devicesDailyPace.toFixed(2) }} кВт·г/добу</span>
+                      <span>
+                        Записів: {{ dSummary.totalLogsInMonth }}
+                        @if (dSummary.totalAttributedNoteKwh > 0) {
+                          <span class="font-bold ml-1 text-emerald-900 dark:text-emerald-200">• ~{{ dSummary.totalAttributedNoteKwh }} кВт·г ШІ</span>
+                        }
+                      </span>
+                    </div>
+                  </div>
+
+                  <!-- Card 3: Untracked / Other Household Consumption -->
+                  <div class="p-4 rounded-2xl bg-indigo-50/50 dark:bg-indigo-950/40 border border-indigo-200/80 dark:border-indigo-800 flex flex-col justify-between">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="text-3xs font-bold uppercase tracking-wider text-indigo-800 dark:text-indigo-300">
+                        Інші прилади (поза моніторингом)
+                      </span>
+                      <mat-icon class="text-indigo-600 dark:text-indigo-400 text-lg leading-none">lightbulb</mat-icon>
+                    </div>
+                    <div class="mt-2">
+                      <div class="flex items-baseline gap-2">
+                        <span class="text-xl font-black font-mono text-indigo-950 dark:text-indigo-200">
+                          {{ dSummary.untrackedKwh.toFixed(2) }}
+                        </span>
+                        <span class="text-xs font-semibold text-indigo-700 dark:text-indigo-400">кВт·год</span>
+                        <span class="ml-auto px-2 py-0.5 rounded-full text-2xs font-extrabold bg-indigo-200/70 dark:bg-indigo-800 text-indigo-900 dark:text-indigo-100">
+                          {{ dSummary.untrackedSharePercent.toFixed(1) }}%
+                        </span>
+                      </div>
+                      <div class="text-xs font-bold text-indigo-800 dark:text-indigo-300 mt-0.5">
+                        ≈ {{ dSummary.untrackedCostUah.toFixed(2) }} грн
+                      </div>
+                    </div>
+                    <div class="mt-2 pt-2 border-t border-indigo-200/60 dark:border-indigo-800 text-3xs text-indigo-700 dark:text-indigo-300">
+                      @if (dSummary.unmonitoredCatalogDevices.length > 0) {
+                        <span>Включає {{ dSummary.unmonitoredCatalogDevices.length }} прилад(ів) будинку без смарт-розеток + світло</span>
+                      } @else {
+                        <span>Освітлення, роутер, зарядки, техніка</span>
+                      }
+                    </div>
+                  </div>
+
+                  <!-- Card 4: Weather-Adjusted End-of-Month Forecast -->
+                  <div class="p-4 rounded-2xl bg-amber-50/70 dark:bg-slate-800 border border-amber-300/80 dark:border-amber-700 flex flex-col justify-between">
+                    <div class="flex items-center justify-between gap-2">
+                      <span class="text-3xs font-bold uppercase tracking-wider text-amber-900 dark:text-amber-300">
+                        Прогноз за погодою ({{ dSummary.daysInMonth }} дн.)
+                      </span>
+                      <mat-icon class="text-amber-600 text-lg leading-none">thermostat_auto</mat-icon>
+                    </div>
+                    <div class="mt-2">
+                      <div class="text-xl font-black font-mono text-slate-900 dark:text-white">
+                        {{ dSummary.weatherProjectedHouseMonthKwh.toFixed(0) }}
+                        <span class="text-xs font-semibold text-slate-600 dark:text-slate-300">кВт·год</span>
+                      </div>
+                      <div class="text-xs font-bold text-amber-800 dark:text-amber-300 mt-0.5">
+                        Рахунок: ~{{ dSummary.weatherProjectedHouseMonthCostUah.toFixed(0) }} грн
+                      </div>
+                    </div>
+                    <div class="mt-2 pt-2 border-t border-amber-200/80 dark:border-slate-700 flex items-center justify-between text-3xs text-amber-900 dark:text-amber-200">
+                      <span>Пристрої: ~{{ dSummary.weatherProjectedDevicesMonthKwh.toFixed(0) }} кВт·г</span>
+                      <span class="font-bold">(~{{ dSummary.weatherProjectedDevicesMonthCostUah.toFixed(0) }} грн)</span>
+                    </div>
+                  </div>
+                </div>
+              } @else {
+                <!-- Compact Summary Line when Overview Section is Collapsed -->
+                <div class="px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-200/90 dark:border-slate-700 flex items-center justify-between gap-3 text-2xs flex-wrap">
+                  <div class="flex items-center gap-3.5 flex-wrap">
+                    @if (weatherData(); as weather) {
+                      <span class="inline-flex items-center gap-1 font-bold text-sky-700 dark:text-sky-300">
+                        <mat-icon class="text-xs leading-none">{{ weather.current.icon || 'wb_sunny' }}</mat-icon>
+                        <span>{{ weather.current.tempC > 0 ? '+' : '' }}{{ weather.current.tempC }}°C</span>
+                      </span>
+                      <span>•</span>
+                    }
+                    <span>Загалом дім: <strong class="font-mono text-slate-900 dark:text-white">{{ dSummary.houseReferenceKwh.toFixed(1) }} кВт·г</strong> (≈{{ dSummary.houseReferenceCostUah.toFixed(0) }} грн)</span>
+                    <span>•</span>
+                    <span>Окремі прилади: <strong class="font-mono text-emerald-700 dark:text-emerald-400">{{ dSummary.totalDevicesKwh.toFixed(1) }} кВт·г</strong> ({{ dSummary.devicesSharePercent.toFixed(1) }}%)</span>
+                    <span>•</span>
+                    <span>Інші: <strong class="font-mono text-indigo-700 dark:text-indigo-400">{{ dSummary.untrackedKwh.toFixed(1) }} кВт·г</strong> ({{ dSummary.untrackedSharePercent.toFixed(1) }}%)</span>
+                    <span>•</span>
+                    <span>Прогноз за погодою: <strong class="font-mono text-amber-800 dark:text-amber-300">~{{ dSummary.weatherProjectedHouseMonthKwh.toFixed(0) }} кВт·г</strong> (~{{ dSummary.weatherProjectedHouseMonthCostUah.toFixed(0) }} грн)</span>
+                  </div>
+                  <button
+                    type="button"
+                    (click)="isOverviewKpiExpanded.set(true)"
+                    class="text-3xs text-emerald-600 dark:text-emerald-400 hover:underline font-semibold cursor-pointer"
+                  >
+                    Розгорнути блок
+                  </button>
+                </div>
+              }
+            </div>
+
+            <!-- ======================================================== -->
+            <!-- USAGE WARNING COMPONENT (HIGH CONSUMPTION APPLIANCES)    -->
+            <!-- ======================================================== -->
+            @if (dSummary.usageWarnings.length > 0) {
+              <div class="rounded-2xl bg-gradient-to-r from-amber-50/90 via-orange-50/70 to-rose-50/80 dark:from-slate-900 dark:via-slate-900 dark:to-slate-900 border border-amber-300/90 dark:border-amber-700/80 shadow-2xs overflow-hidden">
+                <!-- Warning Header -->
+                <div class="p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-amber-200/70 dark:border-slate-800">
+                  <div class="flex items-center gap-3">
+                    <button
+                      type="button"
+                      (click)="isUsageWarningExpanded.update(v => !v)"
+                      class="w-9 h-9 rounded-xl bg-amber-500/20 dark:bg-amber-500/15 border border-amber-500/40 text-amber-700 dark:text-amber-400 flex items-center justify-center shrink-0 cursor-pointer hover:bg-amber-500/30 transition-colors"
+                      [title]="isUsageWarningExpanded() ? 'Згорнути попередження про споживання' : 'Розгорнути попередження про споживання'"
+                    >
+                      <mat-icon class="text-xl transition-transform duration-200" [class.rotate-180]="!isUsageWarningExpanded()">
+                        warning_amber
+                      </mat-icon>
+                    </button>
+                    <div>
+                      <div class="flex items-center gap-2 flex-wrap">
+                        <h4
+                          class="text-sm sm:text-base font-bold text-slate-900 dark:text-white cursor-pointer hover:text-amber-700 dark:hover:text-amber-400 transition-colors"
+                          (click)="isUsageWarningExpanded.update(v => !v)"
+                        >
+                          Попередження про підвищене споживання (Usage Warning)
+                        </h4>
+                        <span class="px-2 py-0.5 rounded-full text-2xs font-extrabold bg-rose-100 dark:bg-rose-950/90 text-rose-800 dark:text-rose-300 border border-rose-300 dark:border-rose-800">
+                          {{ dSummary.usageWarnings.length }} прилад(ів) вище норми
+                        </span>
+                        <span class="px-2 py-0.5 rounded-full text-2xs font-mono font-bold bg-amber-100 dark:bg-amber-950/80 text-amber-900 dark:text-amber-300 border border-amber-300 dark:border-amber-800">
+                          Перевищення: +{{ dSummary.totalWarningExcessKwh.toFixed(1) }} кВт·г (~{{ dSummary.totalWarningExcessCostUah.toFixed(0) }} грн)
+                        </span>
+                      </div>
+                      <p class="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                        Прилади, що споживають значно більше електроенергії за своє середнє місячне значення (середнє по приладу: {{ dSummary.averageDeviceMonthKwh.toFixed(1) }} кВт·г)
+                      </p>
+                    </div>
+                  </div>
+
+                  <div class="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                    <button
+                      type="button"
+                      (click)="isUsageWarningExpanded.update(v => !v)"
+                      class="p-1.5 rounded-xl bg-white/80 dark:bg-slate-800 hover:bg-white dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-amber-200 dark:border-slate-700 transition-colors cursor-pointer"
+                      [title]="isUsageWarningExpanded() ? 'Згорнути попередження' : 'Розгорнути попередження'"
+                    >
+                      <mat-icon class="text-base leading-none">
+                        {{ isUsageWarningExpanded() ? 'expand_less' : 'expand_more' }}
+                      </mat-icon>
+                    </button>
+                  </div>
+                </div>
+
+                @if (isUsageWarningExpanded()) {
+                  <div class="p-3.5 sm:p-4 grid grid-cols-1 lg:grid-cols-2 gap-3">
+                    @for (warn of dSummary.usageWarnings; track warn.deviceId) {
+                      <div
+                        class="p-3.5 rounded-xl bg-white dark:bg-slate-800/90 border transition-all flex flex-col justify-between gap-2.5 shadow-2xs"
+                        [class.border-rose-300]="warn.severity === 'critical'"
+                        [class.dark:border-rose-800/80]="warn.severity === 'critical'"
+                        [class.border-amber-300]="warn.severity === 'warning'"
+                        [class.dark:border-amber-700/70]="warn.severity === 'warning'"
+                      >
+                        <div class="flex items-start justify-between gap-2.5">
+                          <div class="flex items-center gap-2.5 min-w-0">
+                            <div
+                              class="w-9 h-9 rounded-xl flex items-center justify-center text-white shrink-0 shadow-2xs"
+                              [style.background-color]="warn.deviceColor || '#f59e0b'"
+                            >
+                              <mat-icon class="text-lg">{{ warn.deviceIcon || 'bolt' }}</mat-icon>
+                            </div>
+                            <div class="min-w-0">
+                              <div class="flex items-center gap-1.5 flex-wrap">
+                                <span class="font-bold text-xs sm:text-sm text-slate-900 dark:text-white truncate">
+                                  {{ warn.deviceName }}
+                                </span>
+                                @if (warn.powerWatts) {
+                                  <span class="px-1.5 py-0.2 rounded text-3xs font-mono font-semibold bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+                                    {{ warn.powerWatts }} Вт
+                                  </span>
+                                }
+                              </div>
+                              <div class="text-3xs text-slate-500 dark:text-slate-400 mt-0.5">
+                                База порівняння: <span class="font-semibold text-slate-700 dark:text-slate-300">{{ warn.baselineLabel }}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <span
+                            class="px-2 py-0.5 rounded-lg text-2xs font-extrabold font-mono shrink-0 flex items-center gap-1 border"
+                            [class.bg-rose-100]="warn.severity === 'critical'"
+                            [class.dark:bg-rose-950]="warn.severity === 'critical'"
+                            [class.text-rose-800]="warn.severity === 'critical'"
+                            [class.dark:text-rose-300]="warn.severity === 'critical'"
+                            [class.border-rose-300]="warn.severity === 'critical'"
+                            [class.dark:border-rose-800]="warn.severity === 'critical'"
+                            [class.bg-amber-100]="warn.severity === 'warning'"
+                            [class.dark:bg-amber-950]="warn.severity === 'warning'"
+                            [class.text-amber-900]="warn.severity === 'warning'"
+                            [class.dark:text-amber-300]="warn.severity === 'warning'"
+                            [class.border-amber-300]="warn.severity === 'warning'"
+                            [class.dark:border-amber-800]="warn.severity === 'warning'"
+                          >
+                            <mat-icon class="text-xs leading-none">trending_up</mat-icon>
+                            <span>+{{ warn.excessPercent }}% вище норми</span>
+                          </span>
+                        </div>
+
+                        <!-- Metrics Comparison Bar -->
+                        <div class="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/90 border border-slate-200/80 dark:border-slate-700/80 space-y-1.5">
+                          <div class="grid grid-cols-3 gap-2 text-2xs">
+                            <div>
+                              <span class="text-3xs text-slate-500 dark:text-slate-400 block">Поточне / Прогноз</span>
+                              <span class="font-mono font-black text-slate-900 dark:text-white">
+                                {{ warn.actualOrProjectedKwh.toFixed(1) }} кВт·г
+                              </span>
+                              <span class="text-3xs text-slate-500 dark:text-slate-400 block">
+                                ≈ {{ warn.actualOrProjectedCostUah.toFixed(0) }} грн
+                              </span>
+                            </div>
+                            <div>
+                              <span class="text-3xs text-slate-500 dark:text-slate-400 block">Середнє за місяць</span>
+                              <span class="font-mono font-bold text-slate-700 dark:text-slate-300">
+                                {{ warn.monthlyAverageKwh.toFixed(1) }} кВт·г
+                              </span>
+                              <span class="text-3xs text-slate-500 dark:text-slate-400 block">
+                                Частка дому: {{ warn.shareOfHousePercent.toFixed(1) }}%
+                              </span>
+                            </div>
+                            <div class="text-right">
+                              <span class="text-3xs text-slate-500 dark:text-slate-400 block">Перевищення</span>
+                              <span
+                                class="font-mono font-black"
+                                [class.text-rose-600]="warn.severity === 'critical'"
+                                [class.dark:text-rose-400]="warn.severity === 'critical'"
+                                [class.text-amber-700]="warn.severity === 'warning'"
+                                [class.dark:text-amber-400]="warn.severity === 'warning'"
+                              >
+                                +{{ warn.excessKwh.toFixed(1) }} кВт·г
+                              </span>
+                              <span class="text-3xs font-bold text-rose-600 dark:text-rose-400 block">
+                                +{{ warn.excessCostUah.toFixed(0) }} грн
+                              </span>
+                            </div>
+                          </div>
+
+                          <!-- Visual Progress Ratio -->
+                          <div class="w-full h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden flex">
+                            <div
+                              class="h-full bg-emerald-500 transition-all"
+                              [style.width.%]="warn.normalBarWidthPct"
+                              title="Середній рівень споживання"
+                            ></div>
+                            <div
+                              class="h-full transition-all"
+                              [class.bg-rose-500]="warn.severity === 'critical'"
+                              [class.bg-amber-500]="warn.severity === 'warning'"
+                              [style.width.%]="100 - warn.normalBarWidthPct"
+                              title="Перевищення середнього споживання"
+                            ></div>
+                          </div>
+                        </div>
+
+                        <!-- Explanation & Quick Action -->
+                        <div class="flex items-center justify-between gap-2 pt-0.5">
+                          <p class="text-2xs text-slate-600 dark:text-slate-300 leading-snug">
+                            {{ warn.recommendation }}
+                          </p>
+                          <button
+                            type="button"
+                            (click)="focusAndExpandDeviceFromWarning(warn.deviceId)"
+                            class="px-2.5 py-1 rounded-lg text-2xs font-bold bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-800 dark:text-slate-100 transition-colors shrink-0 flex items-center gap-1 cursor-pointer"
+                          >
+                            <mat-icon class="text-xs leading-none">visibility</mat-icon>
+                            <span>Деталі</span>
+                          </button>
+                        </div>
+                      </div>
+                    }
+                  </div>
+                }
+              </div>
+            }
+
+            <!-- ======================================================== -->
+            <!-- INDIVIDUAL DEVICES (ULTRA-COMPACT EXPANDABLE LIST VIEW)   -->
+            <!-- ======================================================== -->
+            <div class="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-2xs space-y-0 overflow-hidden">
+              <!-- Section Header & Controls -->
+              <div class="p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800">
+                <div class="flex items-center gap-3">
+                  <button
+                    type="button"
+                    (click)="isDevicesSectionExpanded.update(v => !v)"
+                    class="w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-700 dark:text-emerald-400 flex items-center justify-center shrink-0 cursor-pointer hover:bg-emerald-500/25 transition-colors"
+                    [title]="isDevicesSectionExpanded() ? 'Згорнути список приладів' : 'Розгорнути список приладів'"
+                  >
+                    <mat-icon class="text-xl transition-transform duration-200" [class.rotate-180]="!isDevicesSectionExpanded()">
+                      expand_more
+                    </mat-icon>
+                  </button>
+                  <div>
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <h4
+                        class="text-sm sm:text-base font-bold text-slate-900 dark:text-white cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
+                        (click)="isDevicesSectionExpanded.update(v => !v)"
+                      >
+                        Список електроприладів
+                      </h4>
+                      <span class="px-2 py-0.5 rounded-full text-2xs font-extrabold bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700">
+                        {{ dSummary.deviceRows.length }} прилад(ів)
+                      </span>
+                    </div>
+                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                      {{ deviceViewLayout() === 'cards' ? 'Картки приладів зі споживанням, потужністю, журналами та аналітикою' : 'Компактний список: натисніть на рядок пристрою, щоб відкрити деталі' }}
+                    </p>
+                  </div>
+                </div>
+
+                <!-- Section Actions & View Mode Toggle -->
+                <div class="flex items-center gap-2 flex-wrap">
+                  <!-- Layout Switcher: Cards vs List -->
+                  <div class="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl border border-slate-200/80 dark:border-slate-700/80">
+                    <button
+                      type="button"
+                      (click)="deviceViewLayout.set('cards')"
+                      class="px-2.5 py-1 rounded-lg text-2xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                      [class.bg-white]="deviceViewLayout() === 'cards'"
+                      [class.dark:bg-slate-900]="deviceViewLayout() === 'cards'"
+                      [class.text-emerald-700]="deviceViewLayout() === 'cards'"
+                      [class.dark:text-emerald-400]="deviceViewLayout() === 'cards'"
+                      [class.shadow-2xs]="deviceViewLayout() === 'cards'"
+                      [class.text-slate-600]="deviceViewLayout() !== 'cards'"
+                      [class.dark:text-slate-400]="deviceViewLayout() !== 'cards'"
+                      title="Відобразити у вигляді карток"
+                    >
+                      <mat-icon class="text-xs leading-none">grid_view</mat-icon>
+                      <span>Картки</span>
+                    </button>
+                    <button
+                      type="button"
+                      (click)="deviceViewLayout.set('list')"
+                      class="px-2.5 py-1 rounded-lg text-2xs font-bold transition-all flex items-center gap-1 cursor-pointer"
+                      [class.bg-white]="deviceViewLayout() === 'list'"
+                      [class.dark:bg-slate-900]="deviceViewLayout() === 'list'"
+                      [class.text-emerald-700]="deviceViewLayout() === 'list'"
+                      [class.dark:text-emerald-400]="deviceViewLayout() === 'list'"
+                      [class.shadow-2xs]="deviceViewLayout() === 'list'"
+                      [class.text-slate-600]="deviceViewLayout() !== 'list'"
+                      [class.dark:text-slate-400]="deviceViewLayout() !== 'list'"
+                      title="Відобразити у вигляді компактного списку"
+                    >
+                      <mat-icon class="text-xs leading-none">view_list</mat-icon>
+                      <span>Список</span>
+                    </button>
+                  </div>
+
+                  @if (canEdit()) {
+                    <button
+                      type="button"
+                      (click)="openAddDeviceLogModal()"
+                      class="px-2.5 py-1.5 rounded-xl text-2xs font-bold bg-amber-500 hover:bg-amber-600 text-white transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
+                      title="Внести споживання для приладу"
+                    >
+                      <mat-icon class="text-xs leading-none">add</mat-icon>
+                      <span>+ Запис кВт·г</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      (click)="openScreenshotModal()"
+                      class="px-2.5 py-1.5 rounded-xl text-2xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
+                      title="Завантажити скріншот з розетки"
+                    >
+                      <mat-icon class="text-xs leading-none">add_photo_alternate</mat-icon>
+                      <span>Скріншот (ШІ)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      (click)="openDeviceModal()"
+                      class="px-2.5 py-1.5 rounded-xl text-2xs font-semibold bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white transition-colors flex items-center gap-1 cursor-pointer border border-slate-800 dark:border-slate-700 shadow-2xs"
+                    >
+                      <mat-icon class="text-xs leading-none">add_circle</mat-icon>
+                      <span>Новий прилад</span>
+                    </button>
+                  }
+                </div>
+              </div>
+
+              <!-- Device Rows: Cards or List -->
+              @if (isDevicesSectionExpanded()) {
+                @if (dSummary.deviceRows.length > 0) {
+                  @if (deviceViewLayout() === 'cards') {
+                    <!-- ============================================== -->
+                    <!-- SMART-HOME NEON-CYAN CARDS GRID VIEW (DEFAULT) -->
+                    <!-- ============================================== -->
+                    <div class="p-4 sm:p-6 bg-slate-950/95">
+                      <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+                        @for (item of dSummary.deviceRows; track item.device.id) {
+                          @let archetype = getSmartCardArchetype(item);
+                          @let statusInfo = getSmartCardStatusInfo(item);
+                          @let leftMetric = getSmartCardLeftMetric(item);
+                          @let rightMetric = getSmartCardRightMetric(item);
+                          @let dailyChart = getSmartCardDailyChart(item);
+                          @let isOn = isDevicePowerOn(item.device.id);
+                          <div
+                            class="relative rounded-[28px] bg-gradient-to-br from-[#0c2147] via-[#091836] to-[#061024] border transition-all duration-300 shadow-[0_14px_34px_rgba(2,8,24,0.75)] flex flex-col justify-between overflow-hidden text-white select-none"
+                            [class.border-rose-500/70]="item.usageWarning?.severity === 'critical'"
+                            [class.border-amber-400/70]="item.usageWarning?.severity === 'warning'"
+                            [class.border-sky-400/25]="!item.usageWarning"
+                            [class.ring-2]="isCompactDeviceExpanded(item.device.id)"
+                            [class.ring-sky-400/40]="isCompactDeviceExpanded(item.device.id)"
+                          >
+                            <!-- Ambient Top-Left Cyan Glow -->
+                            <div
+                              class="pointer-events-none absolute -top-12 -left-12 w-48 h-48 rounded-full blur-3xl transition-opacity duration-300"
+                              [class.bg-sky-400/20]="isOn"
+                              [class.bg-slate-600/10]="!isOn"
+                            ></div>
+
+                            <!-- Main Card Content -->
+                            <div class="relative z-10 p-5 sm:p-6 space-y-4 flex-1 flex flex-col">
+                              <!-- Quick Top-Right Utility Badges (Usage Warning + Quick Log) -->
+                              <div class="flex items-center justify-between gap-2">
+                                <div class="flex items-center gap-1.5 flex-wrap">
+                                  <span class="px-2 py-0.5 rounded-full text-3xs font-mono font-bold bg-sky-500/15 text-sky-300 border border-sky-400/25">
+                                    {{ item.monthKwh.toFixed(1) }} кВт·г • {{ item.monthCostUah.toFixed(0) }} грн
+                                  </span>
+                                  <span class="px-2 py-0.5 rounded-full text-3xs font-mono font-semibold bg-white/5 text-slate-300 border border-white/10">
+                                    {{ item.shareOfHousePercent.toFixed(1) }}% будинку
+                                  </span>
+                                  @if (item.usageWarning; as uw) {
+                                    <span
+                                      class="px-2 py-0.5 rounded-full text-3xs font-extrabold inline-flex items-center gap-0.5 border"
+                                      [class.bg-rose-500/25]="uw.severity === 'critical'"
+                                      [class.text-rose-200]="uw.severity === 'critical'"
+                                      [class.border-rose-400/50]="uw.severity === 'critical'"
+                                      [class.bg-amber-500/25]="uw.severity === 'warning'"
+                                      [class.text-amber-200]="uw.severity === 'warning'"
+                                      [class.border-amber-400/50]="uw.severity === 'warning'"
+                                      [title]="'Споживання перевищує середнє (' + uw.monthlyAverageKwh.toFixed(1) + ' кВт·г) на +' + uw.excessPercent + '%'"
+                                    >
+                                      <mat-icon class="text-3xs leading-none">warning_amber</mat-icon>
+                                      <span>+{{ uw.excessPercent }}%</span>
+                                    </span>
+                                  }
+                                </div>
+
+                                @if (canEdit()) {
+                                  <div class="flex items-center gap-1 shrink-0">
+                                    <button
+                                      type="button"
+                                      (click)="openAddDeviceLogModal(item.device.id)"
+                                      class="px-2 py-1 rounded-lg text-3xs font-bold bg-sky-500/20 hover:bg-sky-500/35 text-sky-200 border border-sky-400/30 transition-colors cursor-pointer flex items-center gap-0.5"
+                                      title="Внести споживання кВт·г"
+                                    >
+                                      <mat-icon class="text-xs leading-none">add</mat-icon>
+                                      <span>кВт·г</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      (click)="openScreenshotModal(item.device.id)"
+                                      class="p-1 rounded-lg text-sky-300/80 hover:text-white hover:bg-white/10 border border-transparent hover:border-white/15 transition-colors cursor-pointer"
+                                      title="Завантажити скріншот (ШІ)"
+                                    >
+                                      <mat-icon class="text-xs leading-none">add_photo_alternate</mat-icon>
+                                    </button>
+                                  </div>
+                                }
+                              </div>
+
+                              <!-- Header Row: Glowing Neon-Cyan Line-Art SVG Icon + Title & Specs -->
+                              <div class="flex items-center gap-4 pt-0.5">
+                                <!-- Neon-Cyan SVG Illustration -->
+                                <div class="w-20 h-20 sm:w-22 sm:h-22 shrink-0 flex items-center justify-center relative">
+                                  @switch (archetype) {
+                                    @case ('ac') {
+                                      <!-- Air Conditioner Glowing Line-Art SVG -->
+                                      <svg
+                                        viewBox="0 0 96 96"
+                                        class="w-full h-full overflow-visible transition-opacity duration-300"
+                                        [class.opacity-50]="!isOn"
+                                        style="filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.75));"
+                                        fill="none"
+                                      >
+                                        <rect x="8" y="14" width="80" height="40" rx="8" stroke="#38bdf8" stroke-width="3.2" fill="rgba(14, 165, 233, 0.08)" />
+                                        <circle cx="19" cy="24" r="2.2" fill="#7dd3fc" />
+                                        <circle cx="27" cy="24" r="2.2" fill="#7dd3fc" />
+                                        <circle cx="35" cy="24" r="2.2" fill="#7dd3fc" />
+                                        <path d="M16 44 H80 C82 44 83 46 83 48 V51 H13 V48 C13 46 14 44 16 44 Z" stroke="#38bdf8" stroke-width="2.6" fill="rgba(56, 189, 248, 0.12)" />
+                                        <path d="M29 60 C29 68 25 74 18 79" stroke="#38bdf8" stroke-width="3" stroke-linecap="round" />
+                                        <path d="M41 60 C41 69 39 76 34 83" stroke="#38bdf8" stroke-width="3" stroke-linecap="round" />
+                                        <path d="M49 60 V83" stroke="#38bdf8" stroke-width="3" stroke-linecap="round" />
+                                        <path d="M58 60 C58 69 61 76 66 82" stroke="#38bdf8" stroke-width="3" stroke-linecap="round" />
+                                        <path d="M70 60 C71 67 75 73 82 77" stroke="#38bdf8" stroke-width="3" stroke-linecap="round" />
+                                      </svg>
+                                    }
+                                    @case ('boiler') {
+                                      <!-- Water Heater / Boiler Glowing Line-Art SVG -->
+                                      <svg
+                                        viewBox="0 0 96 96"
+                                        class="w-full h-full overflow-visible transition-opacity duration-300"
+                                        [class.opacity-50]="!isOn"
+                                        style="filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.75));"
+                                        fill="none"
+                                      >
+                                        <rect x="22" y="10" width="52" height="68" rx="14" stroke="#38bdf8" stroke-width="3.2" fill="rgba(14, 165, 233, 0.08)" />
+                                        <circle cx="48" cy="31" r="9.5" stroke="#38bdf8" stroke-width="3" fill="rgba(14, 165, 233, 0.15)" />
+                                        <path d="M48 31 L53 26" stroke="#7dd3fc" stroke-width="2.8" stroke-linecap="round" />
+                                        <rect x="38" y="52" width="20" height="10" rx="2.5" stroke="#38bdf8" stroke-width="2.6" fill="rgba(56, 189, 248, 0.14)" />
+                                        <path d="M42 66 H54" stroke="#7dd3fc" stroke-width="2.5" stroke-linecap="round" />
+                                        <rect x="33" y="78" width="7" height="7" rx="1.5" stroke="#38bdf8" stroke-width="2.6" />
+                                        <rect x="56" y="78" width="7" height="7" rx="1.5" stroke="#38bdf8" stroke-width="2.6" />
+                                      </svg>
+                                    }
+                                    @case ('ev') {
+                                      <!-- Electric Vehicle with Plug Glowing Line-Art SVG -->
+                                      <svg
+                                        viewBox="0 0 96 96"
+                                        class="w-full h-full overflow-visible transition-opacity duration-300"
+                                        [class.opacity-50]="!isOn"
+                                        style="filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.75));"
+                                        fill="none"
+                                      >
+                                        <path d="M29 14 H37 M29 22 H37" stroke="#38bdf8" stroke-width="2.8" stroke-linecap="round" />
+                                        <path d="M37 11 H46 C50 11 53 14 53 18 C53 22 50 25 46 25 H37 Z" stroke="#38bdf8" stroke-width="2.8" fill="rgba(56, 189, 248, 0.15)" />
+                                        <path d="M53 18 H68 C76 18 81 24 81 31 C81 38 75 43 68 44" stroke="#38bdf8" stroke-width="3" stroke-linecap="round" />
+                                        <path d="M24 50 L30 35 C32 31 36 29 41 29 H55 C60 29 64 31 66 35 L72 50" stroke="#38bdf8" stroke-width="3" stroke-linejoin="round" fill="rgba(14, 165, 233, 0.08)" />
+                                        <rect x="15" y="45" width="8" height="5" rx="2.5" stroke="#38bdf8" stroke-width="2.5" />
+                                        <rect x="73" y="45" width="8" height="5" rx="2.5" stroke="#38bdf8" stroke-width="2.5" />
+                                        <rect x="19" y="50" width="58" height="24" rx="8" stroke="#38bdf8" stroke-width="3.2" fill="rgba(14, 165, 233, 0.12)" />
+                                        <path d="M25 58 L35 61" stroke="#7dd3fc" stroke-width="3.2" stroke-linecap="round" />
+                                        <path d="M71 58 L61 61" stroke="#7dd3fc" stroke-width="3.2" stroke-linecap="round" />
+                                        <path d="M40 66 H56" stroke="#38bdf8" stroke-width="2.8" stroke-linecap="round" />
+                                        <path d="M22 74 V82 C22 84 24 85 26 85 H31 C33 85 35 84 35 82 V74" stroke="#38bdf8" stroke-width="3" />
+                                        <path d="M61 74 V82 C61 84 63 85 65 85 H70 C72 85 74 84 74 82 V74" stroke="#38bdf8" stroke-width="3" />
+                                      </svg>
+                                    }
+                                    @default {
+                                      <!-- Glowing Neon-Cyan Appliance Frame for Other Devices -->
+                                      <div
+                                        class="w-18 h-18 rounded-2xl border-2 border-sky-400 bg-sky-500/10 flex items-center justify-center text-sky-300 transition-opacity duration-300"
+                                        [class.opacity-50]="!isOn"
+                                        style="filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.65));"
+                                      >
+                                        <mat-icon class="text-4xl leading-none" style="width: 36px; height: 36px; font-size: 36px;">
+                                          {{ item.device.icon || 'bolt' }}
+                                        </mat-icon>
+                                      </div>
+                                    }
+                                  }
+                                </div>
+
+                                <!-- Device Title & Technical Subtitle -->
+                                <div class="min-w-0 flex-1">
+                                  <h4
+                                    class="text-lg sm:text-xl font-bold text-white leading-snug line-clamp-2"
+                                    [title]="item.device.name"
+                                  >
+                                    {{ item.device.name }}
+                                  </h4>
+                                  <div class="text-xs sm:text-sm mt-1 font-medium">
+                                    <span class="text-slate-400">{{ statusInfo.prefix }} </span>
+                                    <span
+                                      class="font-semibold"
+                                      [class.text-sky-400]="isOn"
+                                      [class.text-slate-500]="!isOn"
+                                    >
+                                      {{ statusInfo.value }}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <!-- Two Translucent Metric Tiles: Hourly Average + Monthly Total -->
+                              <div class="grid grid-cols-2 gap-3">
+                                <!-- Left Metric Tile: Average Consumption per Hour -->
+                                <div class="rounded-2xl bg-[#11264e]/85 border border-sky-300/12 px-3 py-3 text-center flex flex-col justify-center min-h-[96px] shadow-inner">
+                                  <div class="flex items-baseline justify-center gap-1">
+                                    <span class="text-2xl sm:text-3xl font-extrabold text-white tracking-tight font-mono">
+                                      {{ leftMetric.value }}
+                                    </span>
+                                    <span class="text-xs sm:text-sm font-semibold text-slate-300">
+                                      {{ leftMetric.unit }}
+                                    </span>
+                                  </div>
+                                  <div class="text-2xs sm:text-xs text-slate-200 mt-1 font-medium">
+                                    {{ leftMetric.label }}
+                                  </div>
+                                  @if (leftMetric.subnote) {
+                                    <div class="text-3xs text-sky-300/80 mt-0.5 truncate" [title]="leftMetric.subnote">
+                                      {{ leftMetric.subnote }}
+                                    </div>
+                                  }
+                                </div>
+
+                                <!-- Right Metric Tile: Monthly Consumption & Reading Average -->
+                                <div class="rounded-2xl bg-[#11264e]/85 border border-sky-300/12 px-3 py-3 text-center flex flex-col justify-center min-h-[96px] shadow-inner">
+                                  <div class="flex items-baseline justify-center gap-1">
+                                    <span class="text-2xl sm:text-3xl font-extrabold text-white tracking-tight font-mono">
+                                      {{ rightMetric.value }}
+                                    </span>
+                                    <span class="text-xs sm:text-sm font-semibold text-slate-300">
+                                      {{ rightMetric.unit }}
+                                    </span>
+                                  </div>
+                                  <div class="text-2xs sm:text-xs text-slate-200 mt-1 font-medium">
+                                    {{ rightMetric.label }}
+                                  </div>
+                                  @if (rightMetric.sublabel) {
+                                    <div class="text-3xs text-slate-400 mt-0.5 truncate" [title]="rightMetric.sublabel">
+                                      {{ rightMetric.sublabel }}
+                                    </div>
+                                  }
+                                </div>
+                              </div>
+
+                              <!-- Energy Consumption Spline Box by Recorded Days ("Споживання електроенергії") -->
+                              <div class="rounded-2xl bg-[#11264e]/85 border border-sky-300/12 p-4 space-y-2 shadow-inner">
+                                <div class="flex items-center justify-between gap-2">
+                                  <span class="text-xs sm:text-sm font-medium text-slate-200">
+                                    Споживання електроенергії
+                                  </span>
+                                  <span class="text-3xs font-mono text-sky-300/90" title="Прогноз до кінця місяця з урахуванням погоди">
+                                    ⛅ ~{{ item.weatherProjectedMonthKwh.toFixed(0) }} кВт·г/міс
+                                  </span>
+                                </div>
+
+                                <!-- Glowing Neon-Cyan Smooth Area Spline SVG by Recorded Days -->
+                                <div class="pt-1">
+                                  <svg viewBox="0 0 300 72" class="w-full h-18 overflow-visible">
+                                    <defs>
+                                      <linearGradient [attr.id]="'cardSplineGrad_' + item.device.id" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.42" />
+                                        <stop offset="100%" stop-color="#0ea5e9" stop-opacity="0.0" />
+                                      </linearGradient>
+                                    </defs>
+                                    <!-- Filled Area under curve -->
+                                    <path
+                                      [attr.d]="dailyChart.areaPath"
+                                      [attr.fill]="'url(#cardSplineGrad_' + item.device.id + ')'"
+                                    />
+                                    <!-- Glowing Cyan Spline Line -->
+                                    <path
+                                      [attr.d]="dailyChart.linePath"
+                                      fill="none"
+                                      stroke="#38bdf8"
+                                      stroke-width="2.8"
+                                      stroke-linecap="round"
+                                      style="filter: drop-shadow(0 0 6px rgba(56, 189, 248, 0.8));"
+                                    />
+                                    <!-- Data Points & Values for Recorded Days -->
+                                    @for (pt of dailyChart.points; track pt.dateLabel + '_' + $index) {
+                                      <g>
+                                        <circle
+                                          [attr.cx]="pt.x"
+                                          [attr.cy]="pt.y"
+                                          r="3.4"
+                                          fill="#e0f2fe"
+                                          stroke="#0284c7"
+                                          stroke-width="1.5"
+                                        >
+                                          <title>{{ pt.dateLabel }}: {{ pt.kwh }} кВт·г</title>
+                                        </circle>
+                                        @if (pt.kwh > 0) {
+                                          <text
+                                            [attr.x]="pt.x"
+                                            [attr.y]="Math.max(10, pt.y - 6)"
+                                            text-anchor="middle"
+                                            fill="#bae6fd"
+                                            font-size="8.5"
+                                            font-family="monospace"
+                                            font-weight="700"
+                                          >
+                                            {{ pt.kwh >= 10 ? pt.kwh.toFixed(0) : pt.kwh.toFixed(1) }}
+                                          </text>
+                                        }
+                                      </g>
+                                    }
+                                  </svg>
+
+                                  <!-- X-Axis Labels: Recorded Dates by Day -->
+                                  @if (dailyChart.hasData && dailyChart.points.length > 0) {
+                                    <div class="flex items-center justify-between text-3xs sm:text-2xs text-slate-300 pt-1 font-mono font-medium px-1">
+                                      @for (pt of dailyChart.points; track pt.dateLabel + '_lbl_' + $index) {
+                                        <span>{{ pt.dateLabel }}</span>
+                                      }
+                                    </div>
+                                  } @else {
+                                    <div class="text-center text-3xs text-slate-400 pt-1">
+                                      Ще немає записаних показників по днях
+                                    </div>
+                                  }
+                                </div>
+                              </div>
+
+                              <!-- Bottom Controls Row: "Ввімкнено" Toggle Switch + "Налаштувати" Button -->
+                              <div class="grid grid-cols-2 gap-3 pt-1">
+                                <!-- Left Pill: Glowing Toggle Switch -->
+                                <button
+                                  type="button"
+                                  (click)="toggleDevicePowerState(item.device.id)"
+                                  class="rounded-full p-1.5 pr-3.5 flex items-center gap-2.5 border transition-all cursor-pointer"
+                                  [class.bg-[#0d2244]]="isOn"
+                                  [class.border-emerald-400/35]="isOn"
+                                  [class.bg-slate-900/80]="!isOn"
+                                  [class.border-slate-700]="!isOn"
+                                  [title]="isOn ? 'Натисніть, щоб перевести у режим очікування' : 'Натисніть, щоб увімкнути'"
+                                >
+                                  <!-- Switch Track -->
+                                  <div
+                                    class="w-13 h-7 rounded-full p-0.5 flex items-center transition-all duration-300 shrink-0"
+                                    [class.bg-gradient-to-r]="isOn"
+                                    [class.from-emerald-400]="isOn"
+                                    [class.to-cyan-400]="isOn"
+                                    [class.justify-end]="isOn"
+                                    [class.shadow-[0_0_14px_rgba(52,211,153,0.6)]]="isOn"
+                                    [class.bg-slate-700]="!isOn"
+                                    [class.justify-start]="!isOn"
+                                  >
+                                    <div class="w-6 h-6 rounded-full bg-white shadow-md"></div>
+                                  </div>
+                                  <span
+                                    class="text-xs sm:text-sm font-semibold truncate"
+                                    [class.text-emerald-400]="isOn"
+                                    [class.text-slate-400]="!isOn"
+                                  >
+                                    {{ isOn ? 'Ввімкнено' : 'Вимкнено' }}
+                                  </span>
+                                </button>
+
+                                <!-- Right Pill: "Налаштувати" Button -->
+                                <button
+                                  type="button"
+                                  (click)="toggleCompactDevice(item.device.id)"
+                                  class="rounded-full bg-[#152a54]/90 hover:bg-[#1d376e] border border-sky-300/25 px-4 py-2 flex items-center justify-center gap-2 text-slate-100 font-semibold text-xs sm:text-sm transition-all cursor-pointer"
+                                  [class.ring-2]="isCompactDeviceExpanded(item.device.id)"
+                                  [class.ring-sky-400/50]="isCompactDeviceExpanded(item.device.id)"
+                                  title="Налаштування приладу та журнал споживання"
+                                >
+                                  <mat-icon class="text-base leading-none text-slate-300">settings</mat-icon>
+                                  <span class="truncate">Налаштувати</span>
+                                </button>
+                              </div>
+                            </div>
+
+                            <!-- Expandable Settings & Logs Drawer inside Dark Card -->
+                            @if (isCompactDeviceExpanded(item.device.id)) {
+                              <div class="relative z-10 px-5 py-4 bg-[#071226]/95 border-t border-sky-400/20 space-y-3 text-xs">
+                                <!-- Device Management Toolbar -->
+                                <div class="flex items-center justify-between gap-2 flex-wrap pb-2 border-b border-white/10">
+                                  <span class="font-bold text-sky-300 flex items-center gap-1">
+                                    <mat-icon class="text-sm leading-none">tune</mat-icon>
+                                    <span>Керування та журнал ({{ item.monthLogs.length }})</span>
+                                  </span>
+                                  @if (canEdit()) {
+                                    <div class="flex items-center gap-1.5 flex-wrap">
+                                      <button
+                                        type="button"
+                                        (click)="openAddDeviceLogModal(item.device.id)"
+                                        class="px-2.5 py-1 rounded-lg text-2xs font-bold bg-amber-500 hover:bg-amber-600 text-white transition-colors cursor-pointer flex items-center gap-1"
+                                      >
+                                        <mat-icon class="text-xs leading-none">add</mat-icon>
+                                        <span>+ Запис кВт·г</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        (click)="openScreenshotModal(item.device.id)"
+                                        class="px-2.5 py-1 rounded-lg text-2xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors cursor-pointer flex items-center gap-1"
+                                      >
+                                        <mat-icon class="text-xs leading-none">add_photo_alternate</mat-icon>
+                                        <span>Фото (ШІ)</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        (click)="openEditDeviceModal(item.device)"
+                                        class="px-2.5 py-1 rounded-lg text-2xs font-semibold bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer flex items-center gap-1"
+                                        title="Змінити назву, потужність або категорію"
+                                      >
+                                        <mat-icon class="text-xs leading-none">edit</mat-icon>
+                                        <span>Параметри</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        (click)="deleteDevice(item.device.id)"
+                                        class="p-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/35 text-rose-300 transition-colors cursor-pointer"
+                                        title="Видалити прилад"
+                                      >
+                                        <mat-icon class="text-xs leading-none">delete</mat-icon>
+                                      </button>
+                                    </div>
+                                  }
+                                </div>
+
+                                @if (item.hasAttributedConsumption) {
+                                  <div class="p-2.5 rounded-xl bg-emerald-950/70 border border-emerald-500/30 text-2xs text-emerald-200">
+                                    Обліковано за примітками контрольних замірів лічильника: <strong class="font-mono">~{{ item.attributedNoteKwh.toFixed(1) }} кВт·г</strong>
+                                  </div>
+                                }
+
+                                <!-- Logs List -->
+                                @if (item.monthLogs.length > 0) {
+                                  <div class="max-h-56 overflow-y-auto divide-y divide-white/10 border border-white/10 rounded-xl bg-[#0b1b38]/90">
+                                    @for (log of item.monthLogs; track log.id) {
+                                      @let logW = getEffectiveLogWeather(log);
+                                      <div class="p-2.5 flex items-start justify-between gap-2 text-xs hover:bg-white/5 transition-colors">
+                                        <div class="space-y-0.5 min-w-0 flex-1">
+                                          <div class="flex items-center gap-1.5 flex-wrap">
+                                            <span class="font-bold text-2xs text-white">{{ getDeviceLogDateLabel(log) }}</span>
+                                            @if (logW) {
+                                              <span class="px-1.5 py-0.2 rounded bg-sky-500/20 text-sky-200 border border-sky-400/30 text-3xs font-mono font-bold inline-flex items-center gap-0.5">
+                                                <mat-icon class="text-3xs text-sky-300 leading-none">{{ logW.icon }}</mat-icon>
+                                                <span>{{ logW.tempAvgC > 0 ? '+' : '' }}{{ logW.tempAvgC }}°C</span>
+                                              </span>
+                                            }
+                                            <span class="px-1.5 py-0.2 rounded text-3xs font-bold bg-white/10 text-sky-200">
+                                              {{ getDeviceLogModeBadge(log) }}
+                                            </span>
+                                            @if (log.fromScreenshot) {
+                                              <span class="px-1 py-0.2 rounded bg-teal-500/25 text-teal-200 text-3xs font-bold">
+                                                AI
+                                              </span>
+                                            }
+                                          </div>
+                                          @if (log.comment) {
+                                            <div class="text-3xs text-slate-300 truncate">
+                                              {{ log.comment }}
+                                            </div>
+                                          }
+                                        </div>
+                                        <div class="flex items-center gap-1 shrink-0">
+                                          <span class="font-mono font-bold text-sky-300 text-xs mr-1">
+                                            {{ log.entryMode && log.entryMode !== 'cumulative_month' ? '+' : '' }}{{ log.consumedKwh }} кВт·г
+                                          </span>
+                                          @if (canEdit()) {
+                                            <button
+                                              type="button"
+                                              (click)="openEditDeviceLogModal(item.device.id, log)"
+                                              class="p-1 rounded text-slate-300 hover:text-white hover:bg-white/10 cursor-pointer transition-colors"
+                                              title="Редагувати запис"
+                                            >
+                                              <mat-icon class="text-xs leading-none">edit</mat-icon>
+                                            </button>
+                                            <button
+                                              type="button"
+                                              (click)="deleteDeviceLog(item.device.id, log.id)"
+                                              class="p-1 rounded text-rose-400 hover:text-rose-200 hover:bg-rose-500/20 cursor-pointer transition-colors"
+                                              title="Видалити запис"
+                                            >
+                                              <mat-icon class="text-xs leading-none">delete</mat-icon>
+                                            </button>
+                                          }
+                                        </div>
+                                      </div>
+                                    }
+                                  </div>
+                                } @else if (item.attributedNotes.length > 0) {
+                                  <div class="space-y-1.5 border border-emerald-500/30 rounded-xl bg-emerald-950/40 p-2.5">
+                                    <div class="text-3xs font-bold text-emerald-300 flex items-center gap-1">
+                                      <mat-icon class="text-xs leading-none">psychology</mat-icon>
+                                      <span>За примітками контрольних замірів:</span>
+                                    </div>
+                                    <div class="divide-y divide-emerald-500/20">
+                                      @for (an of item.attributedNotes; track an.readingDate + an.rawNote) {
+                                        <div class="py-1 flex items-start justify-between gap-1 text-3xs">
+                                          <div>
+                                            <span class="font-bold text-white">{{ formatDate(an.readingDate) }} • {{ an.hours }} год</span>
+                                            <span class="text-slate-300 block">{{ an.explanation }}</span>
+                                          </div>
+                                          <span class="font-mono font-bold text-emerald-300 shrink-0">~{{ an.kwh.toFixed(1) }} кВт·г</span>
+                                        </div>
+                                      }
+                                    </div>
+                                  </div>
+                                } @else {
+                                  <div class="text-center py-2.5 text-2xs text-slate-400 bg-[#0b1b38]/60 rounded-xl border border-white/10">
+                                    За {{ dSummary.monthLabel }} ще немає записів споживання.
+                                  </div>
+                                }
+                              </div>
+                            }
+                          </div>
+                        }
+                      </div>
+                    </div>
+                  } @else {
+                    <!-- ============================================== -->
+                    <!-- COMPACT LIST VIEW                              -->
+                    <!-- ============================================== -->
+                    <div class="divide-y divide-slate-100 dark:divide-slate-800/80">
+                    @for (item of dSummary.deviceRows; track item.device.id) {
+                      <div
+                        class="transition-colors"
+                        [class.bg-slate-50/60]="isCompactDeviceExpanded(item.device.id)"
+                        [class.dark:bg-slate-800/40]="isCompactDeviceExpanded(item.device.id)"
+                      >
+                        <!-- Ultra-Compact Row Header Bar (~48px) -->
+                        <div
+                          (click)="toggleCompactDevice(item.device.id)"
+                          class="px-3.5 py-2.5 sm:px-4 sm:py-3 flex items-center justify-between gap-3 cursor-pointer hover:bg-slate-50/80 dark:hover:bg-slate-800/60 transition-colors select-none"
+                        >
+                          <!-- Left: Device Icon & Identity Badges -->
+                          <div class="flex items-center gap-2.5 min-w-0 flex-1">
+                            <div
+                              class="w-8 h-8 rounded-lg flex items-center justify-center text-white shadow-2xs shrink-0"
+                              [style.background-color]="item.device.color || '#10b981'"
+                            >
+                              <mat-icon class="text-base">{{ item.device.icon || 'bolt' }}</mat-icon>
+                            </div>
+
+                            <div class="min-w-0 flex-1">
+                              <div class="flex items-center gap-1.5 flex-wrap">
+                                <span class="font-bold text-xs sm:text-sm text-slate-900 dark:text-white truncate">
+                                  {{ item.device.name }}
+                                </span>
+
+                                @if (item.isAirConditioner) {
+                                  <span
+                                    class="px-1.5 py-0.2 rounded text-3xs font-mono font-bold bg-sky-50 dark:bg-sky-950/80 text-sky-800 dark:text-sky-300 border border-sky-200 dark:border-sky-800"
+                                    title="Вказана потужність є максимальною при запуску/нагріві, а в робочому режимі споживання становить 400–800 Вт·г"
+                                  >
+                                    Макс {{ item.device.powerWatts || 2200 }} Вт • Робочий {{ item.steadyRangeLabel }} (~{{ item.steadyOperatingWatts }} Вт·г)
+                                  </span>
+                                } @else if (item.device.powerWatts) {
+                                  <span class="px-1.5 py-0.2 rounded text-3xs font-mono font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                                    {{ item.device.powerWatts }} Вт
+                                  </span>
+                                }
+                                @if (item.allLogsCount > 0 && item.avgKwhPerReading > 0) {
+                                  <span
+                                    class="px-1.5 py-0.2 rounded text-3xs font-mono font-bold bg-teal-50 dark:bg-teal-950/80 text-teal-800 dark:text-teal-300 border border-teal-200 dark:border-teal-800"
+                                    [title]="'Середнє споживання по наявних показах (' + item.allLogsCount + ' записів)'"
+                                  >
+                                    Сер. по показах: {{ item.avgKwhPerReading.toFixed(2) }} кВт·г
+                                  </span>
+                                }
+                                @if (item.device.batteryCapacityKwh) {
+                                  <span class="px-1.5 py-0.2 rounded text-3xs font-mono font-bold bg-blue-50 dark:bg-blue-950/80 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                                    {{ item.device.batteryCapacityKwh }} кВт·г
+                                  </span>
+                                }
+                                @if (item.device.category === 'heating_ac') {
+                                  <span class="px-1.5 py-0.2 rounded text-3xs font-bold bg-orange-50 dark:bg-orange-950/80 text-orange-700 dark:text-orange-300 border border-orange-200 dark:border-orange-800">
+                                    Обігрів
+                                  </span>
+                                }
+                                @if (item.device.isNightFriendly) {
+                                  <span class="px-1.5 py-0.2 rounded text-3xs font-bold bg-indigo-50 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
+                                    Ніч
+                                  </span>
+                                }
+                                @if (item.hasAttributedConsumption) {
+                                  <span class="px-1.5 py-0.2 rounded text-3xs font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700">
+                                    ~{{ item.attributedNoteKwh.toFixed(1) }} кВт·г ШІ
+                                  </span>
+                                }
+                                @if (item.isUnmonitoredCatalogDevice) {
+                                  <span class="px-1.5 py-0.2 rounded text-3xs font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
+                                    Фонове
+                                  </span>
+                                }
+                                @if (item.usageWarning; as uw) {
+                                  <span
+                                    class="px-1.5 py-0.2 rounded text-3xs font-extrabold inline-flex items-center gap-0.5 border"
+                                    [class.bg-rose-100]="uw.severity === 'critical'"
+                                    [class.dark:bg-rose-950/90]="uw.severity === 'critical'"
+                                    [class.text-rose-800]="uw.severity === 'critical'"
+                                    [class.dark:text-rose-300]="uw.severity === 'critical'"
+                                    [class.border-rose-300]="uw.severity === 'critical'"
+                                    [class.dark:border-rose-800]="uw.severity === 'critical'"
+                                    [class.bg-amber-100]="uw.severity === 'warning'"
+                                    [class.dark:bg-amber-950/90]="uw.severity === 'warning'"
+                                    [class.text-amber-900]="uw.severity === 'warning'"
+                                    [class.dark:text-amber-300]="uw.severity === 'warning'"
+                                    [class.border-amber-300]="uw.severity === 'warning'"
+                                    [class.dark:border-amber-800]="uw.severity === 'warning'"
+                                    [title]="'Споживання перевищує середнє (' + uw.monthlyAverageKwh.toFixed(1) + ' кВт·г) на +' + uw.excessPercent + '%'"
+                                  >
+                                    <mat-icon class="text-3xs leading-none">warning_amber</mat-icon>
+                                    <span>+{{ uw.excessPercent }}% вище сер.</span>
+                                  </span>
+                                }
+                              </div>
+                            </div>
+                          </div>
+
+                          <!-- Center/Right: Metrics, Share, Forecast, Quick Actions & Chevron -->
+                          <div class="flex items-center gap-2.5 sm:gap-3.5 shrink-0">
+                            <!-- Month Fact & Cost -->
+                            <div class="text-right">
+                              <div class="font-mono font-black text-xs sm:text-sm text-slate-900 dark:text-white">
+                                {{ item.monthKwh.toFixed(1) }}
+                                <span class="text-3xs font-normal text-slate-500 dark:text-slate-400">кВт·г</span>
+                              </div>
+                              <div class="text-3xs font-bold text-emerald-700 dark:text-emerald-400">
+                                {{ item.monthCostUah.toFixed(0) }} грн
+                              </div>
+                            </div>
+
+                            <!-- Share % & Progress bar -->
+                            <div class="hidden sm:flex flex-col items-end w-16 lg:w-20">
+                              <div class="text-3xs font-bold text-slate-600 dark:text-slate-300 font-mono">
+                                {{ item.shareOfHousePercent.toFixed(1) }}%
+                              </div>
+                              <div class="w-full h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden mt-0.5">
+                                <div
+                                  class="h-full rounded-full transition-all duration-300"
+                                  [style.width.%]="Math.min(100, item.shareOfHousePercent)"
+                                  [style.background-color]="item.device.color || '#10b981'"
+                                ></div>
+                              </div>
+                            </div>
+
+                            <!-- Weather Projected -->
+                            <div class="hidden md:block text-right">
+                              <span
+                                class="px-2 py-0.5 rounded-md text-3xs font-mono font-bold bg-amber-50 dark:bg-amber-950/70 text-amber-900 dark:text-amber-300 border border-amber-200 dark:border-amber-800"
+                                title="Прогноз до кінця місяця з урахуванням погоди"
+                              >
+                                ⛅ ~{{ item.weatherProjectedMonthKwh.toFixed(0) }} кВт·г
+                              </span>
+                            </div>
+
+                            <!-- Quick Actions -->
+                            @if (canEdit()) {
+                              <div class="flex items-center gap-1" (click)="$event.stopPropagation()">
+                                <button
+                                  type="button"
+                                  (click)="openAddDeviceLogModal(item.device.id)"
+                                  class="p-1 sm:px-2 sm:py-1 rounded-lg text-3xs font-bold bg-amber-500 hover:bg-amber-600 text-white transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                                  title="Внести споживання кВт·г"
+                                >
+                                  <mat-icon class="text-xs leading-none">add</mat-icon>
+                                  <span class="hidden xl:inline">+ кВт·г</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  (click)="openScreenshotModal(item.device.id)"
+                                  class="p-1 sm:px-2 sm:py-1 rounded-lg text-3xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                                  title="Завантажити скріншот"
+                                >
+                                  <mat-icon class="text-xs leading-none">add_photo_alternate</mat-icon>
+                                  <span class="hidden xl:inline">Фото</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  (click)="openEditDeviceModal(item.device)"
+                                  class="p-1 rounded-lg text-slate-400 hover:text-slate-800 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                                  title="Редагувати пристрій"
+                                >
+                                  <mat-icon class="text-xs leading-none">edit</mat-icon>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  (click)="deleteDevice(item.device.id)"
+                                  class="p-1 rounded-lg text-rose-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/60 transition-colors cursor-pointer"
+                                  title="Видалити пристрій"
+                                >
+                                  <mat-icon class="text-xs leading-none">delete</mat-icon>
+                                </button>
+                              </div>
+                            }
+
+                            <!-- Expand Chevron -->
+                            <button
+                              type="button"
+                              (click)="$event.stopPropagation(); toggleCompactDevice(item.device.id)"
+                              class="w-7 h-7 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                              [title]="isCompactDeviceExpanded(item.device.id) ? 'Згорнути деталі' : 'Розгорнути деталі'"
+                            >
+                              <mat-icon class="text-base leading-none transition-transform duration-200" [class.rotate-180]="isCompactDeviceExpanded(item.device.id)">
+                                expand_more
+                              </mat-icon>
+                            </button>
+                          </div>
+                        </div>
+
+                        <!-- ============================================== -->
+                        <!-- EXPANDED DETAILS DRAWER FOR THIS DEVICE        -->
+                        <!-- ============================================== -->
+                        @if (isCompactDeviceExpanded(item.device.id)) {
+                          <div class="px-4 py-4 sm:p-5 bg-slate-50/80 dark:bg-slate-800/50 border-t border-slate-100 dark:border-slate-800 space-y-4">
+                            <!-- Attributed Note or Unmonitored Banner -->
+                            @if (item.hasAttributedConsumption) {
+                              <div class="p-2.5 rounded-xl bg-emerald-50/90 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-2xs space-y-1">
+                                <div class="flex items-center justify-between text-emerald-900 dark:text-emerald-200 font-bold">
+                                  <span class="flex items-center gap-1">
+                                    <mat-icon class="text-xs text-emerald-600 dark:text-emerald-400 leading-none">psychology</mat-icon>
+                                    <span>Обліковано за контрольними замірами лічильника:</span>
+                                  </span>
+                                  <span class="font-mono text-emerald-700 dark:text-emerald-300">~{{ item.attributedNoteKwh.toFixed(1) }} кВт·г</span>
+                                </div>
+                                <p class="text-3xs text-emerald-800/90 dark:text-emerald-300/90">
+                                  Споживання розраховано за примітками до контрольних замірів для цього приладу ({{ item.attributedNotes.length }} замір(и)).
+                                </p>
+                              </div>
+                            } @else if (item.isUnmonitoredCatalogDevice) {
+                              <div class="p-2.5 rounded-xl bg-slate-100/80 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 text-3xs text-slate-600 dark:text-slate-300 space-y-0.5">
+                                <div class="font-bold flex items-center gap-1 text-slate-800 dark:text-slate-200">
+                                  <mat-icon class="text-xs text-indigo-500 leading-none">info</mat-icon>
+                                  <span>Споживання не ведеться окремо</span>
+                                </div>
+                                <p class="text-slate-500 dark:text-slate-400">
+                                  Прилад враховано у фоновому споживанні будинку (номінал {{ item.device.powerWatts || 1200 }} Вт). Вказуйте години роботи у примітках контрольних замірів для авто-розрахунку.
+                                </p>
+                              </div>
+                            }
+
+                            <!-- Full 4-Column Metrics Grid & Progress Bar -->
+                            <div class="p-3.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-700 space-y-2.5">
+                              <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                                <div>
+                                  <div class="text-3xs font-semibold uppercase text-slate-400 dark:text-slate-400">Спожито за місяць</div>
+                                  <div class="text-base sm:text-lg font-black font-mono text-slate-900 dark:text-white">
+                                    {{ item.monthKwh.toFixed(2) }}
+                                    <span class="text-3xs font-normal text-slate-500 dark:text-slate-400">кВт·г</span>
+                                  </div>
+                                  <div class="text-2xs font-bold text-emerald-700 dark:text-emerald-400">
+                                    {{ item.monthCostUah.toFixed(2) }} грн
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <div class="text-3xs font-semibold uppercase text-slate-400 dark:text-slate-400">Середньодобово</div>
+                                  <div class="text-sm sm:text-base font-bold font-mono text-slate-800 dark:text-slate-200">
+                                    {{ item.dailyPaceKwh.toFixed(2) }}
+                                    <span class="text-3xs font-normal text-slate-500 dark:text-slate-400">кВт·г/д</span>
+                                  </div>
+                                  @if (item.estimatedHoursPerDay !== null) {
+                                    <div class="text-3xs text-slate-500 dark:text-slate-400">
+                                      ~{{ item.estimatedHoursPerDay.toFixed(1) }} год/добу {{ item.isAirConditioner ? '(робочий ' + item.steadyOperatingWatts + ' Вт·г)' : 'роботи' }}
+                                    </div>
+                                  }
+                                </div>
+
+                                <div>
+                                  <div class="text-3xs font-semibold uppercase text-slate-400 dark:text-slate-400">Середнє по показах</div>
+                                  @if (item.allLogsCount > 0) {
+                                    <div class="text-sm sm:text-base font-bold font-mono text-teal-800 dark:text-teal-300">
+                                      {{ item.avgKwhPerReading.toFixed(2) }}
+                                      <span class="text-3xs font-normal text-teal-700 dark:text-teal-400">кВт·г/показ</span>
+                                    </div>
+                                    <div class="text-3xs text-slate-500 dark:text-slate-400">
+                                      За {{ item.allLogsCount }} показ(ами)
+                                      @if (item.monthLogs.length > 0) {
+                                        <span>• міс.: {{ item.monthAvgKwhPerReading.toFixed(2) }} кВт·г</span>
+                                      }
+                                    </div>
+                                  } @else {
+                                    <div class="text-xs font-semibold text-slate-400 dark:text-slate-500 mt-1">
+                                      Немає показів
+                                    </div>
+                                  }
+                                  @if (item.isAirConditioner) {
+                                    <div class="text-3xs font-semibold text-sky-700 dark:text-sky-300 mt-0.5">
+                                      Пік {{ item.device.powerWatts || 2200 }} Вт → Роб. {{ item.steadyRangeLabel }}
+                                    </div>
+                                  }
+                                </div>
+
+                                <div>
+                                  <div class="text-3xs font-semibold uppercase text-slate-400 dark:text-slate-400">Прогноз (з погодою)</div>
+                                  <div class="text-sm sm:text-base font-bold font-mono text-amber-800 dark:text-amber-300">
+                                    {{ item.weatherProjectedMonthKwh.toFixed(1) }}
+                                    <span class="text-3xs font-normal text-amber-700 dark:text-amber-400">кВт·г</span>
+                                  </div>
+                                  <div class="text-2xs font-semibold text-amber-700 dark:text-amber-400">
+                                    ~{{ item.weatherProjectedMonthCostUah.toFixed(0) }} грн
+                                    @if (Math.abs(item.weatherProjectedMonthKwh - item.projectedMonthKwh) >= 0.4) {
+                                      <span class="text-3xs text-slate-500 dark:text-slate-400 block font-normal">
+                                        (лін.: {{ item.projectedMonthKwh.toFixed(1) }} кВт·г)
+                                      </span>
+                                    }
+                                  </div>
+                                </div>
+                              </div>
+
+                              <!-- Share Progress Bar -->
+                              <div class="space-y-1 pt-1 border-t border-slate-100 dark:border-slate-800">
+                                <div class="flex items-center justify-between text-3xs font-semibold">
+                                  <span class="text-slate-600 dark:text-slate-400">Частка від споживання будинку</span>
+                                  <span class="font-mono font-bold text-slate-900 dark:text-white">{{ item.shareOfHousePercent.toFixed(1) }}%</span>
+                                </div>
+                                <div class="w-full h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+                                  <div
+                                    class="h-full rounded-full transition-all duration-500"
+                                    [style.width.%]="Math.min(100, item.shareOfHousePercent)"
+                                    [style.background-color]="item.device.color || '#10b981'"
+                                  ></div>
+                                </div>
+                              </div>
+                            </div>
+
+                            <!-- Logs History Section for this Device -->
+                            <div class="space-y-2">
+                              <div class="flex items-center justify-between text-2xs font-bold text-slate-700 dark:text-slate-300">
+                                <span>Журнал записів за {{ dSummary.monthLabel }} ({{ item.monthLogs.length }} запис(ів)):</span>
+                                @if (canEdit()) {
+                                  <div class="flex items-center gap-1.5">
+                                    <button
+                                      type="button"
+                                      (click)="openAddDeviceLogModal(item.device.id)"
+                                      class="px-2 py-1 rounded-lg text-3xs font-bold bg-amber-500 hover:bg-amber-600 text-white transition-colors cursor-pointer flex items-center gap-0.5"
+                                    >
+                                      <mat-icon class="text-xs leading-none">add</mat-icon>
+                                      <span>Додати запис</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      (click)="openScreenshotModal(item.device.id)"
+                                      class="px-2 py-1 rounded-lg text-3xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors cursor-pointer flex items-center gap-0.5"
+                                    >
+                                      <mat-icon class="text-xs leading-none">add_photo_alternate</mat-icon>
+                                      <span>Скріншот</span>
+                                    </button>
+                                  </div>
+                                }
+                              </div>
+
+                              @if (item.monthLogs.length > 0) {
+                                <div class="max-h-60 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-700 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-900">
+                                  @for (log of item.monthLogs; track log.id) {
+                                    @let logW = getEffectiveLogWeather(log);
+                                    <div class="p-2.5 flex items-start justify-between gap-2 text-xs hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors">
+                                      <div class="space-y-1 min-w-0 flex-1">
+                                        <div class="flex items-center gap-1.5 flex-wrap">
+                                          <span class="font-bold text-slate-900 dark:text-slate-100">{{ getDeviceLogDateLabel(log) }}</span>
+                                          @if (logW) {
+                                            <span
+                                              class="px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-950/90 text-sky-900 dark:text-sky-200 border border-sky-200 dark:border-sky-800 text-3xs font-mono font-bold inline-flex items-center gap-1"
+                                              [title]="'Погода на ' + log.date + ': ' + logW.condition + ' (від ' + logW.tempMinC + '°C до ' + logW.tempMaxC + '°C)'"
+                                            >
+                                              <mat-icon class="text-3xs text-sky-600 dark:text-sky-300 leading-none">{{ logW.icon }}</mat-icon>
+                                              <span>{{ logW.tempAvgC > 0 ? '+' : '' }}{{ logW.tempAvgC }}°C ({{ logW.condition }})</span>
+                                            </span>
+                                          }
+                                          <span
+                                            class="px-1.5 py-0.2 rounded text-3xs font-bold"
+                                            [class.bg-emerald-100]="log.entryMode === 'cumulative_month' || !log.entryMode"
+                                            [class.text-emerald-800]="log.entryMode === 'cumulative_month' || !log.entryMode"
+                                            [class.bg-sky-100]="log.entryMode === 'single_day'"
+                                            [class.text-sky-800]="log.entryMode === 'single_day'"
+                                            [class.bg-indigo-100]="log.entryMode === 'period_range'"
+                                            [class.text-indigo-800]="log.entryMode === 'period_range'"
+                                            [class.bg-amber-100]="log.entryMode === 'delta'"
+                                            [class.text-amber-800]="log.entryMode === 'delta'"
+                                          >
+                                            {{ getDeviceLogModeBadge(log) }}
+                                          </span>
+                                          @if (log.tariffSelection) {
+                                            <span
+                                              class="px-1.5 py-0.2 rounded text-3xs font-bold"
+                                              [class.bg-indigo-100]="log.tariffSelection === 'night_only'"
+                                              [class.text-indigo-800]="log.tariffSelection === 'night_only'"
+                                              [class.bg-amber-100]="log.tariffSelection === 'day_only'"
+                                              [class.text-amber-800]="log.tariffSelection === 'day_only'"
+                                              [class.bg-slate-100]="log.tariffSelection === 'auto_time'"
+                                              [class.text-slate-700]="log.tariffSelection === 'auto_time'"
+                                            >
+                                              {{ getDeviceLogTariffBadge(log) }}
+                                            </span>
+                                          }
+                                          @if (log.startTime || log.endTime || log.durationHours) {
+                                            <span class="px-1.5 py-0.2 rounded bg-slate-200/80 dark:bg-slate-800 text-slate-800 dark:text-slate-200 text-3xs font-mono font-semibold flex items-center gap-0.5">
+                                              <mat-icon class="text-3xs leading-none">schedule</mat-icon>
+                                              <span>{{ getDeviceLogTimeIntervalBadge(log) }}</span>
+                                            </span>
+                                          }
+                                          @if (log.fromScreenshot) {
+                                            <span class="px-1.5 py-0.2 rounded bg-teal-100 dark:bg-teal-950 text-teal-800 dark:text-teal-200 text-3xs font-bold flex items-center gap-0.5">
+                                              <mat-icon class="text-3xs leading-none">auto_awesome</mat-icon>
+                                              <span>AI Скріншот</span>
+                                            </span>
+                                          }
+                                        </div>
+                                        @if (log.comment) {
+                                          <div class="text-2xs text-slate-700 dark:text-slate-300">
+                                            <span class="font-semibold text-slate-500 dark:text-slate-400">Коментар:</span> {{ log.comment }}
+                                          </div>
+                                        }
+                                        @if (log.aiExplanation) {
+                                          <div class="text-3xs text-teal-800 dark:text-teal-200 bg-teal-50/80 dark:bg-teal-950/60 px-2 py-1 rounded border border-teal-200/70 dark:border-teal-800 mt-1">
+                                            <span class="font-bold">AI:</span> {{ log.aiExplanation }}
+                                          </div>
+                                        }
+                                      </div>
+                                      <div class="flex items-center gap-1.5 shrink-0">
+                                        <span class="font-mono font-bold text-slate-900 dark:text-white text-sm mr-1">
+                                          {{ log.entryMode && log.entryMode !== 'cumulative_month' ? '+' : '' }}{{ log.consumedKwh }} кВт·г
+                                        </span>
+                                        @if (canEdit()) {
+                                          <button
+                                            type="button"
+                                            (click)="openEditDeviceLogModal(item.device.id, log)"
+                                            class="px-2 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-100 hover:bg-indigo-50 dark:hover:bg-indigo-900/70 hover:text-indigo-700 dark:hover:text-indigo-200 cursor-pointer transition-colors inline-flex items-center gap-1 text-3xs font-semibold shadow-2xs"
+                                            title="Редагувати запис"
+                                          >
+                                            <mat-icon class="text-xs leading-none">edit</mat-icon>
+                                            <span class="hidden sm:inline">Ред.</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            (click)="deleteDeviceLog(item.device.id, log.id)"
+                                            class="px-2 py-1 rounded-lg bg-rose-50 dark:bg-rose-950/90 border border-rose-300 dark:border-rose-700 text-rose-700 dark:text-rose-200 hover:bg-rose-100 dark:hover:bg-rose-900 cursor-pointer transition-colors inline-flex items-center gap-1 text-3xs font-semibold shadow-2xs"
+                                            title="Видалити запис"
+                                          >
+                                            <mat-icon class="text-xs leading-none">delete</mat-icon>
+                                            <span class="hidden sm:inline">Видалити</span>
+                                          </button>
+                                        }
+                                      </div>
+                                    </div>
+                                  }
+                                </div>
+                              } @else if (item.attributedNotes.length > 0) {
+                                <div class="space-y-2 border border-emerald-200 dark:border-emerald-800 rounded-xl bg-emerald-50/60 dark:bg-emerald-950/40 p-2.5">
+                                  <div class="text-3xs font-bold text-emerald-800 dark:text-emerald-300 flex items-center gap-1">
+                                    <mat-icon class="text-xs leading-none">psychology</mat-icon>
+                                    <span>Розраховано за примітками контрольних замірів лічильника:</span>
+                                  </div>
+                                  <div class="divide-y divide-emerald-200/60 dark:divide-emerald-800/60">
+                                    @for (an of item.attributedNotes; track an.readingDate + an.rawNote) {
+                                      <div class="py-1.5 flex items-start justify-between gap-2 text-2xs">
+                                        <div>
+                                          <div class="font-bold text-slate-900 dark:text-slate-100">{{ formatDate(an.readingDate) }} • {{ an.hours }} год роботи</div>
+                                          <div class="text-3xs text-slate-600 dark:text-slate-300">Примітка: «{{ an.rawNote }}»</div>
+                                          <div class="text-3xs text-emerald-700 dark:text-emerald-300 mt-0.5">{{ an.explanation }}</div>
+                                        </div>
+                                        <span class="font-mono font-bold text-emerald-800 dark:text-emerald-300 shrink-0">~{{ an.kwh.toFixed(1) }} кВт·г</span>
+                                      </div>
+                                    }
+                                  </div>
+                                </div>
+                              } @else {
+                                <div class="text-center py-3 text-2xs text-slate-400 dark:text-slate-500 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800">
+                                  За {{ dSummary.monthLabel }} ще немає записів споживання для цього пристрою.
+                                </div>
+                              }
+                            </div>
                           </div>
                         }
                       </div>
                     }
                   </div>
                 }
-              </div>
-            } @else {
-              <!-- Empty State when no devices added yet -->
-              <div class="p-8 text-center rounded-2xl bg-white border border-dashed border-slate-300 space-y-3">
-                <div class="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto">
-                  <mat-icon class="text-3xl">electrical_services</mat-icon>
-                </div>
-                <div>
-                  <h4 class="text-sm font-bold text-slate-800">Ще не додано жодного електроприладу</h4>
-                  <p class="text-xs text-slate-500 max-w-lg mx-auto mt-1">
-                    Додайте бойлер, кондиціонер, пральну машину, обігрівач або розумну розетку, щоб фіксувати спожиту електроенергію на конкретну дату або розпізнавати її зі скріншотів за допомогою ШІ.
-                  </p>
-                </div>
-                @if (canEdit()) {
-                  <div class="flex items-center justify-center gap-2.5 flex-wrap pt-2">
-                    <button
-                      type="button"
-                      (click)="openDeviceModal()"
-                      class="px-4 py-2 rounded-xl text-xs font-bold bg-slate-900 hover:bg-slate-800 text-white flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <mat-icon class="text-base leading-none">add</mat-icon>
-                      <span>Додати перший пристрій</span>
-                    </button>
-                    <button
-                      type="button"
-                      (click)="openScreenshotModal()"
-                      class="px-4 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-1.5 cursor-pointer shadow-2xs"
-                    >
-                      <mat-icon class="text-base leading-none">add_photo_alternate</mat-icon>
-                      <span>Завантажити скріншот з коментарем (ШІ)</span>
-                    </button>
+              } @else {
+                  <!-- Empty State when no devices added yet -->
+                  <div class="p-8 text-center rounded-2xl bg-white dark:bg-slate-900 border border-dashed border-slate-300 dark:border-slate-700 space-y-3 m-4">
+                    <div class="w-12 h-12 rounded-2xl bg-emerald-50 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto">
+                      <mat-icon class="text-3xl">electrical_services</mat-icon>
+                    </div>
+                    <div>
+                      <h4 class="text-sm font-bold text-slate-800 dark:text-slate-200">Ще не додано жодного електроприладу</h4>
+                      <p class="text-xs text-slate-500 dark:text-slate-400 max-w-lg mx-auto mt-1">
+                        Додайте бойлер, кондиціонер, пральну машину, обігрівач або розумну розетку, щоб фіксувати спожиту електроенергію на конкретну дату або розпізнавати її зі скріншотів за допомогою ШІ.
+                      </p>
+                    </div>
+                    @if (canEdit()) {
+                      <div class="flex items-center justify-center gap-2.5 flex-wrap pt-2">
+                        <button
+                          type="button"
+                          (click)="openDeviceModal()"
+                          class="px-4 py-2 rounded-xl text-xs font-bold bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                        >
+                          <mat-icon class="text-base leading-none">add</mat-icon>
+                          <span>Додати перший пристрій</span>
+                        </button>
+                        <button
+                          type="button"
+                          (click)="openScreenshotModal()"
+                          class="px-4 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                        >
+                          <mat-icon class="text-base leading-none">add_photo_alternate</mat-icon>
+                          <span>Завантажити скріншот з коментарем (ШІ)</span>
+                        </button>
+                      </div>
+                    }
                   </div>
                 }
-              </div>
-            }
+              }
+            </div>
 
             <!-- ======================================================== -->
             <!-- CHARTS, BREAKDOWN & FORECAST ANALYTICS                   -->
@@ -2172,254 +3473,342 @@ import {
             @if (dSummary.deviceRows.length > 0) {
               <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
                 <!-- Left 7 cols: Visual Structure & SVG Forecast Chart -->
-                <div class="lg:col-span-7 p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-5">
-                  <div class="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                    <div>
-                      <h4 class="text-sm sm:text-base font-bold text-slate-900 flex items-center gap-2">
-                        <mat-icon class="text-emerald-600">pie_chart</mat-icon>
-                        <span>Структура споживання та прогноз на кінець місяця</span>
-                      </h4>
-                      <p class="text-2xs text-slate-500">
-                        Порівняння фактичного споживання окремих пристроїв із загальним споживанням будинку
-                      </p>
+                <div class="lg:col-span-7 p-4 sm:p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-2xs space-y-4">
+                  <div class="flex items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
+                    <div class="flex items-center gap-2.5">
+                      <button
+                        type="button"
+                        (click)="isChartsSectionExpanded.update(v => !v)"
+                        class="w-8 h-8 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-700 dark:text-emerald-400 flex items-center justify-center shrink-0 cursor-pointer hover:bg-emerald-500/25 transition-colors"
+                        [title]="isChartsSectionExpanded() ? 'Згорнути графік структури' : 'Розгорнути графік структури'"
+                      >
+                        <mat-icon class="text-lg leading-none transition-transform duration-200" [class.rotate-180]="!isChartsSectionExpanded()">
+                          expand_more
+                        </mat-icon>
+                      </button>
+                      <div>
+                        <h4
+                          class="text-sm sm:text-base font-bold text-slate-900 dark:text-white flex items-center gap-1.5 cursor-pointer hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
+                          (click)="isChartsSectionExpanded.update(v => !v)"
+                        >
+                          <mat-icon class="text-emerald-600 dark:text-emerald-400 text-lg">pie_chart</mat-icon>
+                          <span>Структура споживання та прогноз</span>
+                        </h4>
+                        <p class="text-2xs text-slate-500 dark:text-slate-400">
+                          Порівняння споживання пристроїв із загальним показником будинку
+                        </p>
+                      </div>
                     </div>
+
+                    <button
+                      type="button"
+                      (click)="isChartsSectionExpanded.update(v => !v)"
+                      class="p-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer"
+                      [title]="isChartsSectionExpanded() ? 'Згорнути' : 'Розгорнути'"
+                    >
+                      <mat-icon class="text-base leading-none">
+                        {{ isChartsSectionExpanded() ? 'expand_less' : 'expand_more' }}
+                      </mat-icon>
+                    </button>
                   </div>
 
-                  <!-- Multi-segment Stacked Bar (All Devices + Untracked) -->
-                  <div class="space-y-2">
-                    <div class="flex items-center justify-between text-2xs font-semibold text-slate-600">
-                      <span>Розподіл спожитих {{ dSummary.houseReferenceKwh.toFixed(1) }} кВт·год за {{ dSummary.monthLabel }}</span>
-                      <span>100% ({{ dSummary.houseReferenceCostUah.toFixed(0) }} грн)</span>
-                    </div>
-                    <div class="w-full h-5 rounded-xl bg-slate-100 overflow-hidden flex border border-slate-200 p-0.5 gap-0.5">
-                      @for (item of dSummary.deviceRows; track item.device.id) {
-                        @if (item.shareOfHousePercent > 0) {
+                  @if (isChartsSectionExpanded()) {
+                    <!-- Multi-segment Stacked Bar (All Devices + Untracked) -->
+                    <div class="space-y-2">
+                      <div class="flex items-center justify-between text-2xs font-semibold text-slate-600 dark:text-slate-400">
+                        <span>Розподіл спожитих {{ dSummary.houseReferenceKwh.toFixed(1) }} кВт·год за {{ dSummary.monthLabel }}</span>
+                        <span>100% ({{ dSummary.houseReferenceCostUah.toFixed(0) }} грн)</span>
+                      </div>
+                      <div class="w-full h-5 rounded-xl bg-slate-100 dark:bg-slate-800 overflow-hidden flex border border-slate-200 dark:border-slate-700 p-0.5 gap-0.5">
+                        @for (item of dSummary.deviceRows; track item.device.id) {
+                          @if (item.shareOfHousePercent > 0) {
+                            <div
+                              class="h-full first:rounded-l-lg last:rounded-r-lg transition-all duration-500"
+                              [style.width.%]="Math.max(2, item.shareOfHousePercent)"
+                              [style.background-color]="item.device.color || '#10b981'"
+                              [title]="item.device.name + ': ' + item.monthKwh.toFixed(2) + ' кВт·год (' + item.shareOfHousePercent.toFixed(1) + '%)'"
+                            ></div>
+                          }
+                        }
+                        @if (dSummary.untrackedSharePercent > 0) {
                           <div
-                            class="h-full first:rounded-l-lg last:rounded-r-lg transition-all duration-500"
-                            [style.width.%]="Math.max(2, item.shareOfHousePercent)"
-                            [style.background-color]="item.device.color || '#10b981'"
-                            [title]="item.device.name + ': ' + item.monthKwh.toFixed(2) + ' кВт·год (' + item.shareOfHousePercent.toFixed(1) + '%)'"
+                            class="h-full bg-slate-300 dark:bg-slate-600 last:rounded-r-lg transition-all duration-500"
+                            [style.width.%]="dSummary.untrackedSharePercent"
+                            [title]="'Інші прилади (поза моніторингом): ' + dSummary.untrackedKwh.toFixed(2) + ' кВт·год (' + dSummary.untrackedSharePercent.toFixed(1) + '%)'"
                           ></div>
                         }
-                      }
-                      @if (dSummary.untrackedSharePercent > 0) {
-                        <div
-                          class="h-full bg-slate-300 last:rounded-r-lg transition-all duration-500"
-                          [style.width.%]="dSummary.untrackedSharePercent"
-                          [title]="'Інші прилади (поза моніторингом): ' + dSummary.untrackedKwh.toFixed(2) + ' кВт·год (' + dSummary.untrackedSharePercent.toFixed(1) + '%)'"
-                        ></div>
-                      }
-                    </div>
-                    <!-- Legend -->
-                    <div class="flex items-center gap-3 flex-wrap pt-1">
-                      @for (item of dSummary.deviceRows; track item.device.id) {
+                      </div>
+                      <!-- Legend -->
+                      <div class="flex items-center gap-3 flex-wrap pt-1">
+                        @for (item of dSummary.deviceRows; track item.device.id) {
+                          <div class="flex items-center gap-1.5 text-2xs">
+                            <span class="w-2.5 h-2.5 rounded-xs shrink-0" [style.background-color]="item.device.color || '#10b981'"></span>
+                            <span class="font-semibold text-slate-700 dark:text-slate-300">{{ item.device.name }}</span>
+                            <span class="font-mono text-slate-500 dark:text-slate-400">({{ item.shareOfHousePercent.toFixed(1) }}%)</span>
+                          </div>
+                        }
                         <div class="flex items-center gap-1.5 text-2xs">
-                          <span class="w-2.5 h-2.5 rounded-xs shrink-0" [style.background-color]="item.device.color || '#10b981'"></span>
-                          <span class="font-semibold text-slate-700">{{ item.device.name }}</span>
-                          <span class="font-mono text-slate-500">({{ item.shareOfHousePercent.toFixed(1) }}%)</span>
+                          <span class="w-2.5 h-2.5 rounded-xs bg-slate-300 dark:bg-slate-600 shrink-0"></span>
+                          <span class="font-semibold text-slate-600 dark:text-slate-400">Інші прилади (фонове)</span>
+                          <span class="font-mono text-slate-500 dark:text-slate-400">({{ dSummary.untrackedSharePercent.toFixed(1) }}%)</span>
                         </div>
-                      }
-                      <div class="flex items-center gap-1.5 text-2xs">
-                        <span class="w-2.5 h-2.5 rounded-xs bg-slate-300 shrink-0"></span>
-                        <span class="font-semibold text-slate-600">Інші прилади (фонове)</span>
-                        <span class="font-mono text-slate-500">({{ dSummary.untrackedSharePercent.toFixed(1) }}%)</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <!-- SVG Grouped Bar Chart: Fact vs End-of-Month Forecast per Device -->
-                  <div class="pt-2 space-y-2">
-                    <div class="flex items-center justify-between text-xs font-bold text-slate-800">
-                      <span>Графік: Спожито на дату vs Прогноз до кінця місяця (кВт·год)</span>
-                      <div class="flex items-center gap-3 text-3xs font-semibold">
-                        <span class="flex items-center gap-1">
-                          <span class="w-2.5 h-2.5 rounded-xs bg-emerald-500 inline-block"></span> Факт на дату
-                        </span>
-                        <span class="flex items-center gap-1">
-                          <span class="w-2.5 h-2.5 rounded-xs bg-amber-300 border border-amber-500 inline-block"></span> Прогноз ({{ dSummary.daysInMonth }} дн.)
-                        </span>
                       </div>
                     </div>
 
-                    <div class="w-full overflow-x-auto bg-slate-50/70 rounded-xl border border-slate-200/80 p-3">
-                      <svg
-                        [attr.viewBox]="'0 0 600 ' + (Math.max(1, dSummary.deviceRows.length + 1) * 44 + 20)"
-                        class="w-full h-auto min-w-[440px]"
-                      >
-                        @for (item of dSummary.deviceRows; track item.device.id; let idx = $index) {
-                          @let yPos = idx * 44 + 12;
-                          @let factW = dSummary.maxChartKwh > 0 ? Math.max(4, (item.monthKwh / dSummary.maxChartKwh) * 340) : 4;
-                          @let projW = dSummary.maxChartKwh > 0 ? Math.max(4, (item.projectedMonthKwh / dSummary.maxChartKwh) * 340) : 4;
-                          <!-- Device label -->
-                          <text
-                            x="4"
-                            [attr.y]="yPos + 15"
-                            class="fill-slate-800 text-[11px] font-bold"
-                          >
-                            {{ item.device.name.length > 18 ? item.device.name.slice(0, 18) + '…' : item.device.name }}
-                          </text>
-                          <text
-                            x="4"
-                            [attr.y]="yPos + 29"
-                            class="fill-slate-400 text-[9px] font-mono"
-                          >
-                            ~{{ item.dailyPaceKwh.toFixed(2) }} кВт·г/д ({{ item.shareOfHousePercent.toFixed(0) }}%)
-                          </text>
+                    <!-- SVG Grouped Bar Chart: Fact vs End-of-Month Forecast per Device -->
+                    <div class="pt-2 space-y-2">
+                      <div class="flex items-center justify-between text-xs font-bold text-slate-800 dark:text-slate-200">
+                        <span>Графік: Спожито на дату vs Прогноз до кінця місяця (кВт·год)</span>
+                        <div class="flex items-center gap-3 text-3xs font-semibold">
+                          <span class="flex items-center gap-1">
+                            <span class="w-2.5 h-2.5 rounded-xs bg-emerald-500 inline-block"></span> Факт на дату
+                          </span>
+                          <span class="flex items-center gap-1">
+                            <span class="w-2.5 h-2.5 rounded-xs bg-amber-300 border border-amber-500 inline-block"></span> Прогноз ({{ dSummary.daysInMonth }} дн.)
+                          </span>
+                        </div>
+                      </div>
 
-                          <!-- Projected bar (background) -->
+                      <div class="w-full overflow-x-auto bg-slate-50/70 dark:bg-slate-800/60 rounded-xl border border-slate-200/80 dark:border-slate-700 p-3">
+                        <svg
+                          [attr.viewBox]="'0 0 600 ' + (Math.max(1, dSummary.deviceRows.length + 1) * 44 + 20)"
+                          class="w-full h-auto min-w-[440px]"
+                        >
+                          @for (item of dSummary.deviceRows; track item.device.id; let idx = $index) {
+                            @let yPos = idx * 44 + 12;
+                            @let factW = dSummary.maxChartKwh > 0 ? Math.max(4, (item.monthKwh / dSummary.maxChartKwh) * 340) : 4;
+                            @let projW = dSummary.maxChartKwh > 0 ? Math.max(4, (item.projectedMonthKwh / dSummary.maxChartKwh) * 340) : 4;
+                            <!-- Device label -->
+                            <text
+                              x="4"
+                              [attr.y]="yPos + 15"
+                              class="fill-slate-800 dark:fill-slate-200 text-[11px] font-bold"
+                            >
+                              {{ item.device.name.length > 18 ? item.device.name.slice(0, 18) + '…' : item.device.name }}
+                            </text>
+                            <text
+                              x="4"
+                              [attr.y]="yPos + 29"
+                              class="fill-slate-400 dark:fill-slate-400 text-[9px] font-mono"
+                            >
+                              ~{{ item.dailyPaceKwh.toFixed(2) }} кВт·г/д ({{ item.shareOfHousePercent.toFixed(0) }}%)
+                            </text>
+
+                            <!-- Projected bar (background) -->
+                            <rect
+                              x="145"
+                              [attr.y]="yPos + 4"
+                              [attr.width]="projW"
+                              height="24"
+                              rx="6"
+                              fill="#fde68a"
+                              stroke="#f59e0b"
+                              stroke-width="1"
+                              stroke-dasharray="3 2"
+                            />
+                            <!-- Actual bar (foreground) -->
+                            <rect
+                              x="145"
+                              [attr.y]="yPos + 4"
+                              [attr.width]="factW"
+                              height="24"
+                              rx="6"
+                              [attr.fill]="item.device.color || '#10b981'"
+                            />
+
+                            <!-- Value label -->
+                            <text
+                              [attr.x]="153 + Math.max(factW, projW)"
+                              [attr.y]="yPos + 20"
+                              class="fill-slate-800 dark:fill-slate-200 text-[10px] font-mono font-bold"
+                            >
+                              {{ item.monthKwh.toFixed(1) }} → {{ item.projectedMonthKwh.toFixed(1) }} кВт·г ({{ item.projectedMonthCostUah.toFixed(0) }} грн)
+                            </text>
+                          }
+
+                          <!-- Untracked row -->
+                          @let unY = dSummary.deviceRows.length * 44 + 12;
+                          @let unFactW = dSummary.maxChartKwh > 0 ? Math.max(4, (dSummary.untrackedKwh / dSummary.maxChartKwh) * 340) : 4;
+                          @let unProjW = dSummary.maxChartKwh > 0 ? Math.max(4, (dSummary.projectedUntrackedMonthKwh / dSummary.maxChartKwh) * 340) : 4;
+                          <text x="4" [attr.y]="unY + 15" class="fill-slate-600 dark:fill-slate-300 text-[11px] font-semibold">
+                            Інші прилади (фонове)
+                          </text>
+                          <text x="4" [attr.y]="unY + 29" class="fill-slate-400 text-[9px] font-mono">
+                            поза моніторингом ({{ dSummary.untrackedSharePercent.toFixed(0) }}%)
+                          </text>
                           <rect
                             x="145"
-                            [attr.y]="yPos + 4"
-                            [attr.width]="projW"
-                            height="24"
+                            [attr.y]="unY + 4"
+                            [attr.width]="unProjW"
+                            height="22"
                             rx="6"
-                            fill="#fde68a"
-                            stroke="#f59e0b"
+                            fill="#e2e8f0"
+                            stroke="#94a3b8"
                             stroke-width="1"
                             stroke-dasharray="3 2"
                           />
-                          <!-- Actual bar (foreground) -->
                           <rect
                             x="145"
-                            [attr.y]="yPos + 4"
-                            [attr.width]="factW"
-                            height="24"
+                            [attr.y]="unY + 4"
+                            [attr.width]="unFactW"
+                            height="22"
                             rx="6"
-                            [attr.fill]="item.device.color || '#10b981'"
+                            fill="#64748b"
                           />
-
-                          <!-- Value label -->
                           <text
-                            [attr.x]="153 + Math.max(factW, projW)"
-                            [attr.y]="yPos + 20"
-                            class="fill-slate-800 text-[10px] font-mono font-bold"
+                            [attr.x]="153 + Math.max(unFactW, unProjW)"
+                            [attr.y]="unY + 19"
+                            class="fill-slate-600 dark:fill-slate-300 text-[10px] font-mono font-semibold"
                           >
-                            {{ item.monthKwh.toFixed(1) }} → {{ item.projectedMonthKwh.toFixed(1) }} кВт·г ({{ item.projectedMonthCostUah.toFixed(0) }} грн)
+                            {{ dSummary.untrackedKwh.toFixed(1) }} → {{ dSummary.projectedUntrackedMonthKwh.toFixed(1) }} кВт·г
                           </text>
-                        }
-
-                        <!-- Untracked row -->
-                        @let unY = dSummary.deviceRows.length * 44 + 12;
-                        @let unFactW = dSummary.maxChartKwh > 0 ? Math.max(4, (dSummary.untrackedKwh / dSummary.maxChartKwh) * 340) : 4;
-                        @let unProjW = dSummary.maxChartKwh > 0 ? Math.max(4, (dSummary.projectedUntrackedMonthKwh / dSummary.maxChartKwh) * 340) : 4;
-                        <text x="4" [attr.y]="unY + 15" class="fill-slate-600 text-[11px] font-semibold">
-                          Інші прилади (фонове)
-                        </text>
-                        <text x="4" [attr.y]="unY + 29" class="fill-slate-400 text-[9px] font-mono">
-                          поза моніторингом ({{ dSummary.untrackedSharePercent.toFixed(0) }}%)
-                        </text>
-                        <rect
-                          x="145"
-                          [attr.y]="unY + 4"
-                          [attr.width]="unProjW"
-                          height="22"
-                          rx="6"
-                          fill="#e2e8f0"
-                          stroke="#94a3b8"
-                          stroke-width="1"
-                          stroke-dasharray="3 2"
-                        />
-                        <rect
-                          x="145"
-                          [attr.y]="unY + 4"
-                          [attr.width]="unFactW"
-                          height="22"
-                          rx="6"
-                          fill="#64748b"
-                        />
-                        <text
-                          [attr.x]="153 + Math.max(unFactW, unProjW)"
-                          [attr.y]="unY + 19"
-                          class="fill-slate-600 text-[10px] font-mono font-semibold"
-                        >
-                          {{ dSummary.untrackedKwh.toFixed(1) }} → {{ dSummary.projectedUntrackedMonthKwh.toFixed(1) }} кВт·г
-                        </text>
-                      </svg>
+                        </svg>
+                      </div>
                     </div>
-                  </div>
 
-                  <!-- Daily Timeline Progression across logged dates in the month -->
-                  @if (dSummary.dateProgressionPoints.length > 0) {
-                    <div class="pt-2 space-y-2 border-t border-slate-100">
-                      <div class="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                        <mat-icon class="text-sm text-indigo-600 leading-none">timeline</mat-icon>
-                        <span>Динаміка внесеного споживання пристроїв по датах місяця</span>
-                      </div>
-                      <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                        @for (pt of dSummary.dateProgressionPoints; track pt.date) {
-                          <div class="p-2.5 rounded-xl bg-slate-50 border border-slate-200/80">
-                            <div class="text-3xs font-semibold text-slate-500">{{ formatDate(pt.date) }}</div>
-                            <div class="text-sm font-black font-mono text-slate-900 mt-0.5">
-                              {{ pt.cumulativeDevicesKwh.toFixed(2) }} <span class="text-3xs font-normal">кВт·г</span>
+                    <!-- Daily Timeline Progression -->
+                    @if (dSummary.dateProgressionPoints.length > 0) {
+                      <div class="pt-2 space-y-2 border-t border-slate-100 dark:border-slate-800">
+                        <div class="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                          <mat-icon class="text-sm text-indigo-600 dark:text-indigo-400 leading-none">timeline</mat-icon>
+                          <span>Динаміка внесеного споживання пристроїв по датах місяця</span>
+                        </div>
+                        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          @for (pt of dSummary.dateProgressionPoints; track pt.date) {
+                            <div class="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700">
+                              <div class="text-3xs font-semibold text-slate-500 dark:text-slate-400">{{ formatDate(pt.date) }}</div>
+                              <div class="text-sm font-black font-mono text-slate-900 dark:text-white mt-0.5">
+                                {{ pt.cumulativeDevicesKwh.toFixed(2) }} <span class="text-3xs font-normal">кВт·г</span>
+                              </div>
+                              <div class="text-3xs text-emerald-700 dark:text-emerald-400 font-medium truncate" [title]="pt.devicesSummary">
+                                {{ pt.devicesSummary }}
+                              </div>
                             </div>
-                            <div class="text-3xs text-emerald-700 font-medium truncate" [title]="pt.devicesSummary">
-                              {{ pt.devicesSummary }}
-                            </div>
-                          </div>
-                        }
+                          }
+                        </div>
                       </div>
+                    }
+                  } @else {
+                    <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-2xs text-slate-600 dark:text-slate-300 flex items-center justify-between gap-2">
+                      <span>Розподіл: прилади {{ dSummary.totalDevicesKwh.toFixed(1) }} кВт·г ({{ dSummary.devicesSharePercent.toFixed(0) }}%) vs інші {{ dSummary.untrackedKwh.toFixed(1) }} кВт·г</span>
+                      <button
+                        type="button"
+                        (click)="isChartsSectionExpanded.set(true)"
+                        class="text-3xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
+                      >
+                        Розгорнути графік
+                      </button>
                     </div>
                   }
                 </div>
 
                 <!-- Right 5 cols: Smart Analysis, Insights & Forecast Recommendations -->
-                <div class="lg:col-span-5 p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/90 shadow-2xs flex flex-col justify-between space-y-4">
+                <div class="lg:col-span-5 p-4 sm:p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-2xs flex flex-col justify-between space-y-4">
                   <div class="space-y-4">
-                    <div class="border-b border-slate-100 pb-3">
-                      <h4 class="text-sm sm:text-base font-bold text-slate-900 flex items-center gap-2">
-                        <mat-icon class="text-amber-500">lightbulb</mat-icon>
-                        <span>Аналіз споживання та прогнози</span>
-                      </h4>
-                      <p class="text-2xs text-slate-500">
-                        Автоматичні висновки на основі показів лічильника та окремих електроприладів
-                      </p>
-                    </div>
-
-                    <div class="space-y-3">
-                      @for (insight of dSummary.insights; track insight.title) {
-                        <div
-                          class="p-3.5 rounded-xl border space-y-1"
-                          [class.bg-amber-50/70]="insight.tone === 'amber'"
-                          [class.border-amber-200]="insight.tone === 'amber'"
-                          [class.bg-emerald-50/70]="insight.tone === 'emerald'"
-                          [class.border-emerald-200]="insight.tone === 'emerald'"
-                          [class.bg-indigo-50/70]="insight.tone === 'indigo'"
-                          [class.border-indigo-200]="insight.tone === 'indigo'"
-                          [class.bg-rose-50/70]="insight.tone === 'rose'"
-                          [class.border-rose-200]="insight.tone === 'rose'"
+                    <div class="flex items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
+                      <div class="flex items-center gap-2.5">
+                        <button
+                          type="button"
+                          (click)="isInsightsSectionExpanded.update(v => !v)"
+                          class="w-8 h-8 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0 cursor-pointer hover:bg-amber-500/25 transition-colors"
+                          [title]="isInsightsSectionExpanded() ? 'Згорнути інсайти' : 'Розгорнути інсайти'"
                         >
-                          <div class="flex items-center justify-between gap-2">
-                            <div class="flex items-center gap-1.5 text-xs font-bold text-slate-900">
-                              <mat-icon
-                                class="text-base leading-none"
-                                [class.text-amber-600]="insight.tone === 'amber'"
-                                [class.text-emerald-600]="insight.tone === 'emerald'"
-                                [class.text-indigo-600]="insight.tone === 'indigo'"
-                                [class.text-rose-600]="insight.tone === 'rose'"
-                              >
-                                {{ insight.icon }}
-                              </mat-icon>
-                              <span>{{ insight.title }}</span>
-                            </div>
-                            @if (insight.badge) {
-                              <span class="px-2 py-0.5 rounded-full text-3xs font-mono font-bold bg-white/90 text-slate-800 border border-slate-200">
-                                {{ insight.badge }}
-                              </span>
-                            }
-                          </div>
-                          <p class="text-2xs text-slate-700 leading-relaxed">
-                            {{ insight.description }}
+                          <mat-icon class="text-lg leading-none transition-transform duration-200" [class.rotate-180]="!isInsightsSectionExpanded()">
+                            expand_more
+                          </mat-icon>
+                        </button>
+                        <div>
+                          <h4
+                            class="text-sm sm:text-base font-bold text-slate-900 dark:text-white flex items-center gap-1.5 cursor-pointer hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+                            (click)="isInsightsSectionExpanded.update(v => !v)"
+                          >
+                            <mat-icon class="text-amber-500 text-lg">lightbulb</mat-icon>
+                            <span>Аналіз та прогнози</span>
+                          </h4>
+                          <p class="text-2xs text-slate-500 dark:text-slate-400">
+                            Висновки на основі показів лічильника та приладів
                           </p>
                         </div>
-                      }
+                      </div>
+
+                      <button
+                        type="button"
+                        (click)="isInsightsSectionExpanded.update(v => !v)"
+                        class="p-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer"
+                        [title]="isInsightsSectionExpanded() ? 'Згорнути' : 'Розгорнути'"
+                      >
+                        <mat-icon class="text-base leading-none">
+                          {{ isInsightsSectionExpanded() ? 'expand_less' : 'expand_more' }}
+                        </mat-icon>
+                      </button>
                     </div>
+
+                    @if (isInsightsSectionExpanded()) {
+                      <div class="space-y-3">
+                        @for (insight of dSummary.insights; track insight.title) {
+                          <div
+                            class="p-3.5 rounded-xl border space-y-1"
+                            [class.bg-amber-50/70]="insight.tone === 'amber'"
+                            [class.dark:bg-amber-950/30]="insight.tone === 'amber'"
+                            [class.border-amber-200]="insight.tone === 'amber'"
+                            [class.dark:border-amber-800]="insight.tone === 'amber'"
+                            [class.bg-emerald-50/70]="insight.tone === 'emerald'"
+                            [class.dark:bg-emerald-950/30]="insight.tone === 'emerald'"
+                            [class.border-emerald-200]="insight.tone === 'emerald'"
+                            [class.dark:border-emerald-800]="insight.tone === 'emerald'"
+                            [class.bg-indigo-50/70]="insight.tone === 'indigo'"
+                            [class.dark:bg-indigo-950/30]="insight.tone === 'indigo'"
+                            [class.border-indigo-200]="insight.tone === 'indigo'"
+                            [class.dark:border-indigo-800]="insight.tone === 'indigo'"
+                            [class.bg-rose-50/70]="insight.tone === 'rose'"
+                            [class.dark:bg-rose-950/30]="insight.tone === 'rose'"
+                            [class.border-rose-200]="insight.tone === 'rose'"
+                            [class.dark:border-rose-800]="insight.tone === 'rose'"
+                          >
+                            <div class="flex items-center justify-between gap-2">
+                              <div class="flex items-center gap-1.5 text-xs font-bold text-slate-900 dark:text-white">
+                                <mat-icon
+                                  class="text-base leading-none"
+                                  [class.text-amber-600]="insight.tone === 'amber'"
+                                  [class.text-emerald-600]="insight.tone === 'emerald'"
+                                  [class.text-indigo-600]="insight.tone === 'indigo'"
+                                  [class.text-rose-600]="insight.tone === 'rose'"
+                                >
+                                  {{ insight.icon }}
+                                </mat-icon>
+                                <span>{{ insight.title }}</span>
+                              </div>
+                              @if (insight.badge) {
+                                <span class="px-2.5 py-0.5 rounded-full text-3xs font-mono font-extrabold bg-slate-900 dark:bg-slate-950 text-amber-300 dark:text-emerald-300 border border-slate-700 shrink-0 shadow-2xs">
+                                  {{ insight.badge }}
+                                </span>
+                              }
+                            </div>
+                            <p class="text-2xs text-slate-700 dark:text-slate-200 leading-relaxed">
+                              {{ insight.description }}
+                            </p>
+                          </div>
+                        }
+                      </div>
+                    } @else {
+                      <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-2xs text-slate-600 dark:text-slate-300 flex items-center justify-between gap-2">
+                        <span>{{ dSummary.insights.length }} AI-інсайтів сформовано для цього будинку</span>
+                        <button
+                          type="button"
+                          (click)="isInsightsSectionExpanded.set(true)"
+                          class="text-3xs font-semibold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
+                        >
+                          Розгорнути інсайти
+                        </button>
+                      </div>
+                    }
                   </div>
 
                   <!-- Quick CTA to upload screenshot -->
                   @if (canEdit()) {
                     <div class="p-3.5 rounded-xl bg-gradient-to-r from-emerald-500/10 via-teal-500/10 to-transparent border border-emerald-500/20 flex items-center justify-between gap-3">
-                      <div class="text-2xs text-slate-700">
-                        <span class="font-bold text-slate-900 block">Маєте скріншот з додатка розумної розетки?</span>
+                      <div class="text-2xs text-slate-700 dark:text-slate-300">
+                        <span class="font-bold text-slate-900 dark:text-white block">Маєте скріншот з додатка розумної розетки?</span>
                         Завантажте фото та додайте коментар — ШІ сам порахує кВт·год і додасть до приладу.
                       </div>
                       <button
@@ -2438,55 +3827,117 @@ import {
           </div>
         } @else if (activeTab() === 'analytics') {
           <!-- Charts Section -->
-          <div class="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-4">
-            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
-              <div>
-                <h3 class="text-base font-bold text-slate-900 flex items-center gap-2">
-                  <mat-icon class="text-indigo-600">query_stats</mat-icon>
-                  <span>Аналітика споживання та тенденцій</span>
-                </h3>
-                <p class="text-xs text-slate-500">
-                  Аналіз темпу кВт·г/добу, контроль лімітів та перевірка ефективності 2-зонного тарифу
-                </p>
+          <div class="p-4 sm:p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-2xs space-y-4">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div class="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  (click)="isAnalyticsChartExpanded.update(v => !v)"
+                  class="w-8 h-8 rounded-xl bg-indigo-500/15 border border-indigo-500/30 text-indigo-700 dark:text-indigo-400 flex items-center justify-center shrink-0 cursor-pointer hover:bg-indigo-500/25 transition-colors"
+                  [title]="isAnalyticsChartExpanded() ? 'Згорнути аналітику' : 'Розгорнути аналітику'"
+                >
+                  <mat-icon class="text-lg leading-none transition-transform duration-200" [class.rotate-180]="!isAnalyticsChartExpanded()">
+                    expand_more
+                  </mat-icon>
+                </button>
+                <div>
+                  <h3
+                    class="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2 cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+                    (click)="isAnalyticsChartExpanded.update(v => !v)"
+                  >
+                    <mat-icon class="text-indigo-600 dark:text-indigo-400">query_stats</mat-icon>
+                    <span>Аналітика споживання та тенденцій</span>
+                  </h3>
+                  <p class="text-xs text-slate-500 dark:text-slate-400">
+                    Аналіз темпу кВт·г/добу, контроль лімітів та перевірка ефективності 2-зонного тарифу
+                  </p>
+                </div>
               </div>
+
               <div class="flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
                   (click)="activeTab.set('devices')"
-                  class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-50 border border-emerald-200 text-emerald-800 hover:bg-emerald-100 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                  class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
                 >
-                  <mat-icon class="text-sm text-emerald-600">electrical_services</mat-icon>
-                  <span>Пристрої та AI-прогнози ({{ accountDevices().length }})</span>
+                  <mat-icon class="text-sm text-emerald-600 dark:text-emerald-400">electrical_services</mat-icon>
+                  <span>Пристрої ({{ accountDevices().length }})</span>
                 </button>
                 @if (canEdit()) {
                   <button
                     type="button"
                     (click)="openReadingModal(true)"
-                    class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                    class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/70 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
                   >
-                    <mat-icon class="text-sm text-indigo-600">visibility</mat-icon>
+                    <mat-icon class="text-sm text-indigo-600 dark:text-indigo-400">visibility</mat-icon>
                     <span>+ Контрольний замір</span>
                   </button>
                 }
+                <button
+                  type="button"
+                  (click)="isAnalyticsChartExpanded.update(v => !v)"
+                  class="p-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer"
+                  [title]="isAnalyticsChartExpanded() ? 'Згорнути' : 'Розгорнути'"
+                >
+                  <mat-icon class="text-base leading-none">
+                    {{ isAnalyticsChartExpanded() ? 'expand_less' : 'expand_more' }}
+                  </mat-icon>
+                </button>
               </div>
             </div>
 
-            <app-electricity-chart
-              [timeline]="electricityTimelineData()"
-              [monthly]="electricityMonthlyData()"
-              [stats]="electricityStatsKPIs()"
-            />
+            @if (isAnalyticsChartExpanded()) {
+              <app-electricity-chart
+                [timeline]="electricityTimelineData()"
+                [monthly]="electricityMonthlyData()"
+                [stats]="electricityStatsKPIs()"
+              />
+            } @else {
+              <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-2xs text-slate-600 dark:text-slate-300 flex items-center justify-between gap-2">
+                <span>Графіки помісячного споживання та аналітики зон згорнуто для економії місця.</span>
+                <button
+                  type="button"
+                  (click)="isAnalyticsChartExpanded.set(true)"
+                  class="text-3xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                >
+                  Розгорнути графіки
+                </button>
+              </div>
+            }
           </div>
         } @else {
           <!-- Readings History Section -->
-          <div class="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-4">
-            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-              <div>
-                <h3 class="text-sm sm:text-base font-bold text-slate-900">Історія передачі показів та розрахунків</h3>
-                <p class="text-3xs sm:text-xs text-slate-500">Усі зафіксовані покази по поточному особовому рахунку</p>
+          <div class="p-4 sm:p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-2xs space-y-4">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div class="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  (click)="isHistoryTableExpanded.update(v => !v)"
+                  class="w-8 h-8 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-700 dark:text-amber-400 flex items-center justify-center shrink-0 cursor-pointer hover:bg-amber-500/25 transition-colors"
+                  [title]="isHistoryTableExpanded() ? 'Згорнути історію показів' : 'Розгорнути історію показів'"
+                >
+                  <mat-icon class="text-lg leading-none transition-transform duration-200" [class.rotate-180]="!isHistoryTableExpanded()">
+                    expand_more
+                  </mat-icon>
+                </button>
+                <div>
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <h3
+                      class="text-sm sm:text-base font-bold text-slate-900 dark:text-white cursor-pointer hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
+                      (click)="isHistoryTableExpanded.update(v => !v)"
+                    >
+                      Історія передачі показів та розрахунків
+                    </h3>
+                    <span class="px-2 py-0.5 rounded-full text-2xs font-extrabold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                      {{ filteredAccountReadings().length }} запис(ів)
+                    </span>
+                  </div>
+                  <p class="text-3xs sm:text-xs text-slate-500 dark:text-slate-400">Усі зафіксовані покази по поточному особовому рахунку</p>
+                </div>
               </div>
-              @if (canEdit()) {
-                <div class="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 scrollbar-thin">
+
+              <div class="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 scrollbar-thin">
+                @if (canEdit()) {
                   <button
                     type="button"
                     (click)="openReadingModal(false)"
@@ -2498,228 +3949,271 @@ import {
                   <button
                     type="button"
                     (click)="openReadingModal(true)"
-                    class="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-2xs sm:text-xs font-semibold bg-indigo-50 border border-indigo-300 text-indigo-900 hover:bg-indigo-100 transition-colors flex items-center gap-1 sm:gap-1.5 shadow-2xs cursor-pointer shrink-0"
+                    class="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-2xs sm:text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/70 border border-indigo-300 dark:border-indigo-800 text-indigo-900 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition-colors flex items-center gap-1 sm:gap-1.5 shadow-2xs cursor-pointer shrink-0"
                     title="Внести контрольний замір"
                   >
-                    <mat-icon class="text-sm sm:text-base text-indigo-600 leading-none">visibility</mat-icon>
+                    <mat-icon class="text-sm sm:text-base text-indigo-600 dark:text-indigo-400 leading-none">visibility</mat-icon>
                     <span>Контрольний замір</span>
                   </button>
                   <button
                     type="button"
                     (click)="openCameraModal()"
-                    class="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-2xs sm:text-xs font-semibold bg-amber-50 border border-amber-300 text-amber-900 hover:bg-amber-100 transition-colors flex items-center gap-1 sm:gap-1.5 shadow-2xs cursor-pointer shrink-0"
+                    class="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-2xs sm:text-xs font-semibold bg-amber-50 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors flex items-center gap-1 sm:gap-1.5 shadow-2xs cursor-pointer shrink-0"
                     title="Сфотографувати лічильник та розпізнати покази"
                   >
-                    <mat-icon class="text-sm sm:text-base text-amber-600 leading-none">photo_camera</mat-icon>
+                    <mat-icon class="text-sm sm:text-base text-amber-600 dark:text-amber-400 leading-none">photo_camera</mat-icon>
                     <span>Зробити фото</span>
                   </button>
-                </div>
-              }
+                }
+
+                <button
+                  type="button"
+                  (click)="isHistoryTableExpanded.update(v => !v)"
+                  class="p-1.5 sm:p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer shrink-0"
+                  [title]="isHistoryTableExpanded() ? 'Згорнути журнал' : 'Розгорнути журнал'"
+                >
+                  <mat-icon class="text-base leading-none">
+                    {{ isHistoryTableExpanded() ? 'expand_less' : 'expand_more' }}
+                  </mat-icon>
+                </button>
+              </div>
             </div>
 
-            <!-- History Table -->
-            @if (filteredAccountReadings().length > 0) {
-              <div class="overflow-x-auto rounded-xl border border-slate-200">
-                <table class="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr class="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase text-3xs tracking-wider">
-                      <th class="py-3 px-3.5">Дата передачі</th>
-                      <th class="py-3 px-3.5">Покази лічильника</th>
-                      <th class="py-3 px-3.5">Спожито (кВт·г)</th>
-                      <th class="py-3 px-3.5">Тариф (грн)</th>
-                      <th class="py-3 px-3.5">Сума до сплати</th>
-                      <th class="py-3 px-3.5">Статус</th>
-                      @if (canEdit()) {
-                        <th class="py-3 px-3.5 text-right">Дії</th>
-                      }
-                    </tr>
-                  </thead>
-                  <tbody class="divide-y divide-slate-100 text-slate-800">
-                    @for (r of filteredAccountReadings(); track r.id) {
-                      <tr class="hover:bg-slate-50/80 transition-colors">
-                        <!-- Date -->
-                        <td class="py-3 px-3.5 whitespace-nowrap">
-                          <div class="flex items-center gap-1.5">
-                            <div class="font-bold text-slate-900">{{ formatDate(r.date) }}</div>
-                            @if (r.isControlOnly) {
-                              <span class="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-indigo-100 text-indigo-800 text-3xs font-bold border border-indigo-200">
-                                <mat-icon class="text-3xs leading-none">visibility</mat-icon> Контрольний
-                              </span>
-                            }
-                          </div>
-                          <div class="text-3xs text-slate-400 font-mono">{{ r.periodMonth || r.date.substring(0, 7) }}</div>
-                        </td>
-
-                        <!-- Meter Readings -->
-                        <td class="py-3 px-3.5 whitespace-nowrap">
-                          @if (acc.electricityTariffType === 'dual') {
-                            <div class="font-mono text-xs">
-                              <span class="text-amber-600 font-bold">День (Т1):</span> {{ r.readingT1 }}
-                            </div>
-                            <div class="font-mono text-xs">
-                              <span class="text-indigo-600 font-bold">Ніч (Т2):</span> {{ r.readingT2 }}
-                            </div>
-                          } @else {
-                            <div class="font-mono text-xs font-bold text-slate-900">
-                              {{ r.readingT1 }} кВт·г
-                            </div>
-                          }
-                        </td>
-
-                        <!-- Consumption -->
-                        <td class="py-3 px-3.5 whitespace-nowrap">
-                          <div class="font-bold text-slate-900 text-sm">
-                            {{ totalConsumedKwh(r) }} <span class="text-2xs font-normal text-slate-500">кВт·г</span>
-                          </div>
-                          @if (acc.electricityTariffType === 'dual') {
-                            <div class="text-3xs text-slate-500">
-                              Т1: {{ r.consumptionT1 || 0 }} • Т2: {{ r.consumptionT2 || 0 }}
-                            </div>
-                          }
-                          @if (r.dailyAvgConsumption && r.dailyAvgConsumption > 0) {
-                            <div class="text-3xs text-emerald-600 font-medium">
-                              ~{{ r.dailyAvgConsumption }} кВт·г/добу
-                            </div>
-                          }
-                        </td>
-
-                        <!-- Rates -->
-                        <td class="py-3 px-3.5 whitespace-nowrap">
-                          @if (r.isControlOnly) {
-                            <span class="text-2xs text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded font-medium border border-indigo-200/60 inline-flex items-center gap-1">
-                              <mat-icon class="text-3xs">query_stats</mat-icon> Тільки контроль
-                            </span>
-                          } @else if (acc.electricityTariffType === 'dual') {
-                            <div class="text-2xs text-slate-600">
-                              Д: {{ r.rateT1 || '—' }} / Н: {{ r.rateT2 || '—' }}
-                            </div>
-                            <div class="flex items-center gap-1.5 mt-0.5">
-                              <span class="text-3xs uppercase font-semibold" [class.text-indigo-600]="r.season === 'winter'" [class.text-amber-600]="r.season === 'summer'">
-                                {{ r.season === 'summer' ? 'Літо' : 'Зима' }}
-                              </span>
-                              @if (isWinterLimitExceededReading(r)) {
-                                <button
-                                  type="button"
-                                  (click)="showReadingBreakdown(r)"
-                                  class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-3xs font-bold bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200 transition-colors"
-                                  title="Перевищено зимовий ліміт 2000 кВт·г. Натисніть для перегляду пропорційного розрахунку"
-                                >
-                                  <span>❄️ >2000 кВт·г</span>
-                                  <mat-icon class="text-xs leading-none">info</mat-icon>
-                                </button>
-                              }
-                            </div>
-                          } @else {
-                            <span class="text-xs font-semibold text-slate-700">
-                              {{ r.rateT1 || currentSingleRate() }} грн
-                            </span>
-                          }
-                        </td>
-
-                        <!-- Total Cost -->
-                        <td class="py-3 px-3.5 whitespace-nowrap">
-                          @if (r.isControlOnly) {
-                            <span class="font-semibold text-slate-400 text-sm">
-                              0.00 грн
-                            </span>
-                            <div class="text-3xs text-indigo-600 font-medium">Без оплати</div>
-                          } @else {
-                            <span class="font-bold text-slate-900 text-sm">
-                              {{ r.totalCost.toFixed(2) }} грн
-                            </span>
-                          }
-                          @if (cleanReadingNote(r.note)) {
-                            <div class="text-3xs text-slate-400 max-w-xs truncate" [title]="cleanReadingNote(r.note)">{{ cleanReadingNote(r.note) }}</div>
-                          }
-                        </td>
-
-                        <!-- Status & Pay Toggle -->
-                        <td class="py-3 px-3.5 whitespace-nowrap">
-                          @if (r.isControlOnly) {
-                            <span class="px-2.5 py-1 rounded-full text-2xs font-semibold bg-slate-100 text-slate-600 inline-flex items-center gap-1 border border-slate-200">
-                              <mat-icon class="text-xs leading-none">visibility</mat-icon>
-                              <span>Моніторинг</span>
-                            </span>
-                          } @else if (canEdit()) {
-                            <button
-                              type="button"
-                              (click)="togglePaidStatus(r)"
-                              class="px-2.5 py-1 rounded-full text-2xs font-bold inline-flex items-center gap-1 cursor-pointer transition-colors"
-                              [class.bg-emerald-100]="r.isPaid"
-                              [class.text-emerald-800]="r.isPaid"
-                              [class.hover:bg-emerald-200]="r.isPaid"
-                              [class.bg-rose-100]="!r.isPaid"
-                              [class.text-rose-800]="!r.isPaid"
-                              [class.hover:bg-rose-200]="!r.isPaid"
-                            >
-                              <mat-icon class="text-xs leading-none">{{ r.isPaid ? 'check_circle' : 'pending' }}</mat-icon>
-                              <span>{{ r.isPaid ? 'Сплачено' : 'До сплати' }}</span>
-                            </button>
-                          } @else {
-                            <span
-                              class="px-2.5 py-1 rounded-full text-2xs font-bold inline-flex items-center gap-1"
-                              [class.bg-emerald-100]="r.isPaid"
-                              [class.text-emerald-800]="r.isPaid"
-                              [class.bg-rose-100]="!r.isPaid"
-                              [class.text-rose-800]="!r.isPaid"
-                            >
-                              <mat-icon class="text-xs leading-none">{{ r.isPaid ? 'check_circle' : 'pending' }}</mat-icon>
-                              <span>{{ r.isPaid ? 'Сплачено' : 'До сплати' }}</span>
-                            </span>
-                          }
-                        </td>
-
-                        <!-- Actions -->
+            <!-- History Table Content -->
+            @if (isHistoryTableExpanded()) {
+              @if (filteredAccountReadings().length > 0) {
+                <div class="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+                  <table class="w-full text-left border-collapse text-xs">
+                    <thead>
+                      <tr class="bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 font-semibold uppercase text-3xs tracking-wider">
+                        <th class="py-3 px-3.5">Дата передачі</th>
+                        <th class="py-3 px-3.5">Покази лічильника</th>
+                        <th class="py-3 px-3.5">Спожито (кВт·г)</th>
+                        <th class="py-3 px-3.5">Тариф (грн)</th>
+                        <th class="py-3 px-3.5">Сума до сплати</th>
+                        <th class="py-3 px-3.5">Статус</th>
                         @if (canEdit()) {
-                          <td class="py-3 px-3.5 whitespace-nowrap text-right">
-                            <button
-                              type="button"
-                              (click)="openEditReadingModal(r)"
-                              class="p-1 rounded-lg text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition-colors cursor-pointer mr-1"
-                              title="Редагувати запис"
-                            >
-                              <mat-icon class="text-base leading-none">edit</mat-icon>
-                            </button>
-                            <button
-                              type="button"
-                              (click)="deleteReading(r.id)"
-                              class="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                              title="Видалити запис"
-                            >
-                              <mat-icon class="text-base leading-none">delete</mat-icon>
-                            </button>
-                          </td>
+                          <th class="py-3 px-3.5 text-right">Дії</th>
                         }
                       </tr>
-                    }
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 dark:divide-slate-800 text-slate-800 dark:text-slate-200">
+                      @for (r of filteredAccountReadings(); track r.id) {
+                        <tr class="hover:bg-slate-50/80 dark:hover:bg-slate-800/50 transition-colors">
+                          <!-- Date -->
+                          <td class="py-3 px-3.5 whitespace-nowrap">
+                            <div class="flex items-center gap-1.5">
+                              <div class="font-bold text-slate-900 dark:text-white">{{ formatDate(r.date) }}</div>
+                              @if (r.isControlOnly) {
+                                <span class="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded bg-indigo-100 dark:bg-indigo-950 text-indigo-800 dark:text-indigo-200 text-3xs font-bold border border-indigo-200 dark:border-indigo-800">
+                                  <mat-icon class="text-3xs leading-none">visibility</mat-icon> Контрольний
+                                </span>
+                              }
+                            </div>
+                            <div class="text-3xs text-slate-400 dark:text-slate-500 font-mono">{{ r.periodMonth || r.date.substring(0, 7) }}</div>
+                          </td>
+
+                          <!-- Meter Readings -->
+                          <td class="py-3 px-3.5 whitespace-nowrap">
+                            @if (acc.electricityTariffType === 'dual') {
+                              <div class="font-mono text-xs">
+                                <span class="text-amber-600 dark:text-amber-400 font-bold">День (Т2):</span> {{ r.readingT1 }}
+                              </div>
+                              <div class="font-mono text-xs">
+                                <span class="text-indigo-600 dark:text-indigo-400 font-bold">Ніч (Т1):</span> {{ r.readingT2 }}
+                              </div>
+                            } @else {
+                              <div class="font-mono text-xs font-bold text-slate-900 dark:text-white">
+                                {{ r.readingT1 }} кВт·г
+                              </div>
+                            }
+                          </td>
+
+                          <!-- Consumption -->
+                          <td class="py-3 px-3.5 whitespace-nowrap">
+                            <div class="font-bold text-slate-900 dark:text-white text-sm">
+                              {{ totalConsumedKwh(r) }} <span class="text-2xs font-normal text-slate-500 dark:text-slate-400">кВт·г</span>
+                            </div>
+                            @if (acc.electricityTariffType === 'dual') {
+                              <div class="text-3xs text-slate-500 dark:text-slate-400">
+                                День (Т2): {{ r.consumptionT1 || 0 }} • Ніч (Т1): {{ r.consumptionT2 || 0 }}
+                              </div>
+                            }
+                            @if (r.dailyAvgConsumption && r.dailyAvgConsumption > 0) {
+                              <div class="text-3xs text-emerald-600 dark:text-emerald-400 font-medium">
+                                ~{{ r.dailyAvgConsumption }} кВт·г/добу
+                              </div>
+                            }
+                          </td>
+
+                          <!-- Rates -->
+                          <td class="py-3 px-3.5 whitespace-nowrap">
+                            @if (r.isControlOnly) {
+                              <span class="text-2xs text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/70 px-2 py-0.5 rounded font-medium border border-indigo-200/60 dark:border-indigo-800 inline-flex items-center gap-1">
+                                <mat-icon class="text-3xs">query_stats</mat-icon> Тільки контроль
+                              </span>
+                            } @else if (acc.electricityTariffType === 'dual') {
+                              <div class="text-2xs text-slate-600 dark:text-slate-300">
+                                Д: {{ r.rateT1 || '—' }} / Н: {{ r.rateT2 || '—' }}
+                              </div>
+                              <div class="flex items-center gap-1.5 mt-0.5">
+                                <span class="text-3xs uppercase font-semibold" [class.text-indigo-600]="r.season === 'winter'" [class.text-amber-600]="r.season === 'summer'">
+                                  {{ r.season === 'summer' ? 'Літо' : 'Зима' }}
+                                </span>
+                                @if (isWinterLimitExceededReading(r)) {
+                                  <button
+                                    type="button"
+                                    (click)="showReadingBreakdown(r)"
+                                    class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-3xs font-bold bg-amber-100 dark:bg-amber-950 text-amber-900 dark:text-amber-300 border border-amber-300 dark:border-amber-700 hover:bg-amber-200 dark:hover:bg-amber-900 transition-colors"
+                                    title="Перевищено зимовий ліміт 2000 кВт·г"
+                                  >
+                                    <span>❄️ >2000 кВт·г</span>
+                                    <mat-icon class="text-xs leading-none">info</mat-icon>
+                                  </button>
+                                }
+                              </div>
+                            } @else {
+                              <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                                {{ r.rateT1 || currentSingleRate() }} грн
+                              </span>
+                            }
+                          </td>
+
+                          <!-- Total Cost -->
+                          <td class="py-3 px-3.5 whitespace-nowrap">
+                            @if (r.isControlOnly) {
+                              <span class="font-semibold text-slate-400 dark:text-slate-500 text-sm">
+                                0.00 грн
+                              </span>
+                              <div class="text-3xs text-indigo-600 dark:text-indigo-400 font-medium">Без оплати</div>
+                            } @else {
+                              <span class="font-bold text-slate-900 dark:text-white text-sm">
+                                {{ r.totalCost.toFixed(2) }} грн
+                              </span>
+                            }
+                            @if (cleanReadingNote(r.note)) {
+                              <div class="text-3xs text-slate-400 dark:text-slate-500 max-w-xs truncate" [title]="cleanReadingNote(r.note)">{{ cleanReadingNote(r.note) }}</div>
+                            }
+                            @if (r.isControlOnly) {
+                              @if (getControlNoteAnalysis(r); as cAnalysis) {
+                                <div
+                                  class="mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/80 border border-emerald-200 dark:border-emerald-800 text-3xs font-semibold text-emerald-800 dark:text-emerald-200 cursor-help"
+                                  [title]="cAnalysis.explanation"
+                                >
+                                  <mat-icon class="text-3xs text-emerald-600 dark:text-emerald-400 leading-none">psychology</mat-icon>
+                                  <span>{{ cAnalysis.matchedDeviceName || cAnalysis.detectedAction }}: ~{{ cAnalysis.estimatedKwh }} кВт·г ({{ cAnalysis.durationHours }} год)</span>
+                                </div>
+                              }
+                            }
+                          </td>
+
+                          <!-- Status & Pay Toggle -->
+                          <td class="py-3 px-3.5 whitespace-nowrap">
+                            @if (r.isControlOnly) {
+                              <span class="px-2.5 py-1 rounded-full text-2xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 inline-flex items-center gap-1 border border-slate-200 dark:border-slate-700">
+                                <mat-icon class="text-xs leading-none">visibility</mat-icon>
+                                <span>Моніторинг</span>
+                              </span>
+                            } @else if (canEdit()) {
+                              <button
+                                type="button"
+                                (click)="togglePaidStatus(r)"
+                                class="px-2.5 py-1 rounded-full text-2xs font-bold inline-flex items-center gap-1 cursor-pointer transition-colors"
+                                [class.bg-emerald-100]="r.isPaid"
+                                [class.dark:bg-emerald-950]="r.isPaid"
+                                [class.text-emerald-800]="r.isPaid"
+                                [class.dark:text-emerald-300]="r.isPaid"
+                                [class.hover:bg-emerald-200]="r.isPaid"
+                                [class.bg-rose-100]="!r.isPaid"
+                                [class.dark:bg-rose-950]="!r.isPaid"
+                                [class.text-rose-800]="!r.isPaid"
+                                [class.dark:text-rose-300]="!r.isPaid"
+                                [class.hover:bg-rose-200]="!r.isPaid"
+                              >
+                                <mat-icon class="text-xs leading-none">{{ r.isPaid ? 'check_circle' : 'pending' }}</mat-icon>
+                                <span>{{ r.isPaid ? 'Сплачено' : 'До сплати' }}</span>
+                              </button>
+                            } @else {
+                              <span
+                                class="px-2.5 py-1 rounded-full text-2xs font-bold inline-flex items-center gap-1"
+                                [class.bg-emerald-100]="r.isPaid"
+                                [class.dark:bg-emerald-950]="r.isPaid"
+                                [class.text-emerald-800]="r.isPaid"
+                                [class.dark:text-emerald-300]="r.isPaid"
+                                [class.bg-rose-100]="!r.isPaid"
+                                [class.dark:bg-rose-950]="!r.isPaid"
+                                [class.text-rose-800]="!r.isPaid"
+                                [class.dark:text-rose-300]="!r.isPaid"
+                              >
+                                <mat-icon class="text-xs leading-none">{{ r.isPaid ? 'check_circle' : 'pending' }}</mat-icon>
+                                <span>{{ r.isPaid ? 'Сплачено' : 'До сплати' }}</span>
+                              </span>
+                            }
+                          </td>
+
+                          <!-- Actions -->
+                          @if (canEdit()) {
+                            <td class="py-3 px-3.5 whitespace-nowrap text-right">
+                              <button
+                                type="button"
+                                (click)="openEditReadingModal(r)"
+                                class="p-1 rounded-lg text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/60 transition-colors cursor-pointer mr-1"
+                                title="Редагувати запис"
+                              >
+                                <mat-icon class="text-base leading-none">edit</mat-icon>
+                              </button>
+                              <button
+                                type="button"
+                                (click)="deleteReading(r.id)"
+                                class="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/60 transition-colors cursor-pointer"
+                                title="Видалити запис"
+                              >
+                                <mat-icon class="text-base leading-none">delete</mat-icon>
+                              </button>
+                            </td>
+                          }
+                        </tr>
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              } @else {
+                <div class="py-10 text-center bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-dashed border-slate-300 dark:border-slate-700">
+                  <mat-icon class="text-3xl text-slate-400 dark:text-slate-500 mb-1">history</mat-icon>
+                  <div class="text-xs font-semibold text-slate-600 dark:text-slate-300">Записів за обраним фільтром не знайдено</div>
+                  <p class="text-3xs text-slate-400 dark:text-slate-500 mt-0.5">Внесіть перші дані лічильника вручну або сфотографуйте табло.</p>
+                  @if (canEdit()) {
+                    <div class="flex items-center justify-center gap-2 mt-3">
+                      <button
+                        type="button"
+                        (click)="openReadingModal(false)"
+                        class="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-amber-500 hover:bg-amber-600 text-white transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                      >
+                        <mat-icon class="text-base leading-none">add</mat-icon>
+                        <span>Внести покази</span>
+                      </button>
+                      <button
+                        type="button"
+                        (click)="openCameraModal()"
+                        class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-amber-50 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                      >
+                        <mat-icon class="text-base text-amber-600 dark:text-amber-400 leading-none">photo_camera</mat-icon>
+                        <span>Зробити фото</span>
+                      </button>
+                    </div>
+                  }
+                </div>
+              }
             } @else {
-              <div class="py-10 text-center bg-slate-50 rounded-xl border border-dashed border-slate-300">
-                <mat-icon class="text-3xl text-slate-400 mb-1">history</mat-icon>
-                <div class="text-xs font-semibold text-slate-600">Записів за обраним фільтром не знайдено</div>
-                <p class="text-3xs text-slate-400 mt-0.5">Внесіть перші дані лічильника вручну або сфотографуйте табло.</p>
-                @if (canEdit()) {
-                  <div class="flex items-center justify-center gap-2 mt-3">
-                    <button
-                      type="button"
-                      (click)="openReadingModal(false)"
-                      class="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-amber-500 hover:bg-amber-600 text-white transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
-                    >
-                      <mat-icon class="text-base leading-none">add</mat-icon>
-                      <span>Внести покази</span>
-                    </button>
-                    <button
-                      type="button"
-                      (click)="openCameraModal()"
-                      class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-amber-50 border border-amber-300 text-amber-900 hover:bg-amber-100 transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
-                    >
-                      <mat-icon class="text-base text-amber-600 leading-none">photo_camera</mat-icon>
-                      <span>Зробити фото</span>
-                    </button>
-                  </div>
-                }
+              <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-2xs text-slate-600 dark:text-slate-300 flex items-center justify-between gap-2">
+                <span>Історію показів лічильника ({{ filteredAccountReadings().length }} записів) згорнуто для економії місця.</span>
+                <button
+                  type="button"
+                  (click)="isHistoryTableExpanded.set(true)"
+                  class="text-3xs font-semibold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
+                >
+                  Розгорнути журнал
+                </button>
               </div>
             }
           </div>
@@ -2994,7 +4488,7 @@ import {
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                   <div>
                     <label for="acc-t1" class="block text-3xs font-semibold text-slate-600 mb-0.5">
-                      {{ accountForm.get('electricityTariffType')?.value === 'dual' ? 'Початковий День (Т1)' : 'Початковий показник' }}
+                      {{ accountForm.get('electricityTariffType')?.value === 'dual' ? 'Початковий День (Т2)' : 'Початковий показник' }}
                     </label>
                     <input
                       id="acc-t1"
@@ -3009,7 +4503,7 @@ import {
                   @if (accountForm.get('electricityTariffType')?.value === 'dual') {
                     <div>
                       <label for="acc-t2" class="block text-3xs font-semibold text-slate-600 mb-0.5">
-                        Початковий Ніч (Т2)
+                        Початковий Ніч (Т1)
                       </label>
                       <input
                         id="acc-t2"
@@ -3067,9 +4561,9 @@ import {
     <!-- ======================================================== -->
     @if (isReadingModalOpen()) {
       <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-2 sm:p-4 flex items-center justify-center">
-        <div class="w-full max-w-lg bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] animate-in fade-in zoom-in-95 duration-150 my-auto">
+        <div class="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] animate-in fade-in zoom-in-95 duration-150 my-auto">
           <!-- Pinned Header -->
-          <div class="flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 bg-slate-50 shrink-0">
+          <div class="flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/80 shrink-0">
             <div class="flex items-center gap-2.5">
               <div
                 class="w-9 h-9 rounded-xl text-white flex items-center justify-center shrink-0"
@@ -3079,20 +4573,20 @@ import {
                 <mat-icon>{{ readingForm.get('isControlOnly')?.value ? 'visibility' : 'speed' }}</mat-icon>
               </div>
               <div>
-                <h3 class="text-base font-bold text-slate-900">
+                <h3 class="text-base font-bold text-slate-900 dark:text-white">
                   @if (editingReadingId()) {
                     {{ readingForm.get('isControlOnly')?.value ? 'Редагувати контрольний замір' : 'Редагувати показник лічильника' }}
                   } @else {
                     {{ readingForm.get('isControlOnly')?.value ? 'Контрольний замір електроенергії' : 'Внесення показів електроенергії' }}
                   }
                 </h3>
-                <p class="text-2xs text-slate-500">{{ currentAccount()?.name }} • Особовий № {{ currentAccount()?.accountNumber }}</p>
+                <p class="text-2xs text-slate-500 dark:text-slate-400">{{ currentAccount()?.name }} • Особовий № {{ currentAccount()?.accountNumber }}</p>
               </div>
             </div>
             <button
               type="button"
               (click)="closeReadingModal()"
-              class="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 flex items-center justify-center cursor-pointer transition-colors"
+              class="w-8 h-8 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-slate-800 flex items-center justify-center cursor-pointer transition-colors"
             >
               <mat-icon class="text-lg">close</mat-icon>
             </button>
@@ -3103,13 +4597,15 @@ import {
             <div class="p-4 sm:p-5 space-y-4 overflow-y-auto flex-1 overscroll-contain">
               <!-- Purpose Switcher: Billing vs Control Only -->
               <div class="space-y-1.5">
-                <span class="block text-xs font-semibold text-slate-700">Призначення показу *</span>
+                <span class="block text-xs font-semibold text-slate-700 dark:text-slate-300">Призначення показу *</span>
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   <label
                     class="p-3 rounded-xl border flex items-start gap-2.5 cursor-pointer transition-all"
                     [class.border-amber-500]="!readingForm.get('isControlOnly')?.value"
                     [class.bg-amber-50/70]="!readingForm.get('isControlOnly')?.value"
+                    [class.dark:bg-amber-950/30]="!readingForm.get('isControlOnly')?.value"
                     [class.border-slate-200]="readingForm.get('isControlOnly')?.value"
+                    [class.dark:border-slate-700]="readingForm.get('isControlOnly')?.value"
                   >
                     <input
                       type="radio"
@@ -3119,11 +4615,11 @@ import {
                       class="mt-0.5 text-amber-500 focus:ring-amber-500"
                     />
                     <div>
-                      <div class="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                      <div class="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                         <span>⚡ Розрахунковий</span>
-                        <span class="text-3xs text-amber-800 bg-amber-100 px-1.5 py-0.2 rounded font-bold">Для оплати</span>
+                        <span class="text-3xs text-amber-800 dark:text-amber-300 bg-amber-100 dark:bg-amber-950/80 px-1.5 py-0.2 rounded font-bold">Для оплати</span>
                       </div>
-                      <div class="text-3xs text-slate-500 mt-0.5">Офіційний білінг та нарахування до сплати</div>
+                      <div class="text-3xs text-slate-500 dark:text-slate-400 mt-0.5">Офіційний білінг та нарахування до сплати</div>
                     </div>
                   </label>
 
@@ -3131,7 +4627,9 @@ import {
                     class="p-3 rounded-xl border flex items-start gap-2.5 cursor-pointer transition-all"
                     [class.border-indigo-500]="readingForm.get('isControlOnly')?.value"
                     [class.bg-indigo-50/70]="readingForm.get('isControlOnly')?.value"
+                    [class.dark:bg-indigo-950/30]="readingForm.get('isControlOnly')?.value"
                     [class.border-slate-200]="!readingForm.get('isControlOnly')?.value"
+                    [class.dark:border-slate-700]="!readingForm.get('isControlOnly')?.value"
                   >
                     <input
                       type="radio"
@@ -3141,11 +4639,11 @@ import {
                       class="mt-0.5 text-indigo-600 focus:ring-indigo-600"
                     />
                     <div>
-                      <div class="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                      <div class="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
                         <span>👁️ Контрольний</span>
-                        <span class="text-3xs text-indigo-800 bg-indigo-100 px-1.5 py-0.2 rounded font-bold">Без оплати</span>
+                        <span class="text-3xs text-indigo-800 dark:text-indigo-300 bg-indigo-100 dark:bg-indigo-950/80 px-1.5 py-0.2 rounded font-bold">Без оплати</span>
                       </div>
-                      <div class="text-3xs text-slate-500 mt-0.5">Для аналізу тенденцій та середньодобового темпу</div>
+                      <div class="text-3xs text-slate-500 dark:text-slate-400 mt-0.5">Для аналізу тенденцій та споживання приладів</div>
                     </div>
                   </label>
                 </div>
@@ -3153,17 +4651,17 @@ import {
 
               <!-- Informational Banner for Control Readings -->
               @if (readingForm.get('isControlOnly')?.value) {
-                <div class="p-3 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-900 text-xs flex items-start gap-2">
-                  <mat-icon class="text-indigo-600 shrink-0 text-base">info</mat-icon>
+                <div class="p-3 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200 dark:border-indigo-800 text-indigo-900 dark:text-indigo-200 text-xs flex items-start gap-2">
+                  <mat-icon class="text-indigo-600 dark:text-indigo-400 shrink-0 text-base">info</mat-icon>
                   <div class="text-2xs leading-relaxed">
-                    <strong>Контрольний показник:</strong> використовується виключно для графіків, відстеження тенденцій та розрахунку середньодобового темпу споживання. <strong>Плата не нараховується (0.00 грн)</strong>, а наступний розрахунковий показник автоматично охопить весь обсяг з моменту останньої оплати.
+                    <strong>Контрольний показник:</strong> використовується виключно для графіків, відстеження тенденцій та аналізу роботи приладів з приміток. <strong>Плата не нараховується (0.00 грн)</strong>, а наступний розрахунковий показник автоматично охопить весь обсяг з моменту останньої оплати.
                   </div>
                 </div>
               }
 
               <!-- Reading Date -->
               <div>
-                <label for="read-date" class="block text-xs font-semibold text-slate-700 mb-1">
+                <label for="read-date" class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   Дата зняття показів *
                 </label>
                 <input
@@ -3171,7 +4669,7 @@ import {
                   type="date"
                   formControlName="date"
                   (change)="recalculateFormCost()"
-                  class="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-amber-500"
+                  class="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:border-amber-500"
                 />
               </div>
 
@@ -3179,21 +4677,25 @@ import {
               <div
                 class="p-3 border rounded-xl space-y-1 text-xs"
                 [class.bg-amber-50/70]="!readingForm.get('isControlOnly')?.value"
+                [class.dark:bg-amber-950/30]="!readingForm.get('isControlOnly')?.value"
                 [class.border-amber-200/80]="!readingForm.get('isControlOnly')?.value"
+                [class.dark:border-amber-800/60]="!readingForm.get('isControlOnly')?.value"
                 [class.bg-indigo-50/70]="readingForm.get('isControlOnly')?.value"
+                [class.dark:bg-indigo-950/30]="readingForm.get('isControlOnly')?.value"
                 [class.border-indigo-200/80]="readingForm.get('isControlOnly')?.value"
+                [class.dark:border-indigo-800/60]="readingForm.get('isControlOnly')?.value"
               >
                 <div class="flex items-center justify-between text-3xs uppercase tracking-wider font-bold">
-                  <span [class.text-amber-900]="!readingForm.get('isControlOnly')?.value" [class.text-indigo-900]="readingForm.get('isControlOnly')?.value">
+                  <span [class.text-amber-900]="!readingForm.get('isControlOnly')?.value" [class.dark:text-amber-300]="!readingForm.get('isControlOnly')?.value" [class.text-indigo-900]="readingForm.get('isControlOnly')?.value" [class.dark:text-indigo-300]="readingForm.get('isControlOnly')?.value">
                     {{ readingForm.get('isControlOnly')?.value ? 'Попередні покази для розрахунку темпу:' : 'Попередній розрахунковий показник:' }}
                   </span>
                   @if (!readingForm.get('isControlOnly')?.value) {
-                    <span class="text-purple-700 font-semibold">{{ calculatedSeason() === 'summer' ? 'Літній сезон (01.05 – 30.09)' : 'Зимовий сезон (01.10 – 30.04)' }}</span>
+                    <span class="text-purple-700 dark:text-purple-300 font-semibold">{{ calculatedSeason() === 'summer' ? 'Літній сезон (01.05 – 30.09)' : 'Зимовий сезон (01.10 – 30.04)' }}</span>
                   }
                 </div>
-                <div class="text-xs font-mono font-medium" [class.text-amber-950]="!readingForm.get('isControlOnly')?.value" [class.text-indigo-950]="readingForm.get('isControlOnly')?.value">
+                <div class="text-xs font-mono font-medium" [class.text-amber-950]="!readingForm.get('isControlOnly')?.value" [class.dark:text-amber-100]="!readingForm.get('isControlOnly')?.value" [class.text-indigo-950]="readingForm.get('isControlOnly')?.value" [class.dark:text-indigo-100]="readingForm.get('isControlOnly')?.value">
                   @if (currentAccount()?.electricityTariffType === 'dual') {
-                    День (Т1): <span class="font-bold">{{ activePrevT1() }}</span> кВт·г • Ніч (Т2): <span class="font-bold">{{ activePrevT2() }}</span> кВт·г
+                    День (Т2): <span class="font-bold">{{ activePrevT1() }}</span> кВт·г • Ніч (Т1): <span class="font-bold">{{ activePrevT2() }}</span> кВт·г
                   } @else {
                     Попередній: <span class="font-bold">{{ activePrevT1() }}</span> кВт·г
                   }
@@ -3202,14 +4704,14 @@ import {
 
               <!-- Current Reading Section Header with Camera Action -->
               <div class="flex items-center justify-between pb-0.5">
-                <span class="text-xs font-bold text-slate-800">Поточні покази лічильника:</span>
+                <span class="text-xs font-bold text-slate-800 dark:text-slate-200">Поточні покази лічильника:</span>
                 <button
                   type="button"
                   (click)="openCameraModal()"
-                  class="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 transition-colors cursor-pointer shadow-2xs"
+                  class="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-amber-100 dark:bg-amber-950/80 hover:bg-amber-200 dark:hover:bg-amber-900 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 transition-colors cursor-pointer shadow-2xs"
                   title="Сфотографувати лічильник для автоматичного заповнення"
                 >
-                  <mat-icon class="text-sm text-amber-600 leading-none">photo_camera</mat-icon>
+                  <mat-icon class="text-sm text-amber-600 dark:text-amber-400 leading-none">photo_camera</mat-icon>
                   <span>Зробити фото</span>
                 </button>
               </div>
@@ -3217,8 +4719,8 @@ import {
               <!-- Meter Reading Inputs -->
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label for="read-t1" class="block text-xs font-semibold text-slate-700 mb-1">
-                    {{ currentAccount()?.electricityTariffType === 'dual' ? 'Показник День (Т1) *' : 'Показник лічильника *' }}
+                  <label for="read-t1" class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    {{ currentAccount()?.electricityTariffType === 'dual' ? 'Показник День (Т2) *' : 'Показник лічильника *' }}
                   </label>
                   <input
                     id="read-t1"
@@ -3228,14 +4730,14 @@ import {
                     formControlName="readingT1"
                     (input)="recalculateFormCost()"
                     placeholder="Введіть число"
-                    class="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-mono font-extrabold text-slate-900 focus:outline-none focus:border-amber-500"
+                    class="w-full px-3.5 py-2.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-sm font-mono font-extrabold text-slate-900 dark:text-white focus:outline-none focus:border-amber-500"
                   />
                 </div>
 
                 @if (currentAccount()?.electricityTariffType === 'dual') {
                   <div>
-                    <label for="read-t2" class="block text-xs font-semibold text-slate-700 mb-1">
-                      Показник Ніч (Т2) *
+                    <label for="read-t2" class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      Показник Ніч (Т1) *
                     </label>
                     <input
                       id="read-t2"
@@ -3245,7 +4747,7 @@ import {
                       formControlName="readingT2"
                       (input)="recalculateFormCost()"
                       placeholder="Введіть число"
-                      class="w-full px-3.5 py-2.5 bg-white border border-slate-300 rounded-xl text-sm font-mono font-extrabold text-slate-900 focus:outline-none focus:border-amber-500"
+                      class="w-full px-3.5 py-2.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-sm font-mono font-extrabold text-slate-900 dark:text-white focus:outline-none focus:border-amber-500"
                     />
                   </div>
                 }
@@ -3298,7 +4800,7 @@ import {
                     </div>
 
                     <div class="text-3xs text-indigo-200">
-                      Розподіл день/ніч пропорційно споживанню: <span class="font-bold text-white">Т1 (День) {{ calc.ratioDay }}%</span>, <span class="font-bold text-white">Т2 (Ніч) {{ calc.ratioNight }}%</span>
+                      Розподіл день/ніч пропорційно споживанню: <span class="font-bold text-white">День (Т2) {{ calc.ratioDay }}%</span>, <span class="font-bold text-white">Ніч (Т1) {{ calc.ratioNight }}%</span>
                     </div>
 
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-2xs">
@@ -3354,25 +4856,112 @@ import {
 
               <!-- Note -->
               <div>
-                <label for="read-note" class="block text-xs font-semibold text-slate-700 mb-1">
-                  Примітка (необов'язково)
-                </label>
+                <div class="flex items-center justify-between mb-1">
+                  <label for="read-note" class="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    Примітка (необов'язково)
+                  </label>
+                  @if (readingForm.get('isControlOnly')?.value) {
+                    <span class="text-3xs text-indigo-600 dark:text-indigo-400 font-bold flex items-center gap-0.5">
+                      <mat-icon class="text-3xs leading-none">auto_awesome</mat-icon>
+                      <span>Розумний аналіз приміток</span>
+                    </span>
+                  }
+                </div>
                 <input
                   id="read-note"
                   type="text"
                   formControlName="note"
-                  placeholder="Наприклад: Контрольна перевірка, або Оплачено через Приват24"
-                  class="w-full px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-amber-500"
+                  (input)="recalculateFormCost()"
+                  [placeholder]="readingForm.get('isControlOnly')?.value ? 'Наприклад: Вчора увімкнули опалення з 17-ї до сьогодні 8-ї години' : 'Наприклад: Контрольна перевірка, або Оплачено через Приват24'"
+                  class="w-full px-3.5 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs text-slate-900 dark:text-white focus:outline-none focus:border-amber-500"
                 />
+                @if (readingForm.get('isControlOnly')?.value && !controlReadingNoteAnalysis()) {
+                  <p class="text-3xs text-slate-500 dark:text-slate-400 mt-1">
+                    💡 Підказка: якщо прилад (обігрів, котел, бойлер) не має окремої смарт-розетки, вкажіть час роботи у примітці (наприклад: «Вчора увімкнули опалення з 17-ї до сьогодні 8-ї години»). Система автоматично розрахує спожиті кВт·год за номіналом приладу зі списку.
+                  </p>
+                }
               </div>
+
+              <!-- Live Smart Note Analysis Card for Control Readings -->
+              @if (readingForm.get('isControlOnly')?.value && controlReadingNoteAnalysis(); as analysis) {
+                <div class="p-3.5 rounded-xl bg-indigo-950/90 border border-indigo-500/50 text-indigo-100 space-y-2.5 text-xs shadow-md animate-in fade-in duration-150">
+                  <div class="flex items-center justify-between pb-2 border-b border-indigo-800/70">
+                    <div class="flex items-center gap-1.5 font-bold text-amber-300">
+                      <mat-icon class="text-base text-amber-400">psychology</mat-icon>
+                      <span>Розумний аналіз примітки контрольного заміру</span>
+                    </div>
+                    <span class="px-2 py-0.5 rounded text-3xs font-mono font-bold bg-emerald-400/20 text-emerald-300 border border-emerald-400/40">
+                      ~{{ analysis.estimatedKwh.toFixed(1) }} кВт·год розпізнано
+                    </span>
+                  </div>
+
+                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-2xs">
+                    <div class="p-2 rounded-lg bg-indigo-900/60 border border-indigo-800/60 space-y-0.5">
+                      <span class="text-3xs text-indigo-300 block font-semibold">Розпізнаний прилад / дія:</span>
+                      <span class="font-bold text-white block truncate" [title]="analysis.matchedDeviceName || analysis.detectedAction">
+                        {{ analysis.matchedDeviceName || analysis.detectedAction }}
+                      </span>
+                      <span class="text-3xs text-indigo-300">
+                        {{ analysis.deviceMatchedFromList ? '✓ Знайдено у списку приладів будинку' : 'Категорія приладу' }}
+                      </span>
+                    </div>
+
+                    <div class="p-2 rounded-lg bg-indigo-900/60 border border-indigo-800/60 space-y-0.5">
+                      <span class="text-3xs text-indigo-300 block font-semibold">Період та тривалість:</span>
+                      <span class="font-bold text-amber-300 block">
+                        {{ analysis.timeIntervalText }}
+                      </span>
+                      <span class="text-3xs text-indigo-300">
+                        Потужність: {{ analysis.powerWatts }} Вт
+                      </span>
+                    </div>
+                  </div>
+
+                  @if (formActiveReadingDelta() > 0) {
+                    <div class="p-2 rounded-lg bg-indigo-900/40 border border-indigo-800/40 text-3xs space-y-1">
+                      <div class="flex items-center justify-between text-indigo-200">
+                        <span>Зафіксований замір: <strong class="text-white">{{ formActiveReadingDelta() }} кВт·г</strong></span>
+                        <span>Пояснено приміткою: <strong class="text-amber-300">{{ analysis.coveragePercent }}%</strong></span>
+                      </div>
+                      <div class="w-full h-1.5 rounded-full bg-indigo-950 overflow-hidden flex">
+                        <div class="h-full bg-emerald-400 transition-all duration-300" [style.width.%]="analysis.coveragePercent"></div>
+                        <div class="h-full bg-indigo-600/60 transition-all duration-300" [style.width.%]="100 - analysis.coveragePercent"></div>
+                      </div>
+                      <div class="flex items-center justify-between text-indigo-300">
+                        <span>Прилад: ~{{ analysis.estimatedKwh.toFixed(1) }} кВт·г</span>
+                        <span>Залишковий фон будинку: ~{{ analysis.residualKwh.toFixed(1) }} кВт·г</span>
+                      </div>
+                    </div>
+                  }
+
+                  <p class="text-2xs text-indigo-200 leading-relaxed">
+                    {{ analysis.explanation }}
+                  </p>
+
+                  @if (analysis.matchedDeviceId && canEdit()) {
+                    <div class="pt-1.5 border-t border-indigo-800/60 flex items-center justify-between gap-2 flex-wrap">
+                      <span class="text-3xs text-indigo-300">Хочете продублювати запис окремо в історію приладу?</span>
+                      <button
+                        type="button"
+                        (click)="addDeviceLogFromControlNote(analysis)"
+                        class="px-2.5 py-1 rounded-lg text-3xs font-bold bg-emerald-500 hover:bg-emerald-600 text-white transition-colors cursor-pointer flex items-center gap-1 shadow-2xs shrink-0"
+                        title="Створити окремий запис споживання в історії приладу"
+                      >
+                        <mat-icon class="text-xs leading-none">add_circle</mat-icon>
+                        <span>Внести у «{{ analysis.matchedDeviceName }}»</span>
+                      </button>
+                    </div>
+                  }
+                </div>
+              }
             </div>
 
             <!-- Pinned Footer -->
-            <div class="flex items-center justify-end gap-2.5 p-4 border-t border-slate-200 bg-slate-50/90 shrink-0">
+            <div class="flex items-center justify-end gap-2.5 p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-950/90 shrink-0">
               <button
                 type="button"
                 (click)="closeReadingModal()"
-                class="px-4 py-2 rounded-xl text-xs font-semibold bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 cursor-pointer"
+                class="px-4 py-2 rounded-xl text-xs font-semibold bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer"
               >
                 Скасувати
               </button>
@@ -3444,7 +5033,7 @@ import {
                   <div class="font-bold">Зимове споживання понад норму {{ bDown.winterLimitKwh }} кВт·г</div>
                   <div class="text-3xs text-amber-800 mt-0.5">
                     Загальне споживання: <span class="font-bold">{{ bDown.totalKwh }} кВт·г</span>.
-                    Зимовий тариф діє на перші <span class="font-bold">{{ bDown.winterLimitKwh }} кВт·г</span>, а все що понад норму (<span class="font-bold">{{ bDown.excessKwh }} кВт·г</span>) розраховано за літнім тарифом. День/ніч розподілено строго пропорційно (Т1: {{ bDown.ratioDay }}%, Т2: {{ bDown.ratioNight }}%).
+                    Зимовий тариф діє на перші <span class="font-bold">{{ bDown.winterLimitKwh }} кВт·г</span>, а все що понад норму (<span class="font-bold">{{ bDown.excessKwh }} кВт·г</span>) розраховано за літнім тарифом. День/ніч розподілено строго пропорційно (День (Т2): {{ bDown.ratioDay }}%, Ніч (Т1): {{ bDown.ratioNight }}%).
                   </div>
                 </div>
               </div>
@@ -3453,11 +5042,11 @@ import {
             <!-- Consumption Summary -->
             <div class="grid grid-cols-2 gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs">
               <div>
-                <span class="text-3xs text-slate-500 block">Т1 (Денне споживання):</span>
+                <span class="text-3xs text-slate-500 block">День (Т2):</span>
                 <span class="font-bold text-slate-900 font-mono">{{ bDown.diff1 }} кВт·г</span>
               </div>
               <div>
-                <span class="text-3xs text-slate-500 block">Т2 (Нічне споживання):</span>
+                <span class="text-3xs text-slate-500 block">Ніч (Т1):</span>
                 <span class="font-bold text-slate-900 font-mono">{{ bDown.diff2 }} кВт·г</span>
               </div>
             </div>
@@ -3681,7 +5270,7 @@ import {
                   <mat-icon class="text-indigo-600">dark_mode</mat-icon>
                   <div>
                     <div class="text-xs font-bold text-slate-900">Можна вмикати вночі (23:00 – 07:00)</div>
-                    <div class="text-3xs text-slate-500">Враховувати прилад у розрахунку потенційної економії за нічним тарифом Т2</div>
+                    <div class="text-3xs text-slate-500">Враховувати прилад у розрахунку потенційної економії за нічним тарифом Ніч (Т1)</div>
                   </div>
                 </div>
                 <input
@@ -3735,10 +5324,12 @@ import {
           <div class="flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 bg-slate-50 shrink-0">
             <div class="flex items-center gap-2.5">
               <div class="w-9 h-9 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0">
-                <mat-icon>playlist_add</mat-icon>
+                <mat-icon>{{ editingDeviceLogId() ? 'edit_note' : 'playlist_add' }}</mat-icon>
               </div>
               <div>
-                <h3 class="text-base font-bold text-slate-900">Внести споживання приладу</h3>
+                <h3 class="text-base font-bold text-slate-900">
+                  {{ editingDeviceLogId() ? 'Редагувати запис споживання' : 'Внести споживання приладу' }}
+                </h3>
                 <p class="text-3xs text-slate-500">За конкретну добу, відрізок часу або станом на дату з початку місяця</p>
               </div>
             </div>
@@ -3971,7 +5562,11 @@ import {
                   @if (estimatedKwhFromPowerAndDuration(); as estKwh) {
                     <div class="flex items-center justify-between gap-2 pt-1 border-t border-indigo-200/80">
                       <span class="text-3xs text-indigo-900">
-                        За потужністю приладу ({{ selectedLogDevice()?.powerWatts }} Вт × {{ calculatedLogDurationHours() }} год):
+                        @if (isSelectedLogDeviceAirConditioner()) {
+                          За профілем кондиціонера (пік {{ selectedLogDevice()?.powerWatts || 2200 }} Вт → робочий 400–800 Вт·г × {{ calculatedLogDurationHours() }} год):
+                        } @else {
+                          За потужністю приладу ({{ selectedLogDevice()?.powerWatts }} Вт × {{ calculatedLogDurationHours() }} год):
+                        }
                         <b>~{{ estKwh }} кВт·год</b>
                       </span>
                       <button
@@ -4040,6 +5635,30 @@ import {
                 </div>
               }
 
+              <!-- Automatic Weather Attachment for Selected Date -->
+              @if (currentFormLogWeather(); as logDayW) {
+                <div class="p-3 rounded-xl bg-sky-50 dark:bg-slate-800 border border-sky-200 dark:border-slate-700 flex items-center justify-between gap-3">
+                  <div class="flex items-center gap-2.5">
+                    <div class="w-8 h-8 rounded-lg bg-sky-600 text-white flex items-center justify-center shrink-0">
+                      <mat-icon class="text-base">{{ logDayW.icon }}</mat-icon>
+                    </div>
+                    <div>
+                      <div class="text-2xs font-bold text-slate-900 dark:text-white flex items-center gap-1.5 flex-wrap">
+                        <span>Погода на {{ formatDate(logDayW.date) }}:</span>
+                        <span class="font-mono text-sky-700 dark:text-sky-300">{{ logDayW.tempAvgC > 0 ? '+' : '' }}{{ logDayW.tempAvgC }}°C ({{ logDayW.tempMinC > 0 ? '+' : '' }}{{ logDayW.tempMinC }}°..{{ logDayW.tempMaxC > 0 ? '+' : '' }}{{ logDayW.tempMaxC }}°C)</span>
+                        <span>• {{ logDayW.condition }}</span>
+                      </div>
+                      <div class="text-3xs text-slate-500 dark:text-slate-400">
+                        Дані про температуру автоматично збережуться у записі для точного прогнозу споживання
+                      </div>
+                    </div>
+                  </div>
+                  <span class="px-2 py-0.5 rounded-full bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-200 border border-sky-300 dark:border-sky-700 text-3xs font-bold shrink-0">
+                    Авто-погода
+                  </span>
+                </div>
+              }
+
               <!-- EV Battery Charge Helper (when Volkswagen E-Golf 2014 24 kWh or any EV/battery device is selected) -->
               @if (selectedLogDevice()?.batteryCapacityKwh; as batCap) {
                 <div class="p-3.5 rounded-xl bg-blue-50/70 border border-blue-200 space-y-2.5">
@@ -4095,11 +5714,11 @@ import {
                   <span>Режим розрахунку тарифу *</span>
                   @if (deviceLogForm.get('tariffSelection')?.value === 'night_only') {
                     <span class="text-3xs font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-200">
-                      🌙 Нічний тариф T2 (23:00–07:00)
+                      🌙 Ніч (Т1) (23:00–07:00)
                     </span>
                   } @else if (deviceLogForm.get('tariffSelection')?.value === 'day_only') {
                     <span class="text-3xs font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200">
-                      ☀️ Денний тариф T1 (07:00–23:00)
+                      ☀️ День (Т2) (07:00–23:00)
                     </span>
                   } @else {
                     <span class="text-3xs font-medium text-slate-500">
@@ -4162,7 +5781,7 @@ import {
                 [disabled]="deviceLogForm.invalid || isSavingDevices()"
                 class="px-4 py-2 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white cursor-pointer disabled:opacity-50"
               >
-                Додати споживання
+                {{ editingDeviceLogId() ? 'Зберегти зміни' : 'Додати споживання' }}
               </button>
             </div>
           </form>
@@ -4236,6 +5855,20 @@ import {
                 />
               </div>
             </div>
+
+            <!-- Weather on Screenshot Date -->
+            @if (currentScreenshotWeather(); as scrW) {
+              <div class="p-2.5 rounded-xl bg-sky-50 dark:bg-slate-800 border border-sky-200 dark:border-slate-700 flex items-center justify-between gap-2 text-2xs">
+                <div class="flex items-center gap-2">
+                  <mat-icon class="text-base text-sky-600 dark:text-sky-400 leading-none">{{ scrW.icon }}</mat-icon>
+                  <span class="text-slate-800 dark:text-slate-200">
+                    Погода на <b>{{ formatDate(scrW.date) }}</b>:
+                    <b class="font-mono text-sky-800 dark:text-sky-300">{{ scrW.tempAvgC > 0 ? '+' : '' }}{{ scrW.tempAvgC }}°C</b>
+                    ({{ scrW.tempMinC > 0 ? '+' : '' }}{{ scrW.tempMinC }}°..{{ scrW.tempMaxC > 0 ? '+' : '' }}{{ scrW.tempMaxC }}°C, {{ scrW.condition }}) — додасться до показу
+                  </span>
+                </div>
+              </div>
+            }
 
             <!-- Inline New Device Name if __new__ is selected -->
             @if (screenshotTargetDeviceId() === '__new__') {
@@ -4893,6 +6526,430 @@ export class ElectricityView {
   readonly filterPurpose = signal<'all' | 'billing' | 'control'>('all');
 
   // ========================================================
+  // COLLAPSIBLE SECTIONS & COMPACT VIEW STATE (Електро)
+  // ========================================================
+  readonly isAccountCardExpanded = signal<boolean>(true);
+  readonly isWeatherSectionExpanded = signal<boolean>(true);
+  readonly isOverviewKpiExpanded = signal<boolean>(true);
+  readonly isUsageWarningExpanded = signal<boolean>(true);
+  readonly isDevicesSectionExpanded = signal<boolean>(true);
+  readonly isChartsSectionExpanded = signal<boolean>(true);
+  readonly isInsightsSectionExpanded = signal<boolean>(true);
+  readonly isHistoryTableExpanded = signal<boolean>(true);
+  readonly isAnalyticsChartExpanded = signal<boolean>(true);
+
+  // Device list layout view mode ('cards' or 'list')
+  readonly deviceViewLayout = signal<'cards' | 'list'>('cards');
+
+  // Smart card power toggle state (maps deviceId -> boolean, defaults to true = Ввімкнено)
+  readonly devicePowerStates = signal<Record<string, boolean>>({});
+
+  isDevicePowerOn(deviceId: string): boolean {
+    const map = this.devicePowerStates();
+    return map[deviceId] !== undefined ? map[deviceId] : true;
+  }
+
+  toggleDevicePowerState(deviceId: string): void {
+    const current = this.isDevicePowerOn(deviceId);
+    this.devicePowerStates.update((prev) => ({
+      ...prev,
+      [deviceId]: !current,
+    }));
+  }
+
+  getSmartCardArchetype(item: {
+    device: ElectricityDevice;
+    isAirConditioner?: boolean;
+  }): 'ac' | 'boiler' | 'ev' | 'other' {
+    const dev = item.device;
+    const nameLower = (dev.name || '').toLowerCase();
+    if (
+      dev.category === 'ev' ||
+      dev.icon === 'electric_car' ||
+      /golf|авто|електромобіль|ev|tesla|leaf|car/i.test(nameLower) ||
+      (dev.batteryCapacityKwh && dev.batteryCapacityKwh >= 12)
+    ) {
+      return 'ev';
+    }
+    if (
+      dev.category === 'boiler' ||
+      dev.icon === 'water_heater' ||
+      /бойлер|водонагрівач|boiler/i.test(nameLower)
+    ) {
+      return 'boiler';
+    }
+    if (
+      item.isAirConditioner ||
+      dev.category === 'climate' ||
+      dev.category === 'heating_ac' ||
+      dev.icon === 'ac_unit' ||
+      /кондиціонер|клімат|спліт/i.test(nameLower)
+    ) {
+      return 'ac';
+    }
+    return 'other';
+  }
+
+  getSmartCardStatusInfo(item: {
+    device: ElectricityDevice;
+    isAirConditioner?: boolean;
+    allLogsCount?: number;
+  }): { prefix: string; value: string } {
+    if (!this.isDevicePowerOn(item.device.id)) {
+      return { prefix: 'Статус:', value: 'Вимкнено' };
+    }
+    const archetype = this.getSmartCardArchetype(item);
+    if (archetype === 'ac') {
+      const maxKw = ((item.device.powerWatts || 2200) / 1000).toFixed(1);
+      return {
+        prefix: 'Потужність:',
+        value: `Пік ${maxKw} кВт • Роб. 0.4–0.8 кВт·г`,
+      };
+    }
+    if (archetype === 'ev') {
+      const kw = item.device.powerWatts
+        ? `${(item.device.powerWatts / 1000).toFixed(1)} кВт`
+        : '3.6 кВт';
+      const bat = item.device.batteryCapacityKwh
+        ? ` • Батарея ${item.device.batteryCapacityKwh} кВт·г`
+        : '';
+      return {
+        prefix: 'Параметри:',
+        value: `${kw}${bat}`,
+      };
+    }
+    if (archetype === 'boiler') {
+      const kw = ((item.device.powerWatts || 2000) / 1000).toFixed(1);
+      return {
+        prefix: 'Потужність:',
+        value: `Номінал ${kw} кВт`,
+      };
+    }
+    if (item.device.powerWatts) {
+      return {
+        prefix: 'Потужність:',
+        value: `Номінал ${(item.device.powerWatts / 1000).toFixed(1)} кВт`,
+      };
+    }
+    return {
+      prefix: 'Облік:',
+      value: item.allLogsCount ? `${item.allLogsCount} запис(ів)` : 'Активний',
+    };
+  }
+
+  getSmartCardLeftMetric(item: {
+    device: ElectricityDevice;
+    isAirConditioner?: boolean;
+    steadyOperatingWatts?: number;
+    effectiveOperatingWatts?: number;
+    empiricalHourlyWatts?: number | null;
+    dailyPaceKwh: number;
+    avgKwhPerReading: number;
+    allLogsCount: number;
+    attributedNotes?: Array<{ hours: number; kwh: number }>;
+  }): { value: string; unit: string; label: string; subnote?: string } {
+    const label = 'Середнє за годину';
+    if (!this.isDevicePowerOn(item.device.id)) {
+      return { value: '0.00', unit: 'кВт·г', label, subnote: 'Прилад вимкнено' };
+    }
+
+    // 1. If logs have explicit durationHours -> exact empirical hourly kWh
+    if (item.empiricalHourlyWatts !== null && item.empiricalHourlyWatts !== undefined && item.empiricalHourlyWatts > 0) {
+      const hourlyKwh = item.empiricalHourlyWatts / 1000;
+      return {
+        value: hourlyKwh >= 1 ? hourlyKwh.toFixed(1) : hourlyKwh.toFixed(2),
+        unit: 'кВт·г',
+        label,
+        subnote: `По часу роботи (${item.dailyPaceKwh.toFixed(2)} кВт·г/д)`,
+      };
+    }
+
+    // 2. If attributed notes from meter readings have hours & kwh
+    if (item.attributedNotes && item.attributedNotes.length > 0) {
+      const sumH = item.attributedNotes.reduce((s, n) => s + (Number(n.hours) || 0), 0);
+      const sumK = item.attributedNotes.reduce((s, n) => s + (Number(n.kwh) || 0), 0);
+      if (sumH > 0 && sumK > 0) {
+        const hourlyKwh = sumK / sumH;
+        return {
+          value: hourlyKwh >= 1 ? hourlyKwh.toFixed(1) : hourlyKwh.toFixed(2),
+          unit: 'кВт·г',
+          label,
+          subnote: `За замірами (${sumH} год)`,
+        };
+      }
+    }
+
+    // 3. If monthly consumption is present -> compute hourly average from daily pace (24h)
+    if (item.dailyPaceKwh > 0) {
+      const avgHourly24 = item.dailyPaceKwh / 24;
+      const formatted = avgHourly24 >= 1 ? avgHourly24.toFixed(1) : avgHourly24.toFixed(2);
+      const sub = item.isAirConditioner
+        ? `${item.dailyPaceKwh.toFixed(2)} кВт·г/д • Роб. ~${((item.steadyOperatingWatts || 600) / 1000).toFixed(1)} кВт·г/год`
+        : `Темп: ${item.dailyPaceKwh.toFixed(2)} кВт·г/добу`;
+      return {
+        value: formatted,
+        unit: 'кВт·г',
+        label,
+        subnote: sub,
+      };
+    }
+
+    // 4. Fallback to all-time readings average if available
+    if (item.allLogsCount > 0 && item.avgKwhPerReading > 0) {
+      const avgHourly = item.avgKwhPerReading / 24;
+      return {
+        value: avgHourly >= 1 ? avgHourly.toFixed(1) : avgHourly.toFixed(2),
+        unit: 'кВт·г',
+        label,
+        subnote: `Сер. показ: ${item.avgKwhPerReading.toFixed(2)} кВт·г`,
+      };
+    }
+
+    // 5. If no readings yet, show 0.00 (or steady operating rate note for AC)
+    return {
+      value: '0.00',
+      unit: 'кВт·г',
+      label,
+      subnote: item.isAirConditioner ? 'Робочий режим: 0.4–0.8 кВт·г' : 'Немає показів за місяць',
+    };
+  }
+
+  getSmartCardRightMetric(item: {
+    device: ElectricityDevice;
+    isAirConditioner?: boolean;
+    monthKwh: number;
+    monthCostUah: number;
+    avgKwhPerReading: number;
+    allLogsCount: number;
+    shareOfHousePercent: number;
+  }): { value: string; unit: string; label: string; sublabel?: string } {
+    return {
+      value: item.monthKwh.toFixed(1),
+      unit: 'кВт·г',
+      label: 'Спожито за місяць',
+      sublabel:
+        item.allLogsCount > 0 && item.avgKwhPerReading > 0
+          ? `${item.monthCostUah.toFixed(0)} грн • Сер. показ: ${item.avgKwhPerReading.toFixed(1)} кВт·г`
+          : `${item.monthCostUah.toFixed(0)} грн • ${item.shareOfHousePercent.toFixed(1)}% будинку`,
+    };
+  }
+
+  getSmartCardDailyChart(item: {
+    device: ElectricityDevice;
+    monthLogs: ElectricityDeviceLogEntry[];
+    attributedNotes?: Array<{ readingDate: string; kwh: number; hours: number }>;
+  }): {
+    hasData: boolean;
+    linePath: string;
+    areaPath: string;
+    points: Array<{ x: number; y: number; dateLabel: string; kwh: number }>;
+  } {
+    const formatShortDay = (isoDate: string): string => {
+      if (!isoDate || isoDate.length < 10) return isoDate || '—';
+      const parts = isoDate.slice(0, 10).split('-');
+      return parts.length === 3 ? `${parts[2]}.${parts[1]}` : isoDate;
+    };
+
+    // Collect daily readings in chronological order
+    let rawPoints: Array<{ date: string; dateLabel: string; kwh: number }> = [];
+
+    if (item.monthLogs && item.monthLogs.length > 0) {
+      const chronological = [...item.monthLogs].sort(
+        (a, b) => (a.date || '').localeCompare(b.date || '') || (a.createdAt || '').localeCompare(b.createdAt || '')
+      );
+      const byDay = new Map<string, number>();
+      let prevCum = 0;
+      for (const l of chronological) {
+        const dKey = (l.date || '').slice(0, 10);
+        if (!dKey) continue;
+        const val = Number(l.consumedKwh) || 0;
+        if (val <= 0) continue;
+        if (!l.entryMode || l.entryMode === 'cumulative_month') {
+          const dayVal = val >= prevCum && prevCum > 0 ? Math.round((val - prevCum) * 100) / 100 : val;
+          prevCum = Math.max(prevCum, val);
+          byDay.set(dKey, Math.round(((byDay.get(dKey) || 0) + dayVal) * 100) / 100);
+        } else {
+          byDay.set(dKey, Math.round(((byDay.get(dKey) || 0) + val) * 100) / 100);
+        }
+      }
+      rawPoints = Array.from(byDay.entries()).map(([date, kwh]) => ({
+        date,
+        dateLabel: formatShortDay(date),
+        kwh,
+      }));
+    } else if (item.attributedNotes && item.attributedNotes.length > 0) {
+      const sortedNotes = [...item.attributedNotes].sort((a, b) =>
+        (a.readingDate || '').localeCompare(b.readingDate || '')
+      );
+      const byDay = new Map<string, number>();
+      for (const n of sortedNotes) {
+        const dKey = (n.readingDate || '').slice(0, 10);
+        if (!dKey) continue;
+        byDay.set(dKey, Math.round(((byDay.get(dKey) || 0) + (Number(n.kwh) || 0)) * 100) / 100);
+      }
+      rawPoints = Array.from(byDay.entries()).map(([date, kwh]) => ({
+        date,
+        dateLabel: formatShortDay(date),
+        kwh,
+      }));
+    } else if (item.device.logs && item.device.logs.length > 0) {
+      // Fallback to recent historical logs across months if selected month has none yet
+      const chronological = [...item.device.logs].sort(
+        (a, b) => (a.date || '').localeCompare(b.date || '') || (a.createdAt || '').localeCompare(b.createdAt || '')
+      );
+      const byDay = new Map<string, number>();
+      for (const l of chronological) {
+        const dKey = (l.date || '').slice(0, 10);
+        if (!dKey) continue;
+        const val = Number(l.consumedKwh) || 0;
+        if (val > 0) {
+          byDay.set(dKey, val);
+        }
+      }
+      rawPoints = Array.from(byDay.entries()).map(([date, kwh]) => ({
+        date,
+        dateLabel: formatShortDay(date),
+        kwh,
+      }));
+    }
+
+    // Keep up to last 7 recorded days so X-axis labels are clean
+    if (rawPoints.length > 7) {
+      rawPoints = rawPoints.slice(rawPoints.length - 7);
+    }
+
+    // If no recorded points exist at all
+    if (rawPoints.length === 0) {
+      return {
+        hasData: false,
+        linePath: 'M 16 58 L 284 58',
+        areaPath: 'M 16 58 L 284 58 L 284 66 L 16 66 Z',
+        points: [],
+      };
+    }
+
+    // If only 1 recorded day exists, prepend the 1st of that month with 0 kWh so a line can be drawn
+    if (rawPoints.length === 1) {
+      const only = rawPoints[0];
+      const monthPrefix = only.date.slice(0, 7);
+      const startDay = `${monthPrefix}-01`;
+      if (only.date !== startDay) {
+        rawPoints = [
+          { date: startDay, dateLabel: formatShortDay(startDay), kwh: 0 },
+          only,
+        ];
+      } else {
+        rawPoints = [
+          { date: startDay, dateLabel: 'Поч.', kwh: 0 },
+          only,
+        ];
+      }
+    }
+
+    const maxKwh = Math.max(...rawPoints.map((p) => p.kwh), 0.1);
+    const minX = 20;
+    const maxX = 280;
+    const topY = 16;
+    const bottomY = 56;
+    const n = rawPoints.length;
+
+    const coords = rawPoints.map((p, idx) => {
+      const x = n === 1 ? 150 : Math.round((minX + (idx / (n - 1)) * (maxX - minX)) * 10) / 10;
+      const ratio = Math.max(0, Math.min(1, p.kwh / maxKwh));
+      const y = Math.round((bottomY - ratio * (bottomY - topY)) * 10) / 10;
+      return {
+        x,
+        y,
+        dateLabel: p.dateLabel,
+        kwh: p.kwh,
+      };
+    });
+
+    // Build smooth cubic bezier path through coords
+    let linePath = `M ${coords[0].x} ${coords[0].y}`;
+    for (let i = 0; i < coords.length - 1; i++) {
+      const curr = coords[i];
+      const next = coords[i + 1];
+      const midX = Math.round(((curr.x + next.x) / 2) * 10) / 10;
+      linePath += ` C ${midX} ${curr.y}, ${midX} ${next.y}, ${next.x} ${next.y}`;
+    }
+
+    const areaPath = `${linePath} L ${coords[coords.length - 1].x} 66 L ${coords[0].x} 66 Z`;
+
+    return {
+      hasData: true,
+      linePath,
+      areaPath,
+      points: coords,
+    };
+  }
+
+  // Compact device row expansion (maps deviceId -> boolean)
+  readonly expandedCompactDeviceIds = signal<Record<string, boolean>>({});
+
+  isCompactDeviceExpanded(deviceId: string): boolean {
+    return Boolean(this.expandedCompactDeviceIds()[deviceId]);
+  }
+
+  toggleCompactDevice(deviceId: string): void {
+    this.expandedCompactDeviceIds.update((prev) => ({
+      ...prev,
+      [deviceId]: !prev[deviceId],
+    }));
+  }
+
+  focusAndExpandDeviceFromWarning(deviceId: string): void {
+    this.isDevicesSectionExpanded.set(true);
+    this.expandedCompactDeviceIds.update((prev) => ({
+      ...prev,
+      [deviceId]: true,
+    }));
+  }
+
+  expandAllCompactDevices(): void {
+    const all: Record<string, boolean> = {};
+    for (const row of this.deviceAnalyticsSummary().deviceRows) {
+      all[row.device.id] = true;
+    }
+    this.expandedCompactDeviceIds.set(all);
+  }
+
+  collapseAllCompactDevices(): void {
+    this.expandedCompactDeviceIds.set({});
+  }
+
+  areAllCompactDevicesExpanded(): boolean {
+    const rows = this.deviceAnalyticsSummary().deviceRows;
+    if (rows.length === 0) return false;
+    const current = this.expandedCompactDeviceIds();
+    return rows.every((r) => Boolean(current[r.device.id]));
+  }
+
+  toggleAllSections(expand: boolean): void {
+    this.isAccountCardExpanded.set(expand);
+    this.isWeatherSectionExpanded.set(expand);
+    this.isOverviewKpiExpanded.set(expand);
+    this.isDevicesSectionExpanded.set(expand);
+    this.isChartsSectionExpanded.set(expand);
+    this.isInsightsSectionExpanded.set(expand);
+    this.isHistoryTableExpanded.set(expand);
+    this.isAnalyticsChartExpanded.set(expand);
+  }
+
+  areAllSectionsExpanded(): boolean {
+    return (
+      this.isAccountCardExpanded() &&
+      this.isWeatherSectionExpanded() &&
+      this.isOverviewKpiExpanded() &&
+      this.isDevicesSectionExpanded() &&
+      this.isChartsSectionExpanded() &&
+      this.isInsightsSectionExpanded() &&
+      this.isHistoryTableExpanded() &&
+      this.isAnalyticsChartExpanded()
+    );
+  }
+
+  // ========================================================
   // ELECTRICITY DEVICES & AI SCREENSHOT STATE
   // ========================================================
   readonly deviceSelectedMonth = signal<string>(new Date().toISOString().slice(0, 7));
@@ -4904,10 +6961,17 @@ export class ElectricityView {
   readonly editingDeviceId = signal<string | null>(null);
 
   readonly isDeviceLogModalOpen = signal<boolean>(false);
+  readonly editingDeviceLogId = signal<string | null>(null);
+  readonly editingDeviceLogOriginalDeviceId = signal<string | null>(null);
   readonly deviceLogFormTrigger = signal<number>(0);
   readonly evChargeStartPct = signal<number>(20);
   readonly evChargeEndPct = signal<number>(80);
-  private readonly seededRequiredDevicesAccountIds = new Set<string>();
+
+  // Weather & temperature state for Devices & Consumption Forecasting
+  readonly weatherData = signal<UtilityWeatherResponse | null>(null);
+  readonly isWeatherLoading = signal<boolean>(false);
+  readonly logCustomTempAvgC = signal<number | null>(null);
+  readonly logCustomWeatherCondition = signal<string>('');
 
   readonly isScreenshotModalOpen = signal<boolean>(false);
   readonly screenshotTargetDeviceId = signal<string>('');
@@ -5041,8 +7105,17 @@ export class ElectricityView {
     notes: new FormControl(''),
   });
 
+  getPreviousDayIsoDate(): string {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
   readonly readingForm = new FormGroup({
-    date: new FormControl(new Date().toISOString().split('T')[0], [Validators.required]),
+    date: new FormControl(this.getPreviousDayIsoDate(), [Validators.required]),
     readingT1: new FormControl<number | null>(null, [Validators.required]),
     readingT2: new FormControl<number | null>(null),
     isControlOnly: new FormControl<boolean>(false),
@@ -5102,69 +7175,21 @@ export class ElectricityView {
         if (typeof window !== 'undefined') {
           this.dataService.fetchDtekCatalog(city);
           this.dataService.fetchDtekShutdowns(city, street, house);
+          void this.loadWeatherForCurrentAccount(city, this.deviceSelectedMonth());
         }
       });
     });
 
-    // Automatically ensure requested devices (AC Heating Mode & Volkswagen E-Golf 2014 24 kWh) exist on the current account
+    // Reload weather when selected month for devices changes
     effect(() => {
-      if (typeof window === 'undefined') return;
+      const selMonth = this.deviceSelectedMonth();
       const acc = this.currentAccount();
-      const editable = this.canEdit();
-      if (!acc || !editable) return;
-      if (this.seededRequiredDevicesAccountIds.has(acc.id)) return;
-
-      const existingDevices = Array.isArray(acc.devices) ? acc.devices : [];
-      const hasAcHeating = existingDevices.some(
-        (d) =>
-          d.category === 'heating_ac' ||
-          (d.name.toLowerCase().includes('кондиціонер') && d.name.toLowerCase().includes('обігрів'))
-      );
-      const hasVwEgolf = existingDevices.some(
-        (d) =>
-          d.category === 'ev' ||
-          d.name.toLowerCase().includes('e-golf') ||
-          d.name.toLowerCase().includes('volkswagen')
-      );
-
-      this.seededRequiredDevicesAccountIds.add(acc.id);
-
-      if (!hasAcHeating || !hasVwEgolf) {
-        const additions: ElectricityDevice[] = [];
-        const nowIso = new Date().toISOString();
-        if (!hasAcHeating) {
-          additions.push({
-            id: `dev_ac_heat_${Date.now()}`,
-            name: 'Кондиціонер (режим обігріву)',
-            category: 'heating_ac',
-            icon: 'mode_heat',
-            color: '#ea580c',
-            powerWatts: 1350,
-            isNightFriendly: true,
-            notes: 'Обігрів кондиціонером / тепловим насосом',
-            logs: [],
-            createdAt: nowIso,
-          });
+      const city = acc?.city || 'с-ще Окни';
+      untracked(() => {
+        if (typeof window !== 'undefined' && selMonth) {
+          void this.loadWeatherForCurrentAccount(city, selMonth);
         }
-        if (!hasVwEgolf) {
-          additions.push({
-            id: `dev_vw_egolf_${Date.now() + 1}`,
-            name: 'Volkswagen E-Golf 2014 (24 кВт·год)',
-            category: 'ev',
-            icon: 'electric_car',
-            color: '#2563eb',
-            powerWatts: 3600,
-            batteryCapacityKwh: 24,
-            isNightFriendly: true,
-            notes: 'Електромобіль VW e-Golf 2014, батарея 24 кВт·год',
-            logs: [],
-            createdAt: nowIso,
-          });
-        }
-        untracked(() => {
-          void this.dataService.saveUtilityAccountDevices(acc.id, [...existingDevices, ...additions], undefined, true);
-        });
-      }
+      });
     });
   }
 
@@ -5186,7 +7211,7 @@ export class ElectricityView {
         ...(this.cabinetDtekPassword() ? { dtekPassword: this.cabinetDtekPassword() } : {}),
         ooekLogin: this.cabinetOoekLogin().trim(),
         ...(this.cabinetOoekPassword() ? { ooekPassword: this.cabinetOoekPassword() } : {}),
-        ooekAccountNumber: this.cabinetOoekAccountNumber().trim() || acc.ooekAccountNumber || acc.accountNumber,
+        ooekAccountNumber: acc.accountNumber,
       });
       this.cabinetDtekPassword.set('');
       this.cabinetOoekPassword.set('');
@@ -5201,7 +7226,7 @@ export class ElectricityView {
     this.isSyncingOoek.set(true);
     try {
       const payload: { ooekLogin?: string; ooekPassword?: string; ooekAccountNumber?: string } = {
-        ooekAccountNumber: this.cabinetOoekAccountNumber().trim() || acc.ooekAccountNumber || acc.accountNumber,
+        ooekAccountNumber: acc.accountNumber,
       };
       if (this.cabinetOoekLogin().trim()) {
         payload.ooekLogin = this.cabinetOoekLogin().trim();
@@ -5213,6 +7238,155 @@ export class ElectricityView {
       this.cabinetOoekPassword.set('');
     } finally {
       this.isSyncingOoek.set(false);
+    }
+  }
+
+  resolveOoekBillDate(acc: UtilityAccount): string {
+    const rawBillDate = (acc.ooekBillUpdatedAt || '').trim();
+    if (rawBillDate) {
+      const dmyMatch = rawBillDate.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+      if (dmyMatch) {
+        return `${dmyMatch[3]}-${dmyMatch[2]}-${dmyMatch[1]}`;
+      }
+      const isoMatch = rawBillDate.match(/(\d{4})-(\d{2})-(\d{2})/);
+      if (isoMatch) {
+        return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+      }
+    }
+    if (acc.ooekCabinetLastSync && /^\d{4}-\d{2}-\d{2}/.test(acc.ooekCabinetLastSync)) {
+      return acc.ooekCabinetLastSync.slice(0, 10);
+    }
+    return new Date().toISOString().split('T')[0];
+  }
+
+  getEstimatedKwhFromOoekBalance(acc: UtilityAccount): number {
+    const amountUah = Number(acc.ooekBalanceUah) || 0;
+    if (amountUah <= 0) return 0;
+    const date = this.resolveOoekBillDate(acc);
+    const tariffs = this.utilityTariffs();
+    const rate =
+      acc.electricityTariffType === 'dual'
+        ? resolveElectricityDualRates(date, tariffs).dayRate || 4.32
+        : resolveElectricitySingleRate(date, tariffs) || 4.32;
+    return Math.round((amountUah / rate) * 10) / 10;
+  }
+
+  async addOoekAccruedAmountToHistory(acc: UtilityAccount): Promise<void> {
+    if (!acc || acc.ooekBalanceUah === undefined || acc.ooekBalanceUah === null) return;
+    const amountUah = Math.round(Number(acc.ooekBalanceUah) * 100) / 100;
+    if (isNaN(amountUah) || amountUah <= 0) return;
+
+    this.isSubmitting.set(true);
+    try {
+      const date = this.resolveOoekBillDate(acc);
+      const periodMonth = date.slice(0, 7);
+      const tariffs = this.utilityTariffs();
+      const season = getSeasonForDate(date);
+
+      // Check if an existing OOEK reading on this date already exists to update it instead of duplicating
+      const existingSameBill = this.accountReadings().find(
+        (r) =>
+          !r.isControlOnly &&
+          r.date === date &&
+          (Math.abs((r.totalCost || 0) - amountUah) < 0.05 || (r.note || '').includes('ООЕК'))
+      );
+
+      const prev = this.getEffectivePrevReading(false, date, existingSameBill?.id || null);
+
+      let rate1 = resolveElectricitySingleRate(date, tariffs) || 4.32;
+      let rate2: number | undefined;
+      if (acc.electricityTariffType === 'dual') {
+        const dual = resolveElectricityDualRates(date, tariffs);
+        rate1 = dual.dayRate || 4.32;
+        rate2 = dual.nightRate || 2.16;
+      }
+
+      // Check if we have actual readings in existingSameBill or ooekHistory; if not, calculate kWh from sum & tariff
+      let consT1 = 0;
+      let consT2: number | undefined = acc.electricityTariffType === 'dual' ? 0 : undefined;
+      let readingT1 = 0;
+      let readingT2: number | undefined = acc.electricityTariffType === 'dual' ? prev.t2 : undefined;
+      let calculatedFromSum = false;
+
+      const latestOoekEntry = Array.isArray(acc.ooekHistory) && acc.ooekHistory.length > 0 ? acc.ooekHistory[0] : null;
+
+      if (
+        existingSameBill &&
+        ((Number(existingSameBill.consumptionT1) || 0) + (Number(existingSameBill.consumptionT2) || 0) > 0)
+      ) {
+        consT1 = Number(existingSameBill.consumptionT1) || 0;
+        consT2 = acc.electricityTariffType === 'dual' ? Number(existingSameBill.consumptionT2) || 0 : undefined;
+        readingT1 = Number(existingSameBill.readingT1) || Math.round((prev.t1 + consT1) * 10) / 10;
+        readingT2 =
+          acc.electricityTariffType === 'dual'
+            ? Number(existingSameBill.readingT2) || Math.round((prev.t2 + (consT2 || 0)) * 10) / 10
+            : undefined;
+      } else if (latestOoekEntry && latestOoekEntry.readingT1 && latestOoekEntry.readingT1 > prev.t1) {
+        readingT1 = Number(latestOoekEntry.readingT1);
+        consT1 = Math.max(0, Math.round((readingT1 - prev.t1) * 10) / 10);
+        if (acc.electricityTariffType === 'dual' && latestOoekEntry.readingT2 && latestOoekEntry.readingT2 >= prev.t2) {
+          readingT2 = Number(latestOoekEntry.readingT2);
+          consT2 = Math.max(0, Math.round((readingT2 - prev.t2) * 10) / 10);
+        }
+      } else {
+        // No meter readings available -> calculate kWh based on accrued sum and tariff!
+        calculatedFromSum = true;
+        const calculatedKwh = Math.round((amountUah / rate1) * 10) / 10;
+        consT1 = calculatedKwh;
+        readingT1 = Math.round((prev.t1 + consT1) * 10) / 10;
+        if (acc.electricityTariffType === 'dual') {
+          consT2 = 0;
+          readingT2 = prev.t2;
+        }
+      }
+
+      let daysSinceLast = 0;
+      let dailyAvg = 0;
+      const totalCons = consT1 + (consT2 || 0);
+      if (prev.prevDate) {
+        const curMs = new Date(date).getTime();
+        const prevMs = new Date(prev.prevDate).getTime();
+        daysSinceLast = Math.max(1, Math.round((curMs - prevMs) / (1000 * 60 * 60 * 24)));
+        dailyAvg = Math.round((totalCons / daysSinceLast) * 10) / 10;
+      } else if (totalCons > 0) {
+        daysSinceLast = 30;
+        dailyAvg = Math.round((totalCons / 30) * 10) / 10;
+      }
+
+      const noteText = calculatedFromSum
+        ? `Рахунок ООЕК (${amountUah.toFixed(2)} грн • розраховано ~${totalCons} кВт·г за тарифом ${rate1} грн)`
+        : `Рахунок ООЕК (${amountUah.toFixed(2)} грн)`;
+
+      const readingPayload: Partial<UtilityReading> = {
+        ...(existingSameBill ? { id: existingSameBill.id } : {}),
+        accountId: acc.id,
+        utilityType: 'electricity',
+        date,
+        periodMonth,
+        readingT1,
+        readingT2,
+        consumptionT1: consT1,
+        consumptionT2: consT2,
+        rateT1: rate1,
+        rateT2: rate2,
+        totalCost: amountUah,
+        season,
+        isPaid: existingSameBill ? Boolean(existingSameBill.isPaid) : false,
+        note: noteText,
+        isControlOnly: false,
+        readingPurpose: 'billing',
+        daysSinceLastReading: daysSinceLast,
+        dailyAvgConsumption: dailyAvg,
+      };
+
+      await this.dataService.saveUtilityReading(readingPayload);
+      this.activeTab.set('table');
+      this.isHistoryTableExpanded.set(true);
+      if (this.filterPurpose() === 'control') {
+        this.filterPurpose.set('all');
+      }
+    } finally {
+      this.isSubmitting.set(false);
     }
   }
 
@@ -5647,10 +7821,104 @@ export class ElectricityView {
       const t2Val = Number(this.readingForm.get('readingT2')?.value) || 0;
       const prev2 = this.activePrevT2();
       const diff2 = Math.max(0, t2Val - prev2);
-      return `Т1 (День): ${diff1.toFixed(1)} кВт·г • Т2 (Ніч): ${diff2.toFixed(1)} кВт·г (Всього: ${(diff1 + diff2).toFixed(1)})`;
+      return `День (Т2): ${diff1.toFixed(1)} кВт·г • Ніч (Т1): ${diff2.toFixed(1)} кВт·г (Всього: ${(diff1 + diff2).toFixed(1)})`;
     }
 
     return `${diff1.toFixed(1)} кВт·г`;
+  }
+
+  readonly formActiveReadingDelta = computed<number>(() => {
+    this.formChangeTrigger();
+    const acc = this.currentAccount();
+    const t1Val = Number(this.readingForm.get('readingT1')?.value) || 0;
+    const prev1 = this.activePrevT1();
+    const diff1 = Math.max(0, t1Val - prev1);
+
+    if (acc?.electricityTariffType === 'dual') {
+      const t2Val = Number(this.readingForm.get('readingT2')?.value) || 0;
+      const prev2 = this.activePrevT2();
+      const diff2 = Math.max(0, t2Val - prev2);
+      return Math.round((diff1 + diff2) * 10) / 10;
+    }
+    return Math.round(diff1 * 10) / 10;
+  });
+
+  readonly controlReadingNoteAnalysis = computed<ControlReadingNoteAnalysis | null>(() => {
+    this.formChangeTrigger();
+    const isControl = Boolean(this.readingForm.get('isControlOnly')?.value);
+    if (!isControl) return null;
+    const note = this.readingForm.get('note')?.value;
+    if (!note || !note.trim()) return null;
+    const delta = this.formActiveReadingDelta();
+    const devices = this.accountDevices();
+    return parseControlReadingNote(note, delta, devices);
+  });
+
+  getControlNoteAnalysis(r: UtilityReading): ControlReadingNoteAnalysis | null {
+    if (!r.note || !r.note.trim()) return null;
+    const delta = (Number(r.consumptionT1) || 0) + (Number(r.consumptionT2) || 0);
+    const devices = this.accountDevices();
+    return parseControlReadingNote(r.note, delta, devices);
+  }
+
+  async addDeviceLogFromControlNote(analysis: ControlReadingNoteAnalysis, readingDate?: string): Promise<void> {
+    const acc = this.currentAccount();
+    if (!acc || !analysis.matchedDeviceId) return;
+    const targetDate = readingDate || this.readingForm.get('date')?.value || new Date().toISOString().split('T')[0];
+    const targetDevId = analysis.matchedDeviceId;
+    const targetDev = this.accountDevices().find((d) => d.id === targetDevId);
+    if (!targetDev) return;
+
+    let startTime: string | undefined;
+    let endTime: string | undefined;
+    const timeMatch = analysis.timeIntervalText.match(/з\s+(\d{2}:\d{2})\s+до\s+(\d{2}:\d{2})/);
+    if (timeMatch) {
+      startTime = timeMatch[1];
+      endTime = timeMatch[2];
+    }
+
+    const weather = this.getWeatherForDate(targetDate);
+
+    const newLog: ElectricityDeviceLogEntry = {
+      id: 'log_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+      date: targetDate,
+      periodMonth: targetDate.slice(0, 7),
+      consumedKwh: analysis.estimatedKwh,
+      entryMode: 'delta',
+      durationHours: analysis.durationHours,
+      startTime,
+      endTime,
+      tariffSelection: 'auto_time',
+      tempAvgC: weather.tempAvgC,
+      tempMinC: weather.tempMinC,
+      tempMaxC: weather.tempMaxC,
+      weatherCode: weather.weatherCode,
+      weatherCondition: weather.condition,
+      weatherIcon: weather.icon,
+      comment: `З контрольного заміру: ${analysis.rawNote}`,
+      createdAt: new Date().toISOString(),
+    };
+
+    const nextList = this.accountDevices().map((d) => {
+      if (d.id !== targetDevId) return d;
+      const existingLogs = Array.isArray(d.logs) ? d.logs : [];
+      return {
+        ...d,
+        logs: [newLog, ...existingLogs],
+        updatedAt: new Date().toISOString(),
+      };
+    });
+
+    this.isSavingDevices.set(true);
+    try {
+      await this.dataService.saveUtilityAccountDevices(
+        acc.id,
+        nextList,
+        `Запис ${analysis.estimatedKwh} кВт·г додано до приладу «${targetDev.name}»`
+      );
+    } finally {
+      this.isSavingDevices.set(false);
+    }
   }
 
   recalculateFormCost(): void {
@@ -5799,7 +8067,7 @@ export class ElectricityView {
 
     this.editingReadingId.set(null);
     this.readingForm.reset({
-      date: new Date().toISOString().split('T')[0],
+      date: this.getPreviousDayIsoDate(),
       readingT1: null,
       readingT2: null,
       isControlOnly: isControl,
@@ -5844,10 +8112,10 @@ export class ElectricityView {
     if (!acc) return;
 
     this.readingForm.patchValue({
-      date: new Date().toISOString().split('T')[0],
+      date: this.readingForm.get('date')?.value || this.getPreviousDayIsoDate(),
       readingT1: applied.readingT1 !== undefined ? applied.readingT1 : null,
       readingT2: applied.readingT2 !== undefined ? applied.readingT2 : null,
-      isControlOnly: false,
+      isControlOnly: Boolean(this.readingForm.get('isControlOnly')?.value),
       isPaid: false,
       note: applied.note || 'Розпізнано за фото лічильника',
     });
@@ -5967,15 +8235,169 @@ export class ElectricityView {
   // ELECTRICITY DEVICES & AI SCREENSHOT METHODS & ANALYTICS
   // ========================================================
 
+  isDeviceAttachedToHouse(dev: ElectricityDevice, acc: UtilityAccount): boolean {
+    if (!dev || !acc) return false;
+    if (dev.accountId && dev.accountId !== acc.id) return false;
+    return true;
+  }
+
   readonly accountDevices = computed<ElectricityDevice[]>(() => {
     const acc = this.currentAccount();
     if (!acc || !Array.isArray(acc.devices)) return [];
-    return acc.devices;
+    const seenIds = new Set<string>();
+    const result: ElectricityDevice[] = [];
+    for (const d of acc.devices) {
+      if (this.isDeviceAttachedToHouse(d, acc) && d.id && !seenIds.has(d.id)) {
+        seenIds.add(d.id);
+        result.push(d);
+      }
+    }
+    return result;
+  });
+
+  async loadWeatherForCurrentAccount(city?: string, month?: string, date?: string): Promise<void> {
+    if (typeof window === 'undefined') return;
+    const targetCity = city || this.currentAccount()?.city || 'с-ще Окни';
+    const targetMonth = month || this.deviceSelectedMonth() || new Date().toISOString().slice(0, 7);
+    this.isWeatherLoading.set(true);
+    try {
+      const res = await this.dataService.fetchUtilityWeather(targetCity, targetMonth, date);
+      if (res && res.success) {
+        this.weatherData.set(res);
+      }
+    } finally {
+      this.isWeatherLoading.set(false);
+    }
+  }
+
+  private buildFallbackDailyWeather(dateStr: string): DailyWeatherPoint {
+    const parts = (dateStr || '2026-11-10').split('-');
+    const m = Number(parts[1]) || 11;
+    const d = Number(parts[2]) || 10;
+    const monthlyMeans: Record<number, number> = {
+      1: -1.5, 2: -0.2, 3: 4.5, 4: 11.2, 5: 17.4, 6: 21.8,
+      7: 24.2, 8: 23.6, 9: 18.0, 10: 11.4, 11: 4.8, 12: 0.4,
+    };
+    const baseMean = monthlyMeans[m] ?? 5.0;
+    const wave = Math.sin(d * 0.55 + m * 1.3) * 3.4 + Math.cos(d * 1.15) * 1.8;
+    const tempAvgC = Math.round((baseMean + wave) * 10) / 10;
+    const swing = 3.2 + Math.abs(Math.sin(d * 0.7)) * 2.1;
+    const tempMinC = Math.round((tempAvgC - swing) * 10) / 10;
+    const tempMaxC = Math.round((tempAvgC + swing) * 10) / 10;
+    const isSnow = tempAvgC < -0.5;
+    const isRain = !isSnow && (d + m) % 4 === 0;
+    return {
+      date: dateStr,
+      tempAvgC,
+      tempMinC,
+      tempMaxC,
+      weatherCode: isSnow ? 71 : isRain ? 61 : 2,
+      condition: isSnow ? 'Сніг / Мороз' : isRain ? 'Дощ / Похмуро' : 'Мінлива хмарність',
+      icon: isSnow ? 'ac_unit' : isRain ? 'water_drop' : 'partly_cloudy_day',
+      emoji: isSnow ? '❄️' : isRain ? '🌧️' : '⛅',
+    };
+  }
+
+  getWeatherForDate(dateStr?: string | null, endDateStr?: string | null): DailyWeatherPoint {
+    const cleanDate = dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)
+      ? dateStr
+      : new Date().toISOString().split('T')[0];
+    const map = this.weatherData()?.dailyByDate || {};
+
+    if (endDateStr && /^\d{4}-\d{2}-\d{2}$/.test(endDateStr) && endDateStr > cleanDate) {
+      const sMs = new Date(cleanDate + 'T12:00:00Z').getTime();
+      const eMs = new Date(endDateStr + 'T12:00:00Z').getTime();
+      if (!isNaN(sMs) && !isNaN(eMs) && eMs > sMs) {
+        const days = Math.min(31, Math.round((eMs - sMs) / (1000 * 60 * 60 * 24)) + 1);
+        let sumAvg = 0;
+        let minT = 999;
+        let maxT = -999;
+        let firstPoint: DailyWeatherPoint | null = null;
+        for (let i = 0; i < days; i++) {
+          const dIso = new Date(sMs + i * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+          const pt = map[dIso] || this.buildFallbackDailyWeather(dIso);
+          if (!firstPoint) firstPoint = pt;
+          sumAvg += pt.tempAvgC;
+          if (pt.tempMinC < minT) minT = pt.tempMinC;
+          if (pt.tempMaxC > maxT) maxT = pt.tempMaxC;
+        }
+        return {
+          date: cleanDate,
+          tempAvgC: Math.round((sumAvg / days) * 10) / 10,
+          tempMinC: minT === 999 ? 0 : minT,
+          tempMaxC: maxT === -999 ? 5 : maxT,
+          weatherCode: firstPoint?.weatherCode ?? 2,
+          condition: firstPoint?.condition ?? 'Мінлива хмарність',
+          icon: firstPoint?.icon ?? 'partly_cloudy_day',
+          emoji: firstPoint?.emoji ?? '⛅',
+        };
+      }
+    }
+
+    return map[cleanDate] || this.buildFallbackDailyWeather(cleanDate);
+  }
+
+  getEffectiveLogWeather(log: ElectricityDeviceLogEntry): DailyWeatherPoint {
+    const base = this.getWeatherForDate(log.date, log.endDate);
+    const hasCustomTemp = typeof log.tempAvgC === 'number' && !isNaN(log.tempAvgC);
+    const tempAvgC = hasCustomTemp ? Number(log.tempAvgC) : base.tempAvgC;
+    const condition = log.weatherCondition || base.condition;
+    const emoji =
+      log.weatherIcon ||
+      (tempAvgC <= -1 ? '❄️' : tempAvgC < 6 ? '☁️' : tempAvgC >= 16 ? '☀️' : base.emoji);
+    return {
+      ...base,
+      tempAvgC: Math.round(tempAvgC * 10) / 10,
+      tempMinC: typeof log.tempMinC === 'number' ? log.tempMinC : base.tempMinC,
+      tempMaxC: typeof log.tempMaxC === 'number' ? log.tempMaxC : base.tempMaxC,
+      condition,
+      emoji,
+    };
+  }
+
+  getDeviceCategoryThermalSensitivity(category?: string): {
+    pctPerDegreeDrop: number;
+    label: string;
+    isHighThermal: boolean;
+  } {
+    switch (category) {
+      case 'heating_ac':
+        return { pctPerDegreeDrop: 5.5, label: 'Висока (Обігрів / Тепловий насос)', isHighThermal: true };
+      case 'heating':
+        return { pctPerDegreeDrop: 6.2, label: 'Дуже висока (Електрообігрів)', isHighThermal: true };
+      case 'climate':
+        return { pctPerDegreeDrop: 3.5, label: 'Підвищена (Клімат-контроль)', isHighThermal: true };
+      case 'ev':
+        return { pctPerDegreeDrop: 2.5, label: 'Середня (Зарядка авто + пічка/батарея)', isHighThermal: false };
+      case 'boiler':
+        return { pctPerDegreeDrop: 2.2, label: 'Середня (Нагрів холоднішої води)', isHighThermal: false };
+      default:
+        return { pctPerDegreeDrop: 0.8, label: 'Базова побутова', isHighThermal: false };
+    }
+  }
+
+  readonly currentFormLogWeather = computed<DailyWeatherPoint>(() => {
+    this.deviceLogFormTrigger();
+    const mode = this.deviceLogForm.get('entryMode')?.value;
+    const dStart = this.deviceLogForm.get('date')?.value || new Date().toISOString().split('T')[0];
+    const dEnd = mode === 'period_range' ? this.deviceLogForm.get('endDate')?.value : undefined;
+    return this.getWeatherForDate(dStart, dEnd);
+  });
+
+  readonly currentScreenshotWeather = computed<DailyWeatherPoint>(() => {
+    const mode = this.screenshotExtractedMode();
+    const dStart = this.screenshotDate() || new Date().toISOString().split('T')[0];
+    const dEnd = mode === 'period_range' ? this.screenshotEndDate() : undefined;
+    return this.getWeatherForDate(dStart, dEnd);
   });
 
   readonly deviceAnalyticsSummary = computed(() => {
     const acc = this.currentAccount();
     const devices = this.accountDevices();
+    // Touch weatherData signal so summary recomputes when weather loads
+    const loadedWeather = this.weatherData();
+    void loadedWeather;
+
     const selectedMonth = this.deviceSelectedMonth() || new Date().toISOString().slice(0, 7);
     const [yearStr, monthStr] = selectedMonth.split('-');
     const yearNum = Number(yearStr) || new Date().getFullYear();
@@ -6006,9 +8428,105 @@ export class ElectricityView {
     const todayStr = new Date().toISOString().split('T')[0];
     let latestLoggedDate = '';
 
+    for (const dev of devices) {
+      for (const log of dev.logs || []) {
+        if ((log.periodMonth || log.date.slice(0, 7)) === selectedMonth) {
+          const effectiveLogEnd = log.endDate && log.endDate > log.date ? log.endDate : log.date;
+          if (effectiveLogEnd > latestLoggedDate) latestLoggedDate = effectiveLogEnd;
+        }
+      }
+    }
+
+    let referenceDate = latestLoggedDate;
+    if (!referenceDate) {
+      referenceDate = todayStr.startsWith(selectedMonth)
+        ? todayStr
+        : `${selectedMonth}-${String(daysInMonth).padStart(2, '0')}`;
+    }
+    const daysElapsed = Math.max(1, Math.min(daysInMonth, Number(referenceDate.slice(8, 10)) || 1));
+    const daysRemaining = Math.max(0, daysInMonth - daysElapsed);
+
+    // Calculate average outdoor temperature for elapsed days vs remaining days of the month
+    let elapsedTempSum = 0;
+    for (let d = 1; d <= daysElapsed; d++) {
+      const dIso = `${selectedMonth}-${String(d).padStart(2, '0')}`;
+      elapsedTempSum += this.getWeatherForDate(dIso).tempAvgC;
+    }
+    const avgElapsedMonthTempC = Math.round((elapsedTempSum / daysElapsed) * 10) / 10;
+
+    let remainingTempSum = 0;
+    const remainingCount = daysRemaining > 0 ? daysRemaining : 7;
+    if (daysRemaining > 0) {
+      for (let d = daysElapsed + 1; d <= daysInMonth; d++) {
+        const dIso = `${selectedMonth}-${String(d).padStart(2, '0')}`;
+        remainingTempSum += this.getWeatherForDate(dIso).tempAvgC;
+      }
+    } else {
+      // If month is complete, compare last 7 days of month vs first part
+      const startD = Math.max(1, daysInMonth - 6);
+      for (let d = startD; d <= daysInMonth; d++) {
+        const dIso = `${selectedMonth}-${String(d).padStart(2, '0')}`;
+        remainingTempSum += this.getWeatherForDate(dIso).tempAvgC;
+      }
+    }
+    const avgForecastRemainingTempC = Math.round((remainingTempSum / remainingCount) * 10) / 10;
+
+    // Determine House Total Consumption in selectedMonth from meter readings
+    const monthReadings = this.accountReadings().filter(
+      (r) => (r.periodMonth || r.date.slice(0, 7)) === selectedMonth
+    );
+
+    // Analyze notes in all control readings of this month
+    const monthControlReadings = monthReadings.filter(
+      (r) => r.isControlOnly && r.note && r.note.trim()
+    );
+
+    interface AttributedNoteEntry {
+      readingDate: string;
+      hours: number;
+      kwh: number;
+      explanation: string;
+      action: string;
+      rawNote: string;
+    }
+
+    const attributedByDeviceId: Record<string, { totalKwh: number; entries: AttributedNoteEntry[] }> = {};
+    const unassignedAttributions: Array<AttributedNoteEntry & { category: string; action: string }> = [];
+
+    for (const cr of monthControlReadings) {
+      const crKwh = (Number(cr.consumptionT1) || 0) + (Number(cr.consumptionT2) || 0);
+      const analysis = parseControlReadingNote(cr.note, crKwh, devices);
+      if (analysis && analysis.hasAnalysis) {
+        if (analysis.matchedDeviceId) {
+          if (!attributedByDeviceId[analysis.matchedDeviceId]) {
+            attributedByDeviceId[analysis.matchedDeviceId] = { totalKwh: 0, entries: [] };
+          }
+          attributedByDeviceId[analysis.matchedDeviceId].totalKwh += analysis.estimatedKwh;
+          attributedByDeviceId[analysis.matchedDeviceId].entries.push({
+            readingDate: cr.date,
+            hours: analysis.durationHours,
+            kwh: analysis.estimatedKwh,
+            explanation: analysis.explanation,
+            action: analysis.detectedAction,
+            rawNote: cr.note || '',
+          });
+        } else {
+          unassignedAttributions.push({
+            readingDate: cr.date,
+            hours: analysis.durationHours,
+            kwh: analysis.estimatedKwh,
+            explanation: analysis.explanation,
+            action: analysis.detectedAction,
+            rawNote: cr.note || '',
+            category: analysis.matchedDeviceCategory || 'other',
+          });
+        }
+      }
+    }
+
     let totalLogsInMonth = 0;
 
-    const deviceRows = devices.map((dev) => {
+    const baseDeviceRows = devices.map((dev) => {
       const monthLogs = (dev.logs || [])
         .filter((l) => (l.periodMonth || l.date.slice(0, 7)) === selectedMonth)
         .sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt));
@@ -6017,18 +8535,41 @@ export class ElectricityView {
 
       let monthKwh = 0;
       let devLatestDate = '';
+      let loggedTempWeightedSum = 0;
+      let loggedTempWeight = 0;
+
       for (const log of monthLogs) {
         const effectiveLogEnd = log.endDate && log.endDate > log.date ? log.endDate : log.date;
         if (effectiveLogEnd > devLatestDate) devLatestDate = effectiveLogEnd;
-        if (effectiveLogEnd > latestLoggedDate) latestLoggedDate = effectiveLogEnd;
+        const kwhVal = Number(log.consumedKwh) || 0;
+        const w = this.getEffectiveLogWeather(log);
+        loggedTempWeightedSum += w.tempAvgC * Math.max(0.5, kwhVal);
+        loggedTempWeight += Math.max(0.5, kwhVal);
+
         if (log.entryMode && log.entryMode !== 'cumulative_month') {
-          // 'single_day', 'period_range', and 'delta' add to the device's monthly consumption
-          monthKwh += Number(log.consumedKwh) || 0;
+          monthKwh += kwhVal;
         } else {
-          // 'cumulative_month' sets the consumed total as of that date
-          monthKwh = Number(log.consumedKwh) || 0;
+          monthKwh = kwhVal;
         }
       }
+
+      // Check attributed consumption from control reading notes!
+      const noteAttr = attributedByDeviceId[dev.id];
+      const attributedNoteKwh = noteAttr ? Math.round(noteAttr.totalKwh * 100) / 100 : 0;
+      const attributedNotes = noteAttr ? noteAttr.entries : [];
+
+      if (attributedNoteKwh > 0) {
+        if (monthKwh === 0) {
+          monthKwh = attributedNoteKwh;
+          if (!devLatestDate && attributedNotes.length > 0) {
+            devLatestDate = attributedNotes[attributedNotes.length - 1].readingDate;
+          }
+        } else {
+          monthKwh = Math.round((monthKwh + attributedNoteKwh) * 100) / 100;
+        }
+      }
+
+      const isUnmonitoredCatalogDevice = (monthLogs.length === 0) && (attributedNoteKwh === 0);
       monthKwh = Math.max(0, Math.round(monthKwh * 100) / 100);
 
       // Days elapsed for this device
@@ -6040,15 +8581,85 @@ export class ElectricityView {
       } else {
         devDaysElapsed = daysInMonth;
       }
+      const devDaysRemaining = Math.max(0, daysInMonth - devDaysElapsed);
 
       const dailyPaceKwh = monthKwh > 0 ? monthKwh / devDaysElapsed : 0;
       const projectedMonthKwh = Math.round(dailyPaceKwh * daysInMonth * 10) / 10;
       const monthCostUah = Math.round(monthKwh * effectiveRateUah * 100) / 100;
       const projectedMonthCostUah = Math.round(projectedMonthKwh * effectiveRateUah * 100) / 100;
 
+      // Weather-adjusted projection for this device
+      const devAvgLoggedTempC =
+        loggedTempWeight > 0
+          ? Math.round((loggedTempWeightedSum / loggedTempWeight) * 10) / 10
+          : avgElapsedMonthTempC;
+      const thermalInfo = this.getDeviceCategoryThermalSensitivity(dev.category);
+      // Empirical refinement if device has >= 2 logs at different temperatures
+      let effectivePctPerDegreeDrop = thermalInfo.pctPerDegreeDrop;
+      if (monthLogs.length >= 2) {
+        const sortedByTemp = [...monthLogs].sort(
+          (a, b) => this.getEffectiveLogWeather(a).tempAvgC - this.getEffectiveLogWeather(b).tempAvgC
+        );
+        const coldest = sortedByTemp[0];
+        const warmest = sortedByTemp[sortedByTemp.length - 1];
+        const tCold = this.getEffectiveLogWeather(coldest).tempAvgC;
+        const tWarm = this.getEffectiveLogWeather(warmest).tempAvgC;
+        if (tWarm - tCold >= 1.5 && warmest.consumedKwh > 0 && coldest.consumedKwh > warmest.consumedKwh) {
+          const empiricalPct =
+            (((coldest.consumedKwh - warmest.consumedKwh) / warmest.consumedKwh) * 100) / (tWarm - tCold);
+          effectivePctPerDegreeDrop = Math.round(
+            Math.max(1.0, Math.min(11.0, (empiricalPct + thermalInfo.pctPerDegreeDrop) / 2)) * 10
+          ) / 10;
+        }
+      }
+
+      // Temperature drop expected in remaining days (positive when getting colder, negative when getting warmer)
+      const tempDropC = Math.round((devAvgLoggedTempC - avgForecastRemainingTempC) * 10) / 10;
+      // Also account for cold weather heating load when temp < 12°C
+      const coldLoadBonus =
+        thermalInfo.isHighThermal && avgForecastRemainingTempC < 8
+          ? Math.max(0, (8 - avgForecastRemainingTempC) * 0.015)
+          : 0;
+      const rawWeatherAdjustmentRatio =
+        (tempDropC * (effectivePctPerDegreeDrop / 100)) + coldLoadBonus;
+      const weatherMultiplier = Math.max(0.65, Math.min(1.75, 1 + rawWeatherAdjustmentRatio));
+
+      const remainingDaysForCalc = devDaysRemaining > 0 ? devDaysRemaining : Math.round(daysInMonth * 0.35);
+      const elapsedPartKwh = devDaysRemaining > 0 ? monthKwh : monthKwh * 0.65;
+      const weatherProjectedMonthKwh =
+        monthKwh > 0
+          ? Math.round((elapsedPartKwh + dailyPaceKwh * remainingDaysForCalc * weatherMultiplier) * 10) / 10
+          : 0;
+      const weatherProjectedMonthCostUah = Math.round(weatherProjectedMonthKwh * effectiveRateUah * 100) / 100;
+      const weatherDeltaKwh = Math.round((weatherProjectedMonthKwh - projectedMonthKwh) * 10) / 10;
+      const weatherImpactPct =
+        projectedMonthKwh > 0
+          ? Math.round(((weatherProjectedMonthKwh - projectedMonthKwh) / projectedMonthKwh) * 1000) / 10
+          : 0;
+
+      const empiricalStats = computeDeviceEmpiricalReadingStats(dev);
+      const monthAvgKwhPerReading =
+        monthLogs.length > 0 ? Math.round((monthKwh / monthLogs.length) * 100) / 100 : empiricalStats.avgKwhPerReading;
+      const isAirConditioner = isAirConditionerDevice(dev);
+      const acProfile = isAirConditioner
+        ? resolveAirConditionerPowerProfile(dev.powerWatts || 1350, 4, dev, devAvgLoggedTempC)
+        : null;
+      const steadyOperatingWatts = acProfile
+        ? acProfile.steadyOperatingWatts
+        : dev.powerWatts && dev.powerWatts > 0
+          ? dev.powerWatts
+          : 0;
+      const steadyRangeLabel = acProfile
+        ? `${acProfile.operatingMinWatts}–${acProfile.operatingMaxWatts} Вт·г`
+        : '';
+      const effectiveOperatingWatts =
+        empiricalStats.empiricalHourlyWatts && empiricalStats.empiricalHourlyWatts > 0
+          ? empiricalStats.empiricalHourlyWatts
+          : steadyOperatingWatts;
+
       const estimatedHoursPerDay =
-        dev.powerWatts && dev.powerWatts > 0 && dailyPaceKwh > 0
-          ? Math.min(24, (dailyPaceKwh * 1000) / dev.powerWatts)
+        effectiveOperatingWatts > 0 && dailyPaceKwh > 0
+          ? Math.min(24, (dailyPaceKwh * 1000) / effectiveOperatingWatts)
           : null;
 
       return {
@@ -6060,17 +8671,108 @@ export class ElectricityView {
         dailyPaceKwh,
         projectedMonthKwh,
         projectedMonthCostUah,
+        weatherProjectedMonthKwh,
+        weatherProjectedMonthCostUah,
+        weatherDeltaKwh,
+        weatherImpactPct,
+        devAvgLoggedTempC,
+        effectivePctPerDegreeDrop,
+        thermalLabel: thermalInfo.label,
+        isHighThermal: thermalInfo.isHighThermal,
         estimatedHoursPerDay,
+        isAirConditioner,
+        steadyOperatingWatts,
+        steadyRangeLabel,
+        effectiveOperatingWatts,
+        avgKwhPerReading: empiricalStats.avgKwhPerReading,
+        monthAvgKwhPerReading,
+        allLogsCount: empiricalStats.logsCount,
+        empiricalHourlyWatts: empiricalStats.empiricalHourlyWatts,
         shareOfHousePercent: 0, // populated after houseReferenceKwh is computed
+        attributedNoteKwh,
+        attributedNotes,
+        hasAttributedConsumption: attributedNoteKwh > 0,
+        isUnmonitoredCatalogDevice,
+        usageWarning: null as {
+          deviceId: string;
+          deviceName: string;
+          deviceIcon: string;
+          deviceColor: string;
+          powerWatts?: number;
+          actualOrProjectedKwh: number;
+          actualOrProjectedCostUah: number;
+          monthlyAverageKwh: number;
+          excessKwh: number;
+          excessCostUah: number;
+          excessPercent: number;
+          shareOfHousePercent: number;
+          normalBarWidthPct: number;
+          severity: 'critical' | 'warning';
+          baselineLabel: string;
+          recommendation: string;
+        } | null,
       };
     });
 
-    // Reference date in the month
-    let referenceDate = latestLoggedDate;
-    if (!referenceDate) {
-      referenceDate = todayStr.startsWith(selectedMonth) ? todayStr : `${selectedMonth}-${String(daysInMonth).padStart(2, '0')}`;
+    // Synthesize virtual device rows for appliances detected in notes that don't match any existing device in catalog
+    const virtualRows: typeof baseDeviceRows = [];
+    for (const item of unassignedAttributions) {
+      const vKwh = Math.round(item.kwh * 100) / 100;
+      const virtualDev: ElectricityDevice = {
+        id: `virtual_note_${item.category}_${item.readingDate}`,
+        name: `${item.action} (за приміткою заміру)`,
+        category: item.category,
+        icon: item.category === 'heating' ? 'local_fire_department' : item.category === 'boiler' ? 'water_heater' : 'bolt',
+        color: '#8b5cf6',
+        powerWatts: Math.round((vKwh * 1000) / Math.max(1, item.hours)),
+        logs: [],
+        createdAt: new Date().toISOString(),
+      };
+      const vDailyPace = vKwh / daysElapsed;
+      const vProjectedKwh = Math.round(vDailyPace * daysInMonth * 10) / 10;
+      const thermal = this.getDeviceCategoryThermalSensitivity(item.category);
+      virtualRows.push({
+        device: virtualDev,
+        monthLogs: [],
+        latestLogDate: item.readingDate,
+        monthKwh: vKwh,
+        monthCostUah: Math.round(vKwh * effectiveRateUah * 100) / 100,
+        dailyPaceKwh: vDailyPace,
+        projectedMonthKwh: vProjectedKwh,
+        projectedMonthCostUah: Math.round(vProjectedKwh * effectiveRateUah * 100) / 100,
+        weatherProjectedMonthKwh: vProjectedKwh,
+        weatherProjectedMonthCostUah: Math.round(vProjectedKwh * effectiveRateUah * 100) / 100,
+        weatherDeltaKwh: 0,
+        weatherImpactPct: 0,
+        devAvgLoggedTempC: avgElapsedMonthTempC,
+        effectivePctPerDegreeDrop: thermal.pctPerDegreeDrop,
+        thermalLabel: thermal.label,
+        isHighThermal: thermal.isHighThermal,
+        estimatedHoursPerDay: item.hours / daysElapsed,
+        isAirConditioner: isAirConditionerDevice(virtualDev),
+        steadyOperatingWatts: virtualDev.powerWatts || 600,
+        steadyRangeLabel: isAirConditionerDevice(virtualDev) ? '400–800 Вт·г' : '',
+        effectiveOperatingWatts: virtualDev.powerWatts || 600,
+        avgKwhPerReading: vKwh,
+        monthAvgKwhPerReading: vKwh,
+        allLogsCount: 1,
+        empiricalHourlyWatts: virtualDev.powerWatts || null,
+        shareOfHousePercent: 0,
+        attributedNoteKwh: vKwh,
+        attributedNotes: [item],
+        hasAttributedConsumption: true,
+        isUnmonitoredCatalogDevice: false,
+        usageWarning: null,
+      });
     }
-    const daysElapsed = Math.max(1, Math.min(daysInMonth, Number(referenceDate.slice(8, 10)) || 1));
+
+    const deviceRows = [...baseDeviceRows, ...virtualRows];
+
+    const totalAttributedNoteKwh =
+      Math.round(
+        (Object.values(attributedByDeviceId).reduce((s, it) => s + it.totalKwh, 0) +
+          unassignedAttributions.reduce((s, it) => s + it.kwh, 0)) * 100
+      ) / 100;
 
     const totalDevicesKwh = Math.round(deviceRows.reduce((sum, r) => sum + r.monthKwh, 0) * 100) / 100;
     const totalDevicesCostUah = Math.round(totalDevicesKwh * effectiveRateUah * 100) / 100;
@@ -6079,10 +8781,11 @@ export class ElectricityView {
       Math.round(deviceRows.reduce((sum, r) => sum + r.projectedMonthKwh, 0) * 10) / 10;
     const projectedDevicesMonthCostUah = Math.round(projectedDevicesMonthKwh * effectiveRateUah * 100) / 100;
 
-    // Determine House Total Consumption in selectedMonth from meter readings or historical pace
-    const monthReadings = this.accountReadings().filter(
-      (r) => (r.periodMonth || r.date.slice(0, 7)) === selectedMonth
-    );
+    const weatherProjectedDevicesMonthKwh =
+      Math.round(deviceRows.reduce((sum, r) => sum + r.weatherProjectedMonthKwh, 0) * 10) / 10;
+    const weatherProjectedDevicesMonthCostUah =
+      Math.round(weatherProjectedDevicesMonthKwh * effectiveRateUah * 100) / 100;
+
     const billingMonthReadings = monthReadings.filter((r) => !r.isControlOnly);
     let meterMonthKwh = 0;
     if (billingMonthReadings.length > 0) {
@@ -6143,6 +8846,24 @@ export class ElectricityView {
     );
     const projectedHouseMonthCostUah = Math.round(projectedHouseMonthKwh * effectiveRateUah * 100) / 100;
 
+    // Weather-adjusted house forecast
+    const monthTempDropC = Math.round((avgElapsedMonthTempC - avgForecastRemainingTempC) * 10) / 10;
+    const untrackedWeatherMult = Math.max(0.85, Math.min(1.25, 1 + monthTempDropC * 0.012));
+    const weatherProjectedUntrackedMonthKwh = Math.round(projectedUntrackedMonthKwh * untrackedWeatherMult * 10) / 10;
+    const weatherProjectedHouseMonthKwh = Math.round(
+      (weatherProjectedDevicesMonthKwh + weatherProjectedUntrackedMonthKwh) * 10
+    ) / 10;
+    const weatherProjectedHouseMonthCostUah =
+      Math.round(weatherProjectedHouseMonthKwh * effectiveRateUah * 100) / 100;
+    const weatherHouseDeltaKwh =
+      Math.round((weatherProjectedHouseMonthKwh - projectedHouseMonthKwh) * 10) / 10;
+    const weatherHouseDeltaCostUah =
+      Math.round((weatherProjectedHouseMonthCostUah - projectedHouseMonthCostUah) * 100) / 100;
+    const weatherHouseImpactPct =
+      projectedHouseMonthKwh > 0
+        ? Math.round(((weatherProjectedHouseMonthKwh - projectedHouseMonthKwh) / projectedHouseMonthKwh) * 1000) / 10
+        : 0;
+
     // Populate shareOfHousePercent and sort devices by monthKwh desc
     for (const r of deviceRows) {
       r.shareOfHousePercent =
@@ -6150,14 +8871,145 @@ export class ElectricityView {
     }
     deviceRows.sort((a, b) => b.monthKwh - a.monthKwh);
 
+    // =========================================================================
+    // USAGE WARNING CALCULATION: Detect appliances consuming significantly more
+    // energy than their monthly average (historical month avg or peer month avg)
+    // =========================================================================
+    const activeTrackedRows = deviceRows.filter((r) => r.monthKwh > 0);
+    const averageDeviceMonthKwh =
+      activeTrackedRows.length > 0
+        ? Math.round((totalDevicesKwh / activeTrackedRows.length) * 10) / 10
+        : 0;
+    const averageDeviceProjectedMonthKwh =
+      activeTrackedRows.length > 0
+        ? Math.round((weatherProjectedDevicesMonthKwh / activeTrackedRows.length) * 10) / 10
+        : 0;
+
+    const usageWarnings: NonNullable<(typeof deviceRows)[number]['usageWarning']>[] = [];
+
+    for (const r of deviceRows) {
+      if (r.monthKwh <= 0) continue;
+
+      // 1) Check if the appliance has historical logs in previous months
+      const otherMonthTotals = new Map<string, number>();
+      for (const log of r.device.logs || []) {
+        const mKey = log.periodMonth || (log.date ? log.date.slice(0, 7) : '');
+        if (!mKey || mKey === selectedMonth) continue;
+        const kwhVal = Number(log.consumedKwh) || 0;
+        if (log.entryMode && log.entryMode !== 'cumulative_month') {
+          otherMonthTotals.set(mKey, (otherMonthTotals.get(mKey) || 0) + kwhVal);
+        } else {
+          otherMonthTotals.set(mKey, Math.max(otherMonthTotals.get(mKey) || 0, kwhVal));
+        }
+      }
+
+      const pastMonthValues = Array.from(otherMonthTotals.values()).filter((v) => v > 0);
+      const historicalMonthlyAvgKwh =
+        pastMonthValues.length > 0
+          ? pastMonthValues.reduce((s, v) => s + v, 0) / pastMonthValues.length
+          : 0;
+
+      let baselineMonthlyAvgKwh = 0;
+      let actualOrProjectedKwh = r.monthKwh;
+      let baselineLabel = '';
+
+      if (historicalMonthlyAvgKwh > 0) {
+        // Pro-rate historical monthly average to elapsed days OR compare full month projection
+        const proRatedHistoricalKwh = (historicalMonthlyAvgKwh / 30) * daysElapsed;
+        if (r.monthKwh > proRatedHistoricalKwh * 1.15) {
+          baselineMonthlyAvgKwh = Math.round(proRatedHistoricalKwh * 10) / 10;
+          actualOrProjectedKwh = r.monthKwh;
+          baselineLabel = `Історичне середнє за ${daysElapsed} дн. (${pastMonthValues.length} міс.)`;
+        } else {
+          baselineMonthlyAvgKwh = Math.round(historicalMonthlyAvgKwh * 10) / 10;
+          actualOrProjectedKwh = Math.max(r.monthKwh, r.weatherProjectedMonthKwh);
+          baselineLabel = `Історичне середнє за місяць (${pastMonthValues.length} міс.)`;
+        }
+      } else if (activeTrackedRows.length >= 2 && averageDeviceMonthKwh > 0) {
+        if (r.monthKwh >= averageDeviceMonthKwh * 1.15) {
+          baselineMonthlyAvgKwh = averageDeviceMonthKwh;
+          actualOrProjectedKwh = r.monthKwh;
+          baselineLabel = 'Середнє споживання серед приладів за місяць';
+        } else if (r.weatherProjectedMonthKwh >= averageDeviceProjectedMonthKwh * 1.2) {
+          baselineMonthlyAvgKwh = averageDeviceProjectedMonthKwh;
+          actualOrProjectedKwh = r.weatherProjectedMonthKwh;
+          baselineLabel = 'Середньомісячний прогноз по приладах';
+        }
+      } else if (r.effectiveOperatingWatts && r.effectiveOperatingWatts > 0) {
+        // Fallback when only 1 device is tracked: compare against typical daily usage (3.5h/day at operating power)
+        const typicalElapsedKwh = (r.effectiveOperatingWatts / 1000) * 3.5 * daysElapsed;
+        if (r.monthKwh >= typicalElapsedKwh * 1.2) {
+          baselineMonthlyAvgKwh = Math.round(typicalElapsedKwh * 10) / 10;
+          actualOrProjectedKwh = r.monthKwh;
+          baselineLabel = r.isAirConditioner
+            ? `Типова норма для робочого режиму кондиціонера (${r.steadyOperatingWatts} Вт·г)`
+            : 'Типова місячна норма для потужності приладу';
+        }
+      }
+
+      if (baselineMonthlyAvgKwh > 0 && actualOrProjectedKwh > baselineMonthlyAvgKwh * 1.15) {
+        const excessKwh = Math.round((actualOrProjectedKwh - baselineMonthlyAvgKwh) * 10) / 10;
+        if (excessKwh >= 1.0) {
+          const excessPercent = Math.round(
+            ((actualOrProjectedKwh - baselineMonthlyAvgKwh) / baselineMonthlyAvgKwh) * 100
+          );
+          const excessCostUah = Math.round(excessKwh * effectiveRateUah * 100) / 100;
+          const actualOrProjectedCostUah =
+            Math.round(actualOrProjectedKwh * effectiveRateUah * 100) / 100;
+          const severity: 'critical' | 'warning' =
+            excessPercent >= 40 || r.shareOfHousePercent >= 45 ? 'critical' : 'warning';
+          const normalBarWidthPct = Math.max(
+            18,
+            Math.min(85, Math.round((baselineMonthlyAvgKwh / actualOrProjectedKwh) * 100))
+          );
+
+          let recommendation = `Споживання перевищує середній показник на +${excessKwh.toFixed(1)} кВт·г (+${excessCostUah.toFixed(0)} грн).`;
+          if (r.device.isNightFriendly) {
+            recommendation += ' Рекомендовано перенести роботу на нічний тариф (23:00–07:00) для економії 50%.';
+          } else if (r.isHighThermal) {
+            recommendation += ' Зростання пов’язане з обігрівом/погодою — зниження терморегулятора на 1°C зменшить витрати на ~6%.';
+          } else {
+            recommendation += ' Перевірте тривалість роботи приладу та фоновий режим очікування.';
+          }
+
+          const warnObj = {
+            deviceId: r.device.id,
+            deviceName: r.device.name,
+            deviceIcon: r.device.icon || 'bolt',
+            deviceColor: r.device.color || '#f59e0b',
+            powerWatts: r.device.powerWatts,
+            actualOrProjectedKwh,
+            actualOrProjectedCostUah,
+            monthlyAverageKwh: baselineMonthlyAvgKwh,
+            excessKwh,
+            excessCostUah,
+            excessPercent,
+            shareOfHousePercent: r.shareOfHousePercent,
+            normalBarWidthPct,
+            severity,
+            baselineLabel,
+            recommendation,
+          };
+          r.usageWarning = warnObj;
+          usageWarnings.push(warnObj);
+        }
+      }
+    }
+
+    usageWarnings.sort((a, b) => b.excessKwh - a.excessKwh);
+    const totalWarningExcessKwh =
+      Math.round(usageWarnings.reduce((sum, w) => sum + w.excessKwh, 0) * 10) / 10;
+    const totalWarningExcessCostUah =
+      Math.round(usageWarnings.reduce((sum, w) => sum + w.excessCostUah, 0) * 100) / 100;
+
     const maxChartKwh = Math.max(
       10,
-      ...deviceRows.map((r) => Math.max(r.monthKwh, r.projectedMonthKwh)),
+      ...deviceRows.map((r) => Math.max(r.monthKwh, r.projectedMonthKwh, r.weatherProjectedMonthKwh)),
       untrackedKwh,
       projectedUntrackedMonthKwh
     );
 
-    // Build chronological date progression points across logged dates in the month
+    // Build chronological date progression points across logged dates in the month (including weather!)
     const uniqueDates = Array.from(
       new Set(
         devices.flatMap((d) =>
@@ -6168,31 +9020,74 @@ export class ElectricityView {
       )
     ).sort();
 
+    let coldDaysKwhSum = 0;
+    let coldDaysCount = 0;
+    let coldDaysTempSum = 0;
+    let warmDaysKwhSum = 0;
+    let warmDaysCount = 0;
+    let warmDaysTempSum = 0;
+
     const dateProgressionPoints = uniqueDates.map((dStr) => {
       let sumAtDate = 0;
+      let dayAddedKwh = 0;
       const parts: string[] = [];
+      let dateLogWeather: DailyWeatherPoint | null = null;
+
       for (const dev of devices) {
         const logsUpToDate = (dev.logs || [])
           .filter((l) => (l.periodMonth || l.date.slice(0, 7)) === selectedMonth && l.date <= dStr)
           .sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt));
         let devKwhAtDate = 0;
         for (const l of logsUpToDate) {
-          if (l.entryMode && l.entryMode !== 'cumulative_month') devKwhAtDate += Number(l.consumedKwh) || 0;
-          else devKwhAtDate = Number(l.consumedKwh) || 0;
+          if (l.date === dStr && !dateLogWeather) {
+            dateLogWeather = this.getEffectiveLogWeather(l);
+          }
+          if (l.entryMode && l.entryMode !== 'cumulative_month') {
+            devKwhAtDate += Number(l.consumedKwh) || 0;
+            if (l.date === dStr) dayAddedKwh += Number(l.consumedKwh) || 0;
+          } else {
+            devKwhAtDate = Number(l.consumedKwh) || 0;
+            if (l.date === dStr) dayAddedKwh += Number(l.consumedKwh) || 0;
+          }
         }
         if (devKwhAtDate > 0) {
           sumAtDate += devKwhAtDate;
           parts.push(`${dev.name}: ${devKwhAtDate.toFixed(1)}`);
         }
       }
+
+      const wPoint = dateLogWeather || this.getWeatherForDate(dStr);
+      if (dayAddedKwh > 0) {
+        if (wPoint.tempAvgC < 6) {
+          coldDaysKwhSum += dayAddedKwh;
+          coldDaysTempSum += wPoint.tempAvgC;
+          coldDaysCount++;
+        } else {
+          warmDaysKwhSum += dayAddedKwh;
+          warmDaysTempSum += wPoint.tempAvgC;
+          warmDaysCount++;
+        }
+      }
+
       return {
         date: dStr,
         cumulativeDevicesKwh: Math.round(sumAtDate * 100) / 100,
+        dayAddedKwh: Math.round(dayAddedKwh * 100) / 100,
+        tempAvgC: wPoint.tempAvgC,
+        tempMinC: wPoint.tempMinC,
+        tempMaxC: wPoint.tempMaxC,
+        weatherEmoji: wPoint.emoji,
+        weatherCondition: wPoint.condition,
         devicesSummary: parts.join(' • '),
       };
     });
 
-    // Generate analytical insights & recommendations
+    const coldDaysAvgKwh = coldDaysCount > 0 ? Math.round((coldDaysKwhSum / coldDaysCount) * 100) / 100 : null;
+    const coldDaysAvgTempC = coldDaysCount > 0 ? Math.round((coldDaysTempSum / coldDaysCount) * 10) / 10 : null;
+    const warmDaysAvgKwh = warmDaysCount > 0 ? Math.round((warmDaysKwhSum / warmDaysCount) * 100) / 100 : null;
+    const warmDaysAvgTempC = warmDaysCount > 0 ? Math.round((warmDaysTempSum / warmDaysCount) * 10) / 10 : null;
+
+    // Generate analytical insights & recommendations (including weather impact!)
     const insights: {
       title: string;
       description: string;
@@ -6201,6 +9096,22 @@ export class ElectricityView {
       tone: 'amber' | 'emerald' | 'indigo' | 'rose';
     }[] = [];
 
+    // Weather-driven insight first!
+    const tempTrendText =
+      monthTempDropC > 0.4
+        ? `Очікується зниження середньої температури з ${avgElapsedMonthTempC > 0 ? '+' : ''}${avgElapsedMonthTempC}°C до ${avgForecastRemainingTempC > 0 ? '+' : ''}${avgForecastRemainingTempC}°C (похолодання на ${monthTempDropC.toFixed(1)}°C).`
+        : monthTempDropC < -0.4
+          ? `Очікується підвищення середньої температури з ${avgElapsedMonthTempC > 0 ? '+' : ''}${avgElapsedMonthTempC}°C до ${avgForecastRemainingTempC > 0 ? '+' : ''}${avgForecastRemainingTempC}°C (потепління на ${Math.abs(monthTempDropC).toFixed(1)}°C).`
+          : `Середня температура утримається близько ${avgForecastRemainingTempC > 0 ? '+' : ''}${avgForecastRemainingTempC}°C.`;
+
+    insights.push({
+      title: 'Погодний прогноз споживання (вплив температури)',
+      badge: `${weatherProjectedHouseMonthKwh.toFixed(0)} кВт·год (${weatherHouseImpactPct >= 0 ? '+' : ''}${weatherHouseImpactPct.toFixed(1)}%)`,
+      icon: monthTempDropC > 0.5 ? 'ac_unit' : 'thermostat',
+      tone: monthTempDropC > 1.0 ? 'rose' : 'indigo',
+      description: `${tempTrendText} Чим нижча температура на вулиці, тим більше електроенергії витрачається на обігрів, підігрів води у бойлері та зарядку авто. З урахуванням погоди прогноз за місяць становить ~${weatherProjectedHouseMonthKwh.toFixed(0)} кВт·год (~${weatherProjectedHouseMonthCostUah.toFixed(0)} грн) замість лінійних ${projectedHouseMonthKwh.toFixed(0)} кВт·год (${weatherHouseDeltaKwh >= 0 ? '+' : ''}${weatherHouseDeltaKwh.toFixed(1)} кВт·год / ${weatherHouseDeltaCostUah >= 0 ? '+' : ''}${weatherHouseDeltaCostUah.toFixed(0)} грн).`,
+    });
+
     const topDevice = deviceRows[0];
     if (topDevice && topDevice.monthKwh > 0) {
       insights.push({
@@ -6208,7 +9119,7 @@ export class ElectricityView {
         badge: `${topDevice.shareOfHousePercent.toFixed(1)}% від дому`,
         icon: 'local_fire_department',
         tone: 'amber',
-        description: `Прилад «${topDevice.device.name}» спожив ${topDevice.monthKwh.toFixed(2)} кВт·год (${topDevice.monthCostUah.toFixed(0)} грн) із середнім темпом ${topDevice.dailyPaceKwh.toFixed(2)} кВт·год/добу. До кінця місяця очікується ~${topDevice.projectedMonthKwh.toFixed(1)} кВт·год (~${topDevice.projectedMonthCostUah.toFixed(0)} грн).`,
+        description: `Прилад «${topDevice.device.name}» спожив ${topDevice.monthKwh.toFixed(2)} кВт·год (${topDevice.monthCostUah.toFixed(0)} грн) при середній температурі ${topDevice.devAvgLoggedTempC > 0 ? '+' : ''}${topDevice.devAvgLoggedTempC}°C. Погодний прогноз до кінця місяця: ~${topDevice.weatherProjectedMonthKwh.toFixed(1)} кВт·год (~${topDevice.weatherProjectedMonthCostUah.toFixed(0)} грн).`,
       });
     }
 
@@ -6226,24 +9137,24 @@ export class ElectricityView {
     const season = getSeasonForDate(referenceDate);
     const winterLimit = 2000;
     insights.push({
-      title: 'Прогноз до кінця місяця',
-      badge: `~${projectedHouseMonthKwh.toFixed(0)} кВт·год`,
-      icon: projectedHouseMonthKwh > winterLimit && season === 'winter' ? 'warning' : 'trending_up',
-      tone: projectedHouseMonthKwh > winterLimit && season === 'winter' ? 'rose' : 'indigo',
+      title: 'Контроль зимового ліміту з урахуванням погоди',
+      badge: `~${weatherProjectedHouseMonthKwh.toFixed(0)} кВт·год`,
+      icon: weatherProjectedHouseMonthKwh > winterLimit && season === 'winter' ? 'warning' : 'trending_up',
+      tone: weatherProjectedHouseMonthKwh > winterLimit && season === 'winter' ? 'rose' : 'indigo',
       description:
         season === 'winter'
-          ? `За поточного темпу (${houseDailyPace.toFixed(2)} кВт·год/добу) загальне споживання за місяць складе ~${projectedHouseMonthKwh.toFixed(0)} кВт·год (~${projectedHouseMonthCostUah.toFixed(0)} грн), з яких прилади споживуть ~${projectedDevicesMonthKwh.toFixed(0)} кВт·год. ${
-              projectedHouseMonthKwh <= winterLimit
-                ? `Ви впевнено вкладаєтесь у пільговий зимовий ліміт ${winterLimit} кВт·год (запас ${(winterLimit - projectedHouseMonthKwh).toFixed(0)} кВт·год).`
-                : `Увага: прогнозується перевищення зимового ліміту ${winterLimit} кВт·год на ${(projectedHouseMonthKwh - winterLimit).toFixed(0)} кВт·год!`
+          ? `За скоригованим на погоду прогнозом споживання за місяць складе ~${weatherProjectedHouseMonthKwh.toFixed(0)} кВт·год (~${weatherProjectedHouseMonthCostUah.toFixed(0)} грн). ${
+              weatherProjectedHouseMonthKwh <= winterLimit
+                ? `Ви впевнено вкладаєтесь у пільговий зимовий ліміт ${winterLimit} кВт·год (запас ${(winterLimit - weatherProjectedHouseMonthKwh).toFixed(0)} кВт·год).`
+                : `Увага: через похолодання прогнозується перевищення зимового ліміту ${winterLimit} кВт·год на ${(weatherProjectedHouseMonthKwh - winterLimit).toFixed(0)} кВт·год!`
             }`
-          : `За поточного темпу (${houseDailyPace.toFixed(2)} кВт·год/добу) очікуване споживання на кінець місяця становить ~${projectedHouseMonthKwh.toFixed(0)} кВт·год (~${projectedHouseMonthCostUah.toFixed(0)} грн).`,
+          : `За скоригованим на погоду прогнозом очікуване споживання на кінець місяця становить ~${weatherProjectedHouseMonthKwh.toFixed(0)} кВт·год (~${weatherProjectedHouseMonthCostUah.toFixed(0)} грн).`,
     });
 
     // Night tariff potential savings for night-friendly devices
-    const nightFriendlyRows = deviceRows.filter((r) => r.device.isNightFriendly && r.projectedMonthKwh > 0);
+    const nightFriendlyRows = deviceRows.filter((r) => r.device.isNightFriendly && r.weatherProjectedMonthKwh > 0);
     if (nightFriendlyRows.length > 0) {
-      const shiftableKwh = nightFriendlyRows.reduce((s, r) => s + r.projectedMonthKwh * 0.7, 0);
+      const shiftableKwh = nightFriendlyRows.reduce((s, r) => s + r.weatherProjectedMonthKwh * 0.7, 0);
       const savingsUah = Math.round(shiftableKwh * (effectiveRateUah - nightRateUah));
       if (savingsUah > 0) {
         insights.push({
@@ -6256,11 +9167,66 @@ export class ElectricityView {
       }
     }
 
+    // Smart insight from control reading notes (if any notes explained device consumption)
+    if (totalAttributedNoteKwh > 0) {
+      const explainedDeviceNames = Array.from(
+        new Set([
+          ...Object.keys(attributedByDeviceId).map((id) => devices.find((d) => d.id === id)?.name).filter(Boolean),
+          ...unassignedAttributions.map((u) => u.action),
+        ])
+      );
+
+      insights.unshift({
+        title: 'Аналіз приміток контрольних замірів',
+        badge: `Пояснено ~${totalAttributedNoteKwh.toFixed(1)} кВт·год`,
+        icon: 'psychology',
+        tone: 'emerald',
+        description: `Завдяки аналізу приміток до контрольних замірів розпізнано роботу приладів без окремих смарт-розеток: ${explainedDeviceNames.join(', ')} (~${totalAttributedNoteKwh.toFixed(1)} кВт·год). Це дозволило пояснити частину стрибків споживання та знизити нерозподілений фоновий залишок будинку до ${untrackedKwh.toFixed(1)} кВт·год.`,
+      });
+    }
+
+    // Unmonitored catalog devices insight
+    const unmonitoredCatalogDevices = devices.filter((dev) => {
+      const row = deviceRows.find((r) => r.device.id === dev.id);
+      return row && row.isUnmonitoredCatalogDevice;
+    });
+
+    // Air conditioner two-stage power profile & empirical reading average insight
+    const acRows = deviceRows.filter((r) => r.isAirConditioner);
+    if (acRows.length > 0) {
+      const acDescriptions = acRows.map((r) => {
+        const maxW = r.device.powerWatts || 2200;
+        const empText =
+          r.allLogsCount > 0
+            ? `, середнє по наявних показах (${r.allLogsCount} зап.): ${r.avgKwhPerReading.toFixed(2)} кВт·г/показ`
+            : '';
+        return `«${r.device.name}» (пікова потужність нагріву ${maxW} Вт, робочий режим підтримання температури ${r.steadyRangeLabel} / ~${r.steadyOperatingWatts} Вт·г${empText})`;
+      });
+      insights.push({
+        title: 'Робочий режим кондиціонера (400–800 Вт·г) та середнє по показах',
+        badge: `${acRows[0].steadyRangeLabel}`,
+        icon: 'ac_unit',
+        tone: 'emerald',
+        description: `Для кондиціонера вказана потужність є максимальною при старті, а після первинного нагріву приміщення та переходу в робочий режим споживання становить 400–800 Вт·г: ${acDescriptions.join('; ')}. Це враховано при розрахунку тривалості роботи та аналізі замірів.`,
+      });
+    }
+
+    if (unmonitoredCatalogDevices.length > 0) {
+      insights.push({
+        title: 'Пристрої будинку без окремих лічильників',
+        badge: `${unmonitoredCatalogDevices.length} прилад(ів)`,
+        icon: 'devices_other',
+        tone: 'indigo',
+        description: `У списку будинку наявні прилади, для яких не ведеться окремий облік: ${unmonitoredCatalogDevices.map((d) => d.name + (d.powerWatts ? ` (${isAirConditionerDevice(d) ? `пік ${d.powerWatts} Вт / роб. 400–800 Вт·г` : `${d.powerWatts} Вт`})` : '')).join(', ')}. Вони формують частину фонового споживання будинку (${untrackedKwh.toFixed(1)} кВт·год). Щоб система автоматично розподіляла їх частку, вказуйте час їх увімкнення у примітках до контрольних замірів (наприклад: «Вчора увімкнули опалення з 17-ї до сьогодні 8-ї години»).`,
+      });
+    }
+
     return {
       selectedMonth,
       monthLabel,
       referenceDate,
       daysElapsed,
+      daysRemaining,
       daysInMonth,
       effectiveRateUah,
       totalLogsInMonth,
@@ -6270,6 +9236,10 @@ export class ElectricityView {
       devicesDailyPace,
       projectedDevicesMonthKwh,
       projectedDevicesMonthCostUah,
+      weatherProjectedDevicesMonthKwh,
+      weatherProjectedDevicesMonthCostUah,
+      totalAttributedNoteKwh,
+      unmonitoredCatalogDevices,
       houseReferenceKwh,
       houseReferenceCostUah,
       houseDailyPace,
@@ -6281,9 +9251,25 @@ export class ElectricityView {
       projectedUntrackedMonthKwh,
       projectedHouseMonthKwh,
       projectedHouseMonthCostUah,
+      weatherProjectedHouseMonthKwh,
+      weatherProjectedHouseMonthCostUah,
+      weatherHouseDeltaKwh,
+      weatherHouseDeltaCostUah,
+      weatherHouseImpactPct,
+      avgElapsedMonthTempC,
+      avgForecastRemainingTempC,
+      monthTempDropC,
+      coldDaysAvgKwh,
+      coldDaysAvgTempC,
+      warmDaysAvgKwh,
+      warmDaysAvgTempC,
       maxChartKwh,
       dateProgressionPoints,
       insights,
+      usageWarnings,
+      averageDeviceMonthKwh,
+      totalWarningExcessKwh,
+      totalWarningExcessCostUah,
     };
   });
 
@@ -6390,9 +9376,12 @@ export class ElectricityView {
   }): Promise<void> {
     const acc = this.currentAccount();
     if (!acc) return;
+    const currentUserId = this.dataService.currentUser()?.id || '';
     const currentList = [...this.accountDevices()];
     const newDev: ElectricityDevice = {
       id: `dev_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      accountId: acc.id,
+      ownerUserId: currentUserId,
       name: preset.name,
       category: preset.category,
       icon: preset.icon,
@@ -6420,6 +9409,7 @@ export class ElectricityView {
     if (this.deviceForm.invalid) return;
     const acc = this.currentAccount();
     if (!acc) return;
+    const currentUserId = this.dataService.currentUser()?.id || '';
 
     const val = this.deviceForm.getRawValue();
     const editId = this.editingDeviceId();
@@ -6431,6 +9421,8 @@ export class ElectricityView {
         d.id === editId
           ? {
               ...d,
+              accountId: acc.id,
+              ownerUserId: d.ownerUserId || currentUserId,
               name: (val.name || 'Пристрій').trim(),
               category: val.category || 'other',
               icon: val.icon || 'bolt',
@@ -6447,6 +9439,8 @@ export class ElectricityView {
     } else {
       const newDev: ElectricityDevice = {
         id: `dev_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        accountId: acc.id,
+        ownerUserId: currentUserId,
         name: (val.name || 'Пристрій').trim(),
         category: val.category || 'other',
         icon: val.icon || 'bolt',
@@ -6518,10 +9512,21 @@ export class ElectricityView {
     return this.computeDurationHours(startDate, endDate, startTime, endTime);
   });
 
+  isSelectedLogDeviceAirConditioner(): boolean {
+    const dev = this.selectedLogDevice();
+    return isAirConditionerDevice(dev);
+  }
+
   readonly estimatedKwhFromPowerAndDuration = computed<number | null>(() => {
     const dev = this.selectedLogDevice();
     const durH = this.calculatedLogDurationHours();
-    if (!dev?.powerWatts || dev.powerWatts <= 0 || !durH || durH <= 0) return null;
+    if (!dev || !durH || durH <= 0) return null;
+    if (isAirConditionerDevice(dev)) {
+      const w = this.currentFormLogWeather();
+      const acProfile = resolveAirConditionerPowerProfile(dev.powerWatts || 1350, durH, dev, w?.tempAvgC);
+      return acProfile.estimatedKwh;
+    }
+    if (!dev.powerWatts || dev.powerWatts <= 0) return null;
     return Math.round((dev.powerWatts / 1000) * durH * 100) / 100;
   });
 
@@ -6559,8 +9564,19 @@ export class ElectricityView {
     return null;
   }
 
-  onDeviceLogFormChange(): void {
+  onDeviceLogFormChange(syncWeatherFromDate = true): void {
     this.deviceLogFormTrigger.update((v) => v + 1);
+    if (syncWeatherFromDate) {
+      const w = this.currentFormLogWeather();
+      this.logCustomTempAvgC.set(w.tempAvgC);
+      this.logCustomWeatherCondition.set(w.condition);
+    }
+  }
+
+  resetLogWeatherToAuto(): void {
+    const w = this.currentFormLogWeather();
+    this.logCustomTempAvgC.set(w.tempAvgC);
+    this.logCustomWeatherCondition.set(w.condition);
   }
 
   setDeviceLogEntryMode(mode: DeviceConsumptionEntryMode): void {
@@ -6593,7 +9609,7 @@ export class ElectricityView {
 
   applyEstimatedKwhToLogForm(estKwh: number): void {
     this.deviceLogForm.patchValue({ consumedKwh: estKwh });
-    this.onDeviceLogFormChange();
+    this.onDeviceLogFormChange(false);
   }
 
   calculateEvChargeKwh(batteryCapacityKwh: number): number {
@@ -6612,7 +9628,7 @@ export class ElectricityView {
       consumedKwh: kwh,
       comment: curComment || `Зарядка батареї з ${s}% до ${e}% (${batteryCapacityKwh} кВт·год)`,
     });
-    this.onDeviceLogFormChange();
+    this.onDeviceLogFormChange(false);
   }
 
   getDeviceLogDateLabel(log: ElectricityDeviceLogEntry): string {
@@ -6653,9 +9669,9 @@ export class ElectricityView {
   getDeviceLogTariffBadge(log: ElectricityDeviceLogEntry): string {
     switch (log.tariffSelection) {
       case 'night_only':
-        return '🌙 Нічний тариф (Т2)';
+        return '🌙 Ніч (Т1)';
       case 'day_only':
-        return '☀️ Денний тариф (Т1)';
+        return '☀️ День (Т2)';
       default:
         return '⏱️ Розраховано по часу';
     }
@@ -6672,6 +9688,8 @@ export class ElectricityView {
     const selMonth = this.deviceSelectedMonth();
     const defaultDate = today.startsWith(selMonth) ? today : `${selMonth}-15`;
 
+    this.editingDeviceLogId.set(null);
+    this.editingDeviceLogOriginalDeviceId.set(null);
     this.deviceLogForm.reset({
       deviceId: targetId,
       date: defaultDate,
@@ -6683,12 +9701,35 @@ export class ElectricityView {
       tariffSelection: 'auto_time',
       comment: '',
     });
-    this.onDeviceLogFormChange();
+    this.onDeviceLogFormChange(true);
+    this.isDeviceLogModalOpen.set(true);
+  }
+
+  openEditDeviceLogModal(deviceId: string, log: ElectricityDeviceLogEntry): void {
+    this.editingDeviceLogId.set(log.id);
+    this.editingDeviceLogOriginalDeviceId.set(deviceId);
+    this.deviceLogForm.reset({
+      deviceId,
+      date: log.date,
+      endDate: log.endDate || log.date,
+      startTime: log.startTime || '',
+      endTime: log.endTime || '',
+      consumedKwh: log.consumedKwh,
+      entryMode: log.entryMode || 'single_day',
+      tariffSelection: log.tariffSelection || 'auto_time',
+      comment: log.comment || '',
+    });
+    const effWeather = this.getEffectiveLogWeather(log);
+    this.logCustomTempAvgC.set(effWeather.tempAvgC);
+    this.logCustomWeatherCondition.set(effWeather.condition);
+    this.onDeviceLogFormChange(false);
     this.isDeviceLogModalOpen.set(true);
   }
 
   closeDeviceLogModal(): void {
     this.isDeviceLogModalOpen.set(false);
+    this.editingDeviceLogId.set(null);
+    this.editingDeviceLogOriginalDeviceId.set(null);
   }
 
   async saveDeviceLog(): Promise<void> {
@@ -6719,6 +9760,98 @@ export class ElectricityView {
     const kwh = Math.max(0, Math.round((Number(val.consumedKwh) || 0) * 100) / 100);
     const tariffSelection = val.tariffSelection || 'auto_time';
 
+    // Resolve weather for this log entry
+    const baseWeather = this.getWeatherForDate(dateStr, endDateStr);
+    const customTemp = this.logCustomTempAvgC();
+    const finalTempAvgC =
+      customTemp !== null && !isNaN(Number(customTemp))
+        ? Math.round(Number(customTemp) * 10) / 10
+        : baseWeather.tempAvgC;
+    const finalCondition = this.logCustomWeatherCondition().trim() || baseWeather.condition;
+    const finalEmoji =
+      finalTempAvgC <= -1 ? '❄️' : finalTempAvgC < 6 ? '☁️' : finalTempAvgC >= 16 ? '☀️' : baseWeather.emoji;
+
+    const editLogId = this.editingDeviceLogId();
+    const origDeviceId = this.editingDeviceLogOriginalDeviceId();
+
+    if (editLogId) {
+      let existingEntry: ElectricityDeviceLogEntry | undefined;
+      for (const dev of this.accountDevices()) {
+        const found = (dev.logs || []).find((l) => l.id === editLogId);
+        if (found) {
+          existingEntry = found;
+          break;
+        }
+      }
+
+      const updatedLog: ElectricityDeviceLogEntry = {
+        id: editLogId,
+        date: dateStr,
+        endDate: endDateStr,
+        startTime: startTimeStr,
+        endTime: endTimeStr,
+        durationHours: durationHours ?? undefined,
+        periodMonth,
+        consumedKwh: kwh,
+        entryMode,
+        tariffSelection,
+        tempAvgC: finalTempAvgC,
+        tempMinC: baseWeather.tempMinC,
+        tempMaxC: baseWeather.tempMaxC,
+        weatherCode: baseWeather.weatherCode,
+        weatherCondition: finalCondition,
+        weatherIcon: finalEmoji,
+        comment: val.comment?.trim() || undefined,
+        aiExplanation: existingEntry?.aiExplanation,
+        fromScreenshot: existingEntry?.fromScreenshot ?? false,
+        createdAt: existingEntry?.createdAt || new Date().toISOString(),
+      };
+
+      const nextList = this.accountDevices().map((d) => {
+        if (origDeviceId && origDeviceId !== val.deviceId) {
+          if (d.id === origDeviceId) {
+            return {
+              ...d,
+              logs: (d.logs || []).filter((l) => l.id !== editLogId),
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          if (d.id === val.deviceId) {
+            return {
+              ...d,
+              logs: [...(d.logs || []), updatedLog],
+              updatedAt: new Date().toISOString(),
+            };
+          }
+          return d;
+        }
+        if (d.id === val.deviceId) {
+          return {
+            ...d,
+            logs: (d.logs || []).map((l) => (l.id === editLogId ? updatedLog : l)),
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return d;
+      });
+
+      this.isSavingDevices.set(true);
+      try {
+        const ok = await this.dataService.saveUtilityAccountDevices(
+          acc.id,
+          nextList,
+          `Запис споживання та погоду (${finalTempAvgC > 0 ? '+' : ''}${finalTempAvgC}°C) оновлено!`
+        );
+        if (ok) {
+          this.deviceSelectedMonth.set(periodMonth);
+          this.closeDeviceLogModal();
+        }
+      } finally {
+        this.isSavingDevices.set(false);
+      }
+      return;
+    }
+
     const newLog: ElectricityDeviceLogEntry = {
       id: `dlog_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       date: dateStr,
@@ -6730,6 +9863,12 @@ export class ElectricityView {
       consumedKwh: kwh,
       entryMode,
       tariffSelection,
+      tempAvgC: finalTempAvgC,
+      tempMinC: baseWeather.tempMinC,
+      tempMaxC: baseWeather.tempMaxC,
+      weatherCode: baseWeather.weatherCode,
+      weatherCondition: finalCondition,
+      weatherIcon: finalEmoji,
       comment: val.comment?.trim() || undefined,
       fromScreenshot: false,
       createdAt: new Date().toISOString(),
@@ -6750,7 +9889,7 @@ export class ElectricityView {
       const ok = await this.dataService.saveUtilityAccountDevices(
         acc.id,
         nextList,
-        `Споживання ${kwh} кВт·год зафіксовано (${this.getDeviceLogModeBadge(newLog)})!`
+        `Споживання ${kwh} кВт·год та погоду (${finalTempAvgC > 0 ? '+' : ''}${finalTempAvgC}°C) зафіксовано!`
       );
       if (ok) {
         this.deviceSelectedMonth.set(periodMonth);
@@ -6923,6 +10062,7 @@ export class ElectricityView {
   async applyScreenshotToDevice(): Promise<void> {
     const acc = this.currentAccount();
     if (!acc) return;
+    const currentUserId = this.dataService.currentUser()?.id || '';
     const kwh = this.screenshotExtractedKwh();
     if (kwh === null || isNaN(kwh) || kwh < 0) return;
 
@@ -6945,6 +10085,8 @@ export class ElectricityView {
       undefined;
     const periodMonth = dateStr.slice(0, 7);
 
+    const wPoint = this.getWeatherForDate(dateStr, endDateStr);
+
     const newLog: ElectricityDeviceLogEntry = {
       id: `dlog_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       date: dateStr,
@@ -6955,6 +10097,12 @@ export class ElectricityView {
       periodMonth,
       consumedKwh: Math.round(kwh * 100) / 100,
       entryMode: mode,
+      tempAvgC: wPoint.tempAvgC,
+      tempMinC: wPoint.tempMinC,
+      tempMaxC: wPoint.tempMaxC,
+      weatherCode: wPoint.weatherCode,
+      weatherCondition: wPoint.condition,
+      weatherIcon: wPoint.emoji,
       comment: this.screenshotComment().trim() || undefined,
       aiExplanation: aiRes?.explanation || undefined,
       fromScreenshot: true,
@@ -6972,6 +10120,8 @@ export class ElectricityView {
         `Пристрій ${currentList.length + 1}`;
       const newDev: ElectricityDevice = {
         id: `dev_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        accountId: acc.id,
+        ownerUserId: currentUserId,
         name: targetDeviceName,
         category: 'smart_plug',
         icon: 'power',
@@ -6990,6 +10140,8 @@ export class ElectricityView {
           targetDeviceName = d.name;
           return {
             ...d,
+            accountId: acc.id,
+            ownerUserId: d.ownerUserId || currentUserId,
             logs: [...(d.logs || []), newLog],
             updatedAt: new Date().toISOString(),
           };
@@ -7003,7 +10155,7 @@ export class ElectricityView {
       const ok = await this.dataService.saveUtilityAccountDevices(
         acc.id,
         nextList,
-        `Додано ${newLog.consumedKwh} кВт·год до «${targetDeviceName}» (${this.getDeviceLogModeBadge(newLog)})!`
+        `Додано ${newLog.consumedKwh} кВт·год та погоду (${wPoint.tempAvgC > 0 ? '+' : ''}${wPoint.tempAvgC}°C) до «${targetDeviceName}»!`
       );
       if (ok) {
         this.deviceSelectedMonth.set(periodMonth);

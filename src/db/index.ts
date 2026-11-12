@@ -19,29 +19,44 @@ declare global {
 
 export const getExternalDatabaseUrl = (): string | undefined => {
   const extUrl = process.env['EXTERNAL_DATABASE_URL'];
-  if (extUrl) return extUrl;
-  const dbUrl = process.env['DATABASE_URL'];
-  if (dbUrl && dbUrl.includes('internet-shop-4-alex-kondr.e.aivencloud.com')) {
-    return dbUrl.replace(/\/defaultdb(\?|$)/, '/iptv$1');
+  if (extUrl && !extUrl.includes('username:password') && !extUrl.includes('hostname:port') && !extUrl.includes('YOUR_')) {
+    return extUrl;
   }
-  return dbUrl;
+  const dbUrl = process.env['DATABASE_URL'];
+  if (dbUrl && !dbUrl.includes('username:password') && !dbUrl.includes('hostname:port') && !dbUrl.includes('YOUR_')) {
+    if (dbUrl.includes('internet-shop-4-alex-kondr.e.aivencloud.com')) {
+      return dbUrl.replace(/\/defaultdb(\?|$)/, '/iptv$1');
+    }
+    return dbUrl;
+  }
+  return undefined;
 };
 
 export const isCloudSqlEnvConfigured = (): boolean => {
+  const host = process.env['SQL_HOST'];
+  const user = process.env['SQL_USER'];
+  const db = process.env['SQL_DB_NAME'];
   return Boolean(
-    process.env['SQL_HOST'] &&
-    process.env['SQL_USER'] &&
-    process.env['SQL_DB_NAME']
+    host && host.trim() !== '' &&
+    user && user.trim() !== '' &&
+    db && db.trim() !== ''
   );
 };
 
 export const isExternalDbConfigured = (): boolean => {
-  return Boolean(getExternalDatabaseUrl());
+  const url = getExternalDatabaseUrl();
+  return Boolean(url && url.length > 10 && (url.startsWith('postgres://') || url.startsWith('postgresql://')));
 };
 
 export const getActiveDbMode = (): DatabaseMode => {
-  if (!global._activeDbMode || global._activeDbMode === 'sqlite_local') {
-    global._activeDbMode = 'external';
+  if (!global._activeDbMode) {
+    if (isExternalDbConfigured()) {
+      global._activeDbMode = 'external';
+    } else if (isCloudSqlEnvConfigured()) {
+      global._activeDbMode = 'cloudsql';
+    } else {
+      global._activeDbMode = 'sqlite_local';
+    }
   }
   return global._activeDbMode;
 };

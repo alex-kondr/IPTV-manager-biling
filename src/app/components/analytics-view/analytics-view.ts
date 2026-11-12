@@ -214,7 +214,64 @@ import { RechartsYearlyIncomeComponent } from './recharts-yearly-income.componen
           <span class="text-xs text-slate-500">Роздільний облік (₴ / $)</span>
         </div>
 
-        <div class="overflow-x-auto">
+        <!-- Mobile Card View -->
+        <div class="md:hidden divide-y divide-slate-200/80">
+          @for (row of chartData(); track row.monthKey) {
+            <div class="p-3.5 space-y-2.5 bg-white">
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2 font-bold text-sm text-slate-900">
+                  <span
+                    class="w-2.5 h-2.5 rounded-full shrink-0"
+                    [class.bg-emerald-500]="row.isCurrent"
+                    [class.bg-slate-300]="!row.isCurrent"
+                  ></span>
+                  <span>{{ row.monthName }}</span>
+                  @if (row.isCurrent) {
+                    <span class="text-2xs px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">
+                      Поточний
+                    </span>
+                  }
+                </div>
+                <span class="text-2xs font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-lg">
+                  Оплат: {{ row.paymentsCount || 0 }}
+                </span>
+              </div>
+
+              <div class="grid grid-cols-3 gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-200/80 text-center">
+                <div>
+                  <div class="text-3xs text-slate-400 uppercase font-semibold">Доходи</div>
+                  <div class="text-xs font-extrabold text-emerald-700 mt-0.5">
+                    +{{ (row.totalIncome || 0).toLocaleString('uk-UA') }} ₴
+                  </div>
+                </div>
+                <div class="border-x border-slate-200/70 px-1">
+                  <div class="text-3xs text-slate-400 uppercase font-semibold">Витрати</div>
+                  <div class="text-xs font-bold text-rose-600 mt-0.5">
+                    {{ (row.totalExpenses || 0) > 0 ? '-' + (row.totalExpenses || 0).toLocaleString('uk-UA') + ' ₴' : '0 ₴' }}
+                  </div>
+                </div>
+                <div>
+                  <div class="text-3xs text-slate-400 uppercase font-semibold">Прибуток</div>
+                  <div
+                    class="text-xs font-extrabold mt-0.5"
+                    [class.text-emerald-800]="(row.netProfit || 0) >= 0"
+                    [class.text-rose-700]="(row.netProfit || 0) < 0"
+                  >
+                    {{ (row.netProfit || 0).toLocaleString('uk-UA') }} ₴
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex items-center justify-between text-2xs text-slate-500 px-1">
+                <span>Поповнення провайдера ($):</span>
+                <span class="font-bold text-slate-700">\${{ row.usdDeposits || 0 }} USD</span>
+              </div>
+            </div>
+          }
+        </div>
+
+        <!-- Desktop Table View -->
+        <div class="hidden md:block overflow-x-auto">
           <table class="w-full text-left text-xs sm:text-sm">
             <thead class="bg-slate-50 text-slate-600 uppercase tracking-wider text-2xs border-b border-slate-200">
               <tr>

@@ -16,10 +16,10 @@ import { YearlyIncomeItem, YearlyIncomeSummary } from './recharts-wrapper';
   template: `
     <div class="w-full space-y-4">
       <!-- Control Bar & Quick Stats -->
-      <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-slate-50/90 p-3.5 rounded-xl border border-slate-200/80">
-        <div class="flex items-center gap-2">
-          <span class="text-xs font-semibold text-slate-700">Режим перегляду:</span>
-          <div class="inline-flex rounded-lg bg-slate-200/80 p-0.5 text-xs">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-slate-50 dark:bg-slate-800/90 p-3.5 rounded-xl border border-slate-200/80 dark:border-slate-700">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-xs font-semibold text-slate-700 dark:text-slate-200">Режим перегляду:</span>
+          <div class="inline-flex rounded-lg bg-slate-200/80 dark:bg-slate-900 p-0.5 text-xs border border-slate-300/50 dark:border-slate-700">
             <button
               type="button"
               (click)="viewType.set('composed')"

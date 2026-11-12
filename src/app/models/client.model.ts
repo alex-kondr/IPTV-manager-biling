@@ -19,9 +19,15 @@ export type AppTabId =
   | 'users'
   | 'settings';
 
+export type SettingScopeType = 'user' | 'system';
+
 export type SettingsSectionId =
+  | 'theme'
   | 'outage_display'
+  | 'house_visibility'
   | 'electricity_tariffs'
+  | 'water_tariffs'
+  | 'waste_tariffs'
   | 'water_waste_tariffs'
   | 'billing'
   | 'viber'
@@ -29,65 +35,131 @@ export type SettingsSectionId =
   | 'database'
   | 'backup';
 
-export const ALL_SETTINGS_SECTIONS: {
+export interface SettingsSectionMeta {
   id: SettingsSectionId;
   label: string;
   subtitle: string;
   icon: string;
+  defaultScope: SettingScopeType;
   isSystem?: boolean;
-}[] = [
+  dbTable: string;
+}
+
+export const ALL_SETTINGS_SECTIONS: SettingsSectionMeta[] = [
+  {
+    id: 'theme',
+    label: 'Тема оформлення додатка',
+    subtitle: 'Світла, темна або автоматична (системна)',
+    icon: 'dark_mode',
+    defaultScope: 'user',
+    dbTable: 'user_settings.theme_mode',
+  },
   {
     id: 'outage_display',
     label: 'Вигляд графіку відключень',
     subtitle: '10 стилів відображення погодинного графіку ДТЕК',
     icon: 'view_timeline',
+    defaultScope: 'user',
+    dbTable: 'user_settings.outage_schedule_view_variant',
+  },
+  {
+    id: 'house_visibility',
+    label: 'Відображення будинків по вкладках',
+    subtitle: 'Індивідуальний показ або приховування спільних будинків для кожної вкладки',
+    icon: 'visibility',
+    defaultScope: 'user',
+    dbTable: 'user_settings.hidden_house_tabs',
   },
   {
     id: 'electricity_tariffs',
-    label: 'Тарифи на електроенергію',
-    subtitle: 'Однозонний та двозонний тариф (День/Ніч), ліміти',
+    label: 'Тариф електро',
+    subtitle: 'Індивідуальний однозонний та двозонний тариф (День/Ніч), ліміти',
     icon: 'bolt',
+    defaultScope: 'user',
+    dbTable: 'user_settings.electricity_tariffs',
   },
   {
-    id: 'water_waste_tariffs',
-    label: 'Тарифи на воду та сміття',
-    subtitle: 'Вартість 1 м³ води, абонплата та тариф на ТПВ',
+    id: 'water_tariffs',
+    label: 'Тариф на воду',
+    subtitle: 'Індивідуальна вартість 1 м³ води, щомісячна абонплата та історія',
     icon: 'water_drop',
+    defaultScope: 'user',
+    dbTable: 'user_settings.water_tariffs',
+  },
+  {
+    id: 'waste_tariffs',
+    label: 'Тариф на вивіз сміття',
+    subtitle: 'Індивідуальний тариф на вивіз ТПВ (грн/міс за 1 особу) та історія',
+    icon: 'delete_outline',
+    defaultScope: 'user',
+    dbTable: 'user_settings.waste_tariffs',
   },
   {
     id: 'billing',
     label: 'Загальні налаштування та реквізити IPTV',
     subtitle: 'Стандартний тариф IPTV, картка / IBAN, нагадування',
     icon: 'payments',
+    defaultScope: 'system',
+    dbTable: 'settings',
   },
   {
     id: 'viber',
     label: 'Шаблони повідомлень Viber',
     subtitle: 'Тексти нагадувань та підтверджень оплати',
     icon: 'chat',
+    defaultScope: 'system',
+    dbTable: 'settings',
   },
   {
     id: 'telegram',
     label: 'Telegram Bot та сповіщення',
     subtitle: 'Токен бота, юзернейм та параметри відправки',
     icon: 'send',
+    defaultScope: 'system',
     isSystem: true,
+    dbTable: 'settings',
   },
   {
     id: 'database',
-    label: 'Бази даних PostgreSQL (Системне)',
+    label: 'Бази даних PostgreSQL',
     subtitle: 'Керування Aiven PostgreSQL та Cloud SQL, копіювання таблиць',
     icon: 'storage',
+    defaultScope: 'system',
     isSystem: true,
+    dbTable: 'settings / system_settings_config',
   },
   {
     id: 'backup',
-    label: 'Резервне копіювання JSON (Системне)',
+    label: 'Резервне копіювання JSON',
     subtitle: 'Експорт та відновлення повної бази даних із JSON',
     icon: 'cloud_download',
+    defaultScope: 'system',
     isSystem: true,
+    dbTable: 'system_settings_config',
   },
 ];
+
+export interface UserPersonalSettings {
+  userId: string;
+  themeMode: 'light' | 'dark' | 'system';
+  outageScheduleViewVariant: OutageScheduleViewVariant;
+  hiddenHouseTabs: Record<string, string[]>;
+  electricityTariffs?: {
+    electricitySingle?: UtilityTariffsSettings['electricitySingle'];
+    electricityDual?: UtilityTariffsSettings['electricityDual'];
+  } | null;
+  waterTariffs?: UtilityTariffsSettings['water'] | null;
+  wasteTariffs?: UtilityTariffsSettings['waste'] | null;
+  customPreferences?: Record<string, unknown>;
+  updatedAt?: string;
+}
+
+export interface SystemSettingsConfig {
+  id: string;
+  scopesConfig: Record<string, SettingScopeType>;
+  systemValues?: Record<string, unknown>;
+  updatedAt?: string;
+}
 
 export const ALL_USER_ASSIGNABLE_TABS: { id: AppTabId; label: string; icon: string; badgeColor: string }[] = [
   { id: 'electricity', label: 'Електроенергія та Графік', icon: 'bolt', badgeColor: 'amber' },
@@ -107,6 +179,7 @@ export const DEFAULT_USER_TABS: AppTabId[] = [
   'water',
   'waste',
   'water_waste',
+  'settings',
 ];
 export const ALL_ADMIN_TABS: AppTabId[] = [
   'outage_schedule',
@@ -125,27 +198,213 @@ export const ALL_ADMIN_TABS: AppTabId[] = [
 
 export const SETTINGS_PERMISSION_PREFIX = 'settings:';
 
-export function extractAllowedSettingsFromUser(user?: Partial<AppUser> | null): SettingsSectionId[] {
+export function getDefaultUserSettingsSections(
+  scopesConfig?: Record<string, SettingScopeType> | null
+): SettingsSectionId[] {
+  const scopes = scopesConfig || {};
+  return ALL_SETTINGS_SECTIONS.filter((s) => (scopes[s.id] || s.defaultScope) === 'user').map(
+    (s) => s.id
+  );
+}
+
+export function extractAllowedSettingsFromUser(
+  user?: Partial<AppUser> | null,
+  scopesConfig?: Record<string, SettingScopeType> | null
+): SettingsSectionId[] {
   if (!user) return [];
   if (user.role === 'admin') {
     return ALL_SETTINGS_SECTIONS.map((s) => s.id);
   }
   const set = new Set<SettingsSectionId>();
   const validIds = new Set<string>(ALL_SETTINGS_SECTIONS.map((s) => s.id));
+  const addSection = (raw: string) => {
+    if (raw === 'water_waste_tariffs') {
+      set.add('water_tariffs');
+      set.add('waste_tariffs');
+      return;
+    }
+    if (validIds.has(raw)) {
+      set.add(raw as SettingsSectionId);
+    }
+  };
+  for (const defSec of getDefaultUserSettingsSections(scopesConfig)) {
+    set.add(defSec);
+  }
   if (Array.isArray(user.allowedSettings)) {
     for (const s of user.allowedSettings) {
-      if (validIds.has(s)) set.add(s);
+      addSection(s);
     }
   }
   if (Array.isArray(user.allowedTabs)) {
     for (const t of user.allowedTabs) {
       if (typeof t === 'string' && t.startsWith(SETTINGS_PERMISSION_PREFIX)) {
-        const sec = t.slice(SETTINGS_PERMISSION_PREFIX.length) as SettingsSectionId;
-        if (validIds.has(sec)) set.add(sec);
+        const sec = t.slice(SETTINGS_PERMISSION_PREFIX.length);
+        addSection(sec);
       }
     }
   }
   return Array.from(set);
+}
+
+export type UserAccountStatus = 'active' | 'inactive';
+
+export type HouseholdAccessLevel = 'view_only' | 'full';
+
+export type MemberRelationTag =
+  | 'family'
+  | 'wife'
+  | 'husband'
+  | 'father'
+  | 'mother'
+  | 'brother'
+  | 'sister'
+  | 'son'
+  | 'daughter'
+  | 'grandmother'
+  | 'grandfather'
+  | 'friend_male'
+  | 'friend_female'
+  | 'acquaintance';
+
+export interface MemberRelationTagMeta {
+  id: MemberRelationTag;
+  label: string;
+  icon: string;
+  badgeClass: string;
+  activeClass: string;
+  iconColorClass: string;
+}
+
+export const MEMBER_RELATION_TAGS: MemberRelationTagMeta[] = [
+  {
+    id: 'family',
+    label: "Сім'я",
+    icon: 'family_restroom',
+    badgeClass: 'bg-rose-50 text-rose-700 border-rose-200',
+    activeClass: 'bg-rose-600 text-white border-rose-600 shadow-xs',
+    iconColorClass: 'text-rose-500',
+  },
+  {
+    id: 'wife',
+    label: 'Дружина',
+    icon: 'favorite',
+    badgeClass: 'bg-pink-50 text-pink-700 border-pink-200',
+    activeClass: 'bg-pink-600 text-white border-pink-600 shadow-xs',
+    iconColorClass: 'text-pink-500',
+  },
+  {
+    id: 'husband',
+    label: 'Чоловік',
+    icon: 'favorite_border',
+    badgeClass: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+    activeClass: 'bg-indigo-600 text-white border-indigo-600 shadow-xs',
+    iconColorClass: 'text-indigo-500',
+  },
+  {
+    id: 'father',
+    label: 'Батько',
+    icon: 'man',
+    badgeClass: 'bg-blue-50 text-blue-700 border-blue-200',
+    activeClass: 'bg-blue-600 text-white border-blue-600 shadow-xs',
+    iconColorClass: 'text-blue-500',
+  },
+  {
+    id: 'mother',
+    label: 'Мати',
+    icon: 'woman',
+    badgeClass: 'bg-purple-50 text-purple-700 border-purple-200',
+    activeClass: 'bg-purple-600 text-white border-purple-600 shadow-xs',
+    iconColorClass: 'text-purple-500',
+  },
+  {
+    id: 'brother',
+    label: 'Брат',
+    icon: 'man_4',
+    badgeClass: 'bg-cyan-50 text-cyan-700 border-cyan-200',
+    activeClass: 'bg-cyan-600 text-white border-cyan-600 shadow-xs',
+    iconColorClass: 'text-cyan-500',
+  },
+  {
+    id: 'sister',
+    label: 'Сестра',
+    icon: 'woman_2',
+    badgeClass: 'bg-violet-50 text-violet-700 border-violet-200',
+    activeClass: 'bg-violet-600 text-white border-violet-600 shadow-xs',
+    iconColorClass: 'text-violet-500',
+  },
+  {
+    id: 'son',
+    label: 'Син',
+    icon: 'boy',
+    badgeClass: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+    activeClass: 'bg-indigo-600 text-white border-indigo-600 shadow-xs',
+    iconColorClass: 'text-indigo-500',
+  },
+  {
+    id: 'daughter',
+    label: 'Донька',
+    icon: 'girl',
+    badgeClass: 'bg-pink-50 text-pink-700 border-pink-200',
+    activeClass: 'bg-pink-600 text-white border-pink-600 shadow-xs',
+    iconColorClass: 'text-pink-500',
+  },
+  {
+    id: 'grandmother',
+    label: 'Бабуся',
+    icon: 'elderly_woman',
+    badgeClass: 'bg-amber-50 text-amber-800 border-amber-200',
+    activeClass: 'bg-amber-600 text-white border-amber-600 shadow-xs',
+    iconColorClass: 'text-amber-500',
+  },
+  {
+    id: 'grandfather',
+    label: 'Дідусь',
+    icon: 'elderly',
+    badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    activeClass: 'bg-emerald-600 text-white border-emerald-600 shadow-xs',
+    iconColorClass: 'text-emerald-500',
+  },
+  {
+    id: 'friend_male',
+    label: 'Друг',
+    icon: 'face_6',
+    badgeClass: 'bg-sky-50 text-sky-700 border-sky-200',
+    activeClass: 'bg-sky-600 text-white border-sky-600 shadow-xs',
+    iconColorClass: 'text-sky-500',
+  },
+  {
+    id: 'friend_female',
+    label: 'Подруга',
+    icon: 'face_3',
+    badgeClass: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200',
+    activeClass: 'bg-fuchsia-600 text-white border-fuchsia-600 shadow-xs',
+    iconColorClass: 'text-fuchsia-500',
+  },
+  {
+    id: 'acquaintance',
+    label: 'Знайомий',
+    icon: 'emoji_people',
+    badgeClass: 'bg-teal-50 text-teal-700 border-teal-200',
+    activeClass: 'bg-teal-600 text-white border-teal-600 shadow-xs',
+    iconColorClass: 'text-teal-500',
+  },
+];
+
+export interface HouseholdInvite {
+  id: string;
+  code: string;
+  ownerUserId: string;
+  ownerName: string;
+  ownerEmail: string;
+  ownerPicture?: string;
+  houseIds: string[];
+  houseNames: string[];
+  accessLevel: HouseholdAccessLevel; // 'view_only' (За замовчуванням) | 'full' (Повний доступ)
+  includeSharedBudget: boolean;
+  memberTags: MemberRelationTag[];
+  label?: string;
+  acceptedByUserIds: string[];
+  createdAt: string;
 }
 
 export interface AppUser {
@@ -154,6 +413,7 @@ export interface AppUser {
   name: string;
   picture?: string;
   role: UserRole; // 'admin' (Всі права), 'user' (Індивідуальний доступ), 'new' (Зовсім без доступу)
+  status?: UserAccountStatus; // 'active' (Активний) | 'inactive' (Неактивний / Заблокований)
   allowedTabs?: AppTabId[]; // Вкладки, доступні користувачу
   allowedSettings?: SettingsSectionId[]; // Окремі пункти налаштувань, відкриті адміністратором
   assignedUtilityAccountIds?: string[]; // ID прив'язаних адміністратором будинків / комунальних рахунків
@@ -161,9 +421,21 @@ export interface AppUser {
   defaultUtilityAccountId?: string; // ID будинку за замовчуванням для відображення графіку відключень
   outageScheduleViewVariant?: OutageScheduleViewVariant; // Персональний вигляд графіку відключень для користувача
   canManageOwnData?: boolean; // Дозвіл додавати та редагувати власні дані й показники (за замовчуванням true)
+  householdAccessLevel?: HouseholdAccessLevel; // 'view_only' (Тільки для перегляду) | 'full' (Повний доступ)
+  memberTags?: MemberRelationTag[]; // Теги: Сім'я, Друг, Подруга, Донька, Син, Знайомий
+  invitedByUserId?: string;
+  invitedByUserName?: string;
+  sharedBudgetWithUserId?: string;
   createdAt: string;
   lastLoginAt: string;
   sub?: string;
+}
+
+export function isUserAccountActive(user?: Partial<AppUser> | null): boolean {
+  if (!user) return false;
+  if (user.status === 'inactive') return false;
+  if (user.role === 'new') return false;
+  return true;
 }
 
 export interface SubscriptionPlanDef {

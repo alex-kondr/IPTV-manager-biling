@@ -315,14 +315,14 @@ function parseMeterNumber(val: unknown): number | null {
                       @if (electricityTariffType() === 'dual') {
                         <div class="grid grid-cols-2 gap-2 text-center">
                           <div class="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30">
-                            <span class="text-3xs text-amber-300 font-semibold block">День (Т1)</span>
+                            <span class="text-3xs text-amber-300 font-semibold block">День (Т2)</span>
                             <span class="text-lg font-mono font-black text-amber-400">
                               {{ manualReadingT1() !== null ? manualReadingT1() : '—' }}
                             </span>
                             <span class="text-3xs text-slate-400 ml-1">кВт·г</span>
                           </div>
                           <div class="p-2.5 rounded-lg bg-indigo-500/10 border border-indigo-500/30">
-                            <span class="text-3xs text-indigo-300 font-semibold block">Ніч (Т2)</span>
+                            <span class="text-3xs text-indigo-300 font-semibold block">Ніч (Т1)</span>
                             <span class="text-lg font-mono font-black text-indigo-400">
                               {{ manualReadingT2() !== null ? manualReadingT2() : '—' }}
                             </span>
@@ -360,7 +360,7 @@ function parseMeterNumber(val: unknown): number | null {
                         <div class="grid grid-cols-2 gap-3">
                           <div>
                             <label for="meter-manual-t1" class="block text-3xs font-bold text-amber-400 mb-1">
-                              День Т1 (кВт·г):
+                              День (Т2) (кВт·г):
                             </label>
                             <input
                               id="meter-manual-t1"
@@ -376,7 +376,7 @@ function parseMeterNumber(val: unknown): number | null {
 
                           <div>
                             <label for="meter-manual-t2" class="block text-3xs font-bold text-indigo-400 mb-1">
-                              Ніч Т2 (кВт·г):
+                              Ніч (Т1) (кВт·г):
                             </label>
                             <input
                               id="meter-manual-t2"

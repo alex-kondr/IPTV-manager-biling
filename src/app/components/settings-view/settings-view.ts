@@ -13,6 +13,7 @@ import { CommonModule } from '@angular/common';
 import { ReactiveFormsModule, FormGroup, FormControl, Validators } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
 import { IptvData } from '../../services/iptv-data';
+import { ThemeService, ThemeMode } from '../../services/theme';
 import {
   DEFAULT_VIBER_REMINDER_TEMPLATE,
   DEFAULT_VIBER_RENEWAL_TEMPLATE,
@@ -20,10 +21,14 @@ import {
   formatDateUa,
   AppSettings,
   SettingsSectionId,
+  SettingScopeType,
+  ALL_SETTINGS_SECTIONS,
+  SettingsSectionMeta,
 } from '../../models/client.model';
 import {
   UtilityAccount,
   UtilityTariffsSettings,
+  UtilityServiceTabId,
   DEFAULT_UTILITY_TARIFFS,
   OutageScheduleViewVariant,
   OUTAGE_SCHEDULE_VARIANTS,
@@ -31,14 +36,19 @@ import {
 } from '../../models/utility.model';
 
 export type SettingsGroupModalId =
+  | 'theme'
   | 'billing'
   | 'outage_display'
+  | 'house_visibility'
   | 'telegram'
   | 'viber'
   | 'electricity_tariffs'
+  | 'water_tariffs'
+  | 'waste_tariffs'
   | 'water_waste_tariffs'
   | 'database'
-  | 'backup';
+  | 'backup'
+  | 'scope_distribution';
 
 @Component({
   selector: 'app-settings-view',
@@ -52,55 +62,135 @@ export type SettingsGroupModalId =
             <mat-icon class="text-3xl">lock</mat-icon>
           </div>
           <h3 class="text-base sm:text-lg font-bold text-slate-900">
-            Доступ до системних налаштувань обмежено
+            Доступ до налаштувань обмежено
           </h3>
           <p class="text-xs text-slate-500 max-w-md mx-auto">
-            Зміна системних налаштувань закрита для звичайних користувачів. Адміністратор може надати вам доступ до окремих пунктів налаштувань у розділі «Користувачі».
+            Зміна налаштувань закрита. Адміністратор може надати вам доступ до окремих пунктів налаштувань у розділі «Доступ».
           </p>
         </div>
       } @else {
         <!-- ============================================================== -->
+        <!-- TOP CATEGORY SWITCHER: КОРИСТУВАЦЬКІ vs СИСТЕМНІ НАЛАШТУВАННЯ  -->
+        <!-- ============================================================== -->
+        <div class="bg-white rounded-3xl border border-slate-200/90 p-4 sm:p-5 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div class="space-y-1">
+            <div class="flex items-center gap-2 flex-wrap">
+              <h2 class="text-base sm:text-xl font-black text-slate-900">
+                @if (activeSettingsCategory() === 'user') {
+                  Користувацькі налаштування (Індивідуальні)
+                } @else {
+                  Системні налаштування (Загальні для всіх)
+                }
+              </h2>
+              <span
+                class="px-2.5 py-0.5 rounded-full text-2xs font-bold border"
+                [class.bg-sky-50]="activeSettingsCategory() === 'user'"
+                [class.text-sky-700]="activeSettingsCategory() === 'user'"
+                [class.border-sky-200]="activeSettingsCategory() === 'user'"
+                [class.bg-emerald-50]="activeSettingsCategory() === 'system'"
+                [class.text-emerald-700]="activeSettingsCategory() === 'system'"
+                [class.border-emerald-200]="activeSettingsCategory() === 'system'"
+              >
+                @if (activeSettingsCategory() === 'user') {
+                  БД: таблиця user_settings
+                } @else {
+                  БД: таблиці system_settings_config та settings
+                }
+              </span>
+            </div>
+            <p class="text-xs text-slate-500">
+              @if (activeSettingsCategory() === 'user') {
+                Індивідуальні налаштування поточного користувача ({{ currentUser()?.name || 'Користувач' }}). Зміни зберігаються персонально для вас у таблиці <code class="font-mono text-slate-700">user_settings</code> і не впливають на інших користувачів.
+              } @else {
+                Загальні системні параметри додатка (доступні тільки адміністратору). Тут ви також можете призначати статус кожного налаштування: «Користувацьке» чи «Системне».
+              }
+            </p>
+          </div>
+
+          <div class="flex items-center p-1.5 bg-slate-100 rounded-2xl border border-slate-200/80 shrink-0 self-start lg:self-auto">
+            <button
+              id="tab-user-settings"
+              type="button"
+              (click)="activeSettingsCategory.set('user')"
+              class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold flex items-center gap-2 transition-all cursor-pointer"
+              [class.bg-white]="activeSettingsCategory() === 'user'"
+              [class.text-slate-900]="activeSettingsCategory() === 'user'"
+              [class.shadow-sm]="activeSettingsCategory() === 'user'"
+              [class.text-slate-600]="activeSettingsCategory() !== 'user'"
+            >
+              <mat-icon class="text-base text-sky-600">person</mat-icon>
+              <span>Користувацькі</span>
+              <span class="px-1.5 py-0.2 rounded-full text-2xs bg-sky-100 text-sky-800 font-mono">
+                {{ userScopedSectionsCount() }}
+              </span>
+            </button>
+
+            @if (isAdmin()) {
+              <button
+                id="tab-system-settings"
+                type="button"
+                (click)="activeSettingsCategory.set('system')"
+                class="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold flex items-center gap-2 transition-all cursor-pointer"
+                [class.bg-slate-900]="activeSettingsCategory() === 'system'"
+                [class.text-white]="activeSettingsCategory() === 'system'"
+                [class.shadow-sm]="activeSettingsCategory() === 'system'"
+                [class.text-slate-600]="activeSettingsCategory() !== 'system'"
+              >
+                <mat-icon class="text-base text-amber-400">admin_panel_settings</mat-icon>
+                <span>Системні (Адмін)</span>
+                <span class="px-1.5 py-0.2 rounded-full text-2xs bg-emerald-500/20 text-emerald-300 font-mono">
+                  {{ systemScopedSectionsCount() }}
+                </span>
+              </button>
+            }
+          </div>
+        </div>
+
+        <!-- Scope distribution table moved to the bottom of System Settings as a clickable modal trigger -->
+
+        <!-- ============================================================== -->
         <!-- LARGE THEMATIC TILES FOR EACH PERMITTED SETTINGS GROUP         -->
         <!-- ============================================================== -->
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-5">
-          <!-- TILE 1: ЗАГАЛЬНІ НАЛАШТУВАННЯ БІЛІНГУ ТА РЕКВІЗИТИ -->
-          @if (isSectionAllowed('billing')) {
+          <!-- TILE 0: ТЕМА ОФОРМЛЕННЯ (СВІТЛА / ТЕМНА / СИСТЕМНА) -->
+          @if (shouldShowTile('theme')) {
             <button
-              id="settings-tile-billing"
+              id="settings-tile-theme"
               type="button"
-              (click)="openSettingsModal('billing')"
-              class="group relative w-full min-h-[115px] sm:min-h-[220px] rounded-2xl sm:rounded-3xl overflow-hidden border-2 border-white/20 hover:border-emerald-400 shadow-md hover:shadow-2xl transition-all duration-300 cursor-pointer flex flex-col justify-between p-3.5 sm:p-6 text-left bg-slate-950 focus:outline-none focus:ring-4 focus:ring-emerald-400/40"
+              (click)="openSettingsModal('theme')"
+              class="group relative w-full min-h-[115px] sm:min-h-[220px] rounded-2xl sm:rounded-3xl overflow-hidden border-2 border-white/20 hover:border-indigo-400 shadow-md hover:shadow-2xl transition-all duration-300 cursor-pointer flex flex-col justify-between p-3.5 sm:p-6 text-left bg-slate-950 focus:outline-none focus:ring-4 focus:ring-indigo-400/40"
             >
-              <img
-                src="/assets/images/tile_iptv_media_1793997828251.jpg"
-                alt="Загальні налаштування білінгу"
-                class="absolute inset-0 w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-700 opacity-65"
-                referrerpolicy="no-referrer"
-              />
-              <div class="absolute inset-0 bg-gradient-to-t from-slate-950/95 via-emerald-950/65 to-slate-950/35 group-hover:from-slate-950/90 transition-colors duration-300"></div>
+              <div class="absolute inset-0 bg-gradient-to-br from-indigo-950 via-slate-900 to-purple-950 group-hover:scale-105 transition-transform duration-700 opacity-90"></div>
+              <div class="absolute inset-0 bg-gradient-to-t from-slate-950/95 via-indigo-950/60 to-slate-950/30"></div>
 
               <div class="relative z-10 flex items-center justify-between w-full">
-                <div class="w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-emerald-500/25 backdrop-blur-xs border border-emerald-400/40 text-emerald-300 flex items-center justify-center shadow-sm">
-                  <mat-icon class="text-xl sm:text-2xl">payments</mat-icon>
+                <div class="w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-indigo-500/25 backdrop-blur-xs border border-indigo-400/40 text-indigo-300 flex items-center justify-center shadow-sm">
+                  <mat-icon class="text-xl sm:text-2xl">
+                    @if (themeService.themeMode() === 'dark') { dark_mode }
+                    @else if (themeService.themeMode() === 'light') { light_mode }
+                    @else { contrast }
+                  </mat-icon>
                 </div>
                 <span class="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full bg-white/15 backdrop-blur-xs border border-white/20 text-white text-3xs sm:text-2xs font-bold">
-                  Тариф: {{ form.controls.defaultMonthlyPrice.value }} ₴/міс
+                  @if (themeService.themeMode() === 'dark') { Темна тема }
+                  @else if (themeService.themeMode() === 'light') { Світла тема }
+                  @else { Авто (Системна) }
                 </span>
               </div>
 
               <div class="relative z-10 space-y-1 sm:space-y-1.5 mt-2.5 sm:mt-6">
                 <h3 class="text-base sm:text-2xl font-black text-white tracking-tight drop-shadow-xs">
-                  Загальні налаштування та реквізити
+                  Тема оформлення
                 </h3>
                 <p class="text-2xs sm:text-xs text-slate-200/90 line-clamp-1 sm:line-clamp-2">
-                  Стандартний тариф IPTV, картка / IBAN, нагадування та вигляд графіку відключень
+                  Світла, темна або автоматичне визначення за системною темою пристрою
                 </p>
               </div>
             </button>
           }
 
           <!-- TILE 1B: ВИГЛЯД ГРАФІКУ ВІДКЛЮЧЕНЬ (10 ВАРІАНТІВ ВІДОБРАЖЕННЯ) -->
-          @if (isSectionAllowed('outage_display')) {
+          @if (shouldShowTile('outage_display')) {
             <button
               id="settings-tile-outage-display"
               type="button"
@@ -135,8 +225,39 @@ export type SettingsGroupModalId =
             </button>
           }
 
-          <!-- TILE 2: ТАРИФИ НА ЕЛЕКТРОЕНЕРГІЮ -->
-          @if (isSectionAllowed('electricity_tariffs')) {
+          <!-- TILE 1C: ІНДИВІДУАЛЬНЕ ВІДОБРАЖЕННЯ БУДИНКІВ ПО ВКЛАДКАХ -->
+          @if (shouldShowTile('house_visibility')) {
+            <button
+              id="settings-tile-house-visibility"
+              type="button"
+              (click)="openSettingsModal('house_visibility')"
+              class="group relative w-full min-h-[115px] sm:min-h-[220px] rounded-2xl sm:rounded-3xl overflow-hidden border-2 border-white/20 hover:border-sky-400 shadow-md hover:shadow-2xl transition-all duration-300 cursor-pointer flex flex-col justify-between p-3.5 sm:p-6 text-left bg-slate-950 focus:outline-none focus:ring-4 focus:ring-sky-400/40"
+            >
+              <div class="absolute inset-0 bg-gradient-to-br from-sky-950 via-slate-900 to-indigo-950 group-hover:scale-105 transition-transform duration-700 opacity-90"></div>
+              <div class="absolute inset-0 bg-gradient-to-t from-slate-950/95 via-sky-950/65 to-slate-950/35"></div>
+
+              <div class="relative z-10 flex items-center justify-between w-full gap-2">
+                <div class="w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-sky-500/25 backdrop-blur-xs border border-sky-400/40 text-sky-300 flex items-center justify-center shadow-sm shrink-0">
+                  <mat-icon class="text-xl sm:text-2xl">visibility</mat-icon>
+                </div>
+                <span class="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full bg-sky-500/25 backdrop-blur-xs border border-sky-400/40 text-sky-200 text-3xs sm:text-2xs font-bold">
+                  Будинків: {{ utilityAccounts().length }}
+                </span>
+              </div>
+
+              <div class="relative z-10 space-y-1 sm:space-y-1.5 mt-2.5 sm:mt-6">
+                <h3 class="text-base sm:text-2xl font-black text-white tracking-tight drop-shadow-xs">
+                  Відображення будинків по вкладках
+                </h3>
+                <p class="text-2xs sm:text-xs text-slate-200/90 line-clamp-1 sm:line-clamp-2">
+                  Індивідуальний показ або приховування спільних будинків для кожної окремої вкладки
+                </p>
+              </div>
+            </button>
+          }
+
+          <!-- TILE 2: ТАРИФ ЕЛЕКТРО -->
+          @if (shouldShowTile('electricity_tariffs')) {
             <button
               id="settings-tile-electricity-tariffs"
               type="button"
@@ -145,7 +266,7 @@ export type SettingsGroupModalId =
             >
               <img
                 src="/assets/images/tile_electricity_cabinet_1793997827492.jpg"
-                alt="Тарифи на електроенергію"
+                alt="Тариф електро"
                 class="absolute inset-0 w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-700 opacity-65"
                 referrerpolicy="no-referrer"
               />
@@ -162,26 +283,26 @@ export type SettingsGroupModalId =
 
               <div class="relative z-10 space-y-1 sm:space-y-1.5 mt-2.5 sm:mt-6">
                 <h3 class="text-base sm:text-2xl font-black text-white tracking-tight drop-shadow-xs">
-                  Тарифи на електроенергію
+                  Тариф електро
                 </h3>
                 <p class="text-2xs sm:text-xs text-slate-200/90 line-clamp-1 sm:line-clamp-2">
-                  Однотарифний та двотарифний план (День / Ніч), літній і зимовий сезон, ліміт 2000 кВт·г
+                  Індивідуальний однозонний та двозонний тариф (День / Ніч), літній і зимовий сезон, ліміт 2000 кВт·г
                 </p>
               </div>
             </button>
           }
 
-          <!-- TILE 3: ТАРИФИ НА ВОДУ ТА ВИВІЗ СМІТТЯ -->
-          @if (isSectionAllowed('water_waste_tariffs')) {
+          <!-- TILE 3A: ТАРИФ НА ВОДУ -->
+          @if (shouldShowTile('water_tariffs')) {
             <button
-              id="settings-tile-water-waste-tariffs"
+              id="settings-tile-water-tariffs"
               type="button"
-              (click)="openSettingsModal('water_waste_tariffs')"
+              (click)="openSettingsModal('water_tariffs')"
               class="group relative w-full min-h-[115px] sm:min-h-[220px] rounded-2xl sm:rounded-3xl overflow-hidden border-2 border-white/20 hover:border-cyan-400 shadow-md hover:shadow-2xl transition-all duration-300 cursor-pointer flex flex-col justify-between p-3.5 sm:p-6 text-left bg-slate-950 focus:outline-none focus:ring-4 focus:ring-cyan-400/40"
             >
               <img
                 src="/assets/images/tile_water_supply_1793997828992.jpg"
-                alt="Тарифи на водопостачання та сміття"
+                alt="Тариф на воду"
                 class="absolute inset-0 w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-700 opacity-65"
                 referrerpolicy="no-referrer"
               />
@@ -192,23 +313,90 @@ export type SettingsGroupModalId =
                   <mat-icon class="text-xl sm:text-2xl">water_drop</mat-icon>
                 </div>
                 <span class="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full bg-cyan-500/25 backdrop-blur-xs border border-cyan-400/40 text-cyan-200 text-3xs sm:text-2xs font-mono font-bold">
-                  {{ form.controls.waterPrice.value }} ₴/м³ • ТПВ {{ form.controls.wastePrice.value }} ₴
+                  {{ form.controls.waterPrice.value }} ₴/м³
                 </span>
               </div>
 
               <div class="relative z-10 space-y-1 sm:space-y-1.5 mt-2.5 sm:mt-6">
                 <h3 class="text-base sm:text-2xl font-black text-white tracking-tight drop-shadow-xs">
-                  Тарифи на воду та сміття
+                  Тариф на воду
                 </h3>
                 <p class="text-2xs sm:text-xs text-slate-200/90 line-clamp-1 sm:line-clamp-2">
-                  Вартість кубометра холодної води, абонплата, вивіз побутових відходів та дати дії
+                  Індивідуальна вартість 1 м³ холодної води, щомісячна абонплата та період дії тарифу
+                </p>
+              </div>
+            </button>
+          }
+
+          <!-- TILE 3B: ТАРИФ НА ВИВІЗ СМІТТЯ -->
+          @if (shouldShowTile('waste_tariffs')) {
+            <button
+              id="settings-tile-waste-tariffs"
+              type="button"
+              (click)="openSettingsModal('waste_tariffs')"
+              class="group relative w-full min-h-[115px] sm:min-h-[220px] rounded-2xl sm:rounded-3xl overflow-hidden border-2 border-white/20 hover:border-emerald-400 shadow-md hover:shadow-2xl transition-all duration-300 cursor-pointer flex flex-col justify-between p-3.5 sm:p-6 text-left bg-slate-950 focus:outline-none focus:ring-4 focus:ring-emerald-400/40"
+            >
+              <div class="absolute inset-0 bg-gradient-to-br from-emerald-950 via-teal-900 to-slate-950 group-hover:scale-105 transition-transform duration-700 opacity-90"></div>
+              <div class="absolute inset-0 bg-gradient-to-t from-slate-950/95 via-emerald-950/65 to-slate-950/35"></div>
+
+              <div class="relative z-10 flex items-center justify-between w-full">
+                <div class="w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-emerald-500/25 backdrop-blur-xs border border-emerald-400/40 text-emerald-300 flex items-center justify-center shadow-sm">
+                  <mat-icon class="text-xl sm:text-2xl">delete_outline</mat-icon>
+                </div>
+                <span class="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full bg-emerald-500/25 backdrop-blur-xs border border-emerald-400/40 text-emerald-200 text-3xs sm:text-2xs font-mono font-bold">
+                  ТПВ {{ form.controls.wastePrice.value }} ₴/особа
+                </span>
+              </div>
+
+              <div class="relative z-10 space-y-1 sm:space-y-1.5 mt-2.5 sm:mt-6">
+                <h3 class="text-base sm:text-2xl font-black text-white tracking-tight drop-shadow-xs">
+                  Тариф на вивіз сміття
+                </h3>
+                <p class="text-2xs sm:text-xs text-slate-200/90 line-clamp-1 sm:line-clamp-2">
+                  Індивідуальний щомісячний тариф на вивіз побутових відходів (ТПВ) у розрахунку на 1 особу
+                </p>
+              </div>
+            </button>
+          }
+
+          <!-- TILE 1: ЗАГАЛЬНІ НАЛАШТУВАННЯ БІЛІНГУ ТА РЕКВІЗИТИ -->
+          @if (shouldShowTile('billing')) {
+            <button
+              id="settings-tile-billing"
+              type="button"
+              (click)="openSettingsModal('billing')"
+              class="group relative w-full min-h-[115px] sm:min-h-[220px] rounded-2xl sm:rounded-3xl overflow-hidden border-2 border-white/20 hover:border-emerald-400 shadow-md hover:shadow-2xl transition-all duration-300 cursor-pointer flex flex-col justify-between p-3.5 sm:p-6 text-left bg-slate-950 focus:outline-none focus:ring-4 focus:ring-emerald-400/40"
+            >
+              <img
+                src="/assets/images/tile_iptv_media_1793997828251.jpg"
+                alt="Загальні налаштування білінгу"
+                class="absolute inset-0 w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-700 opacity-65"
+                referrerpolicy="no-referrer"
+              />
+              <div class="absolute inset-0 bg-gradient-to-t from-slate-950/95 via-emerald-950/65 to-slate-950/35 group-hover:from-slate-950/90 transition-colors duration-300"></div>
+
+              <div class="relative z-10 flex items-center justify-between w-full">
+                <div class="w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-emerald-500/25 backdrop-blur-xs border border-emerald-400/40 text-emerald-300 flex items-center justify-center shadow-sm">
+                  <mat-icon class="text-xl sm:text-2xl">payments</mat-icon>
+                </div>
+                <span class="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full bg-white/15 backdrop-blur-xs border border-white/20 text-white text-3xs sm:text-2xs font-bold">
+                  Тариф: {{ form.controls.defaultMonthlyPrice.value }} ₴/міс
+                </span>
+              </div>
+
+              <div class="relative z-10 space-y-1 sm:space-y-1.5 mt-2.5 sm:mt-6">
+                <h3 class="text-base sm:text-2xl font-black text-white tracking-tight drop-shadow-xs">
+                  Загальні налаштування та реквізити
+                </h3>
+                <p class="text-2xs sm:text-xs text-slate-200/90 line-clamp-1 sm:line-clamp-2">
+                  Стандартний тариф IPTV, картка / IBAN, нагадування та вигляд графіку відключень
                 </p>
               </div>
             </button>
           }
 
           <!-- TILE 4: ШАБЛОНИ ПОВІДОМЛЕНЬ VIBER -->
-          @if (isSectionAllowed('viber')) {
+          @if (shouldShowTile('viber')) {
             <button
               id="settings-tile-viber"
               type="button"
@@ -244,7 +432,7 @@ export type SettingsGroupModalId =
           }
 
           <!-- TILE 5: НАЛАШТУВАННЯ TELEGRAM BOT -->
-          @if (isSectionAllowed('telegram')) {
+          @if (shouldShowTile('telegram')) {
             <button
               id="settings-tile-telegram"
               type="button"
@@ -288,7 +476,7 @@ export type SettingsGroupModalId =
           }
 
           <!-- TILE 6: КЕРУВАННЯ БАЗАМИ ДАНИХ POSTGRESQL & CLOUD SQL -->
-          @if (isSectionAllowed('database')) {
+          @if (shouldShowTile('database')) {
             <button
               id="settings-tile-database"
               type="button"
@@ -325,7 +513,7 @@ export type SettingsGroupModalId =
           }
 
           <!-- TILE 7: РЕЗЕРВНЕ КОПІЮВАННЯ ДАНИХ (JSON) -->
-          @if (isSectionAllowed('backup')) {
+          @if (shouldShowTile('backup')) {
             <button
               id="settings-tile-backup"
               type="button"
@@ -356,6 +544,51 @@ export type SettingsGroupModalId =
                 <p class="text-2xs sm:text-xs text-slate-200/90 line-clamp-1 sm:line-clamp-2">
                   Завантаження повної резервної копії бази даних на пристрій та відновлення з JSON-файлу
                 </p>
+              </div>
+            </button>
+          }
+
+          <!-- TILE 8 (BOTTOM OF SYSTEM SETTINGS): ТАБЛИЦЯ РОЗПОДІЛУ НАЛАШТУВАНЬ (КОРИСТУВАЦЬКІ ЧИ СИСТЕМНІ) -->
+          @if (activeSettingsCategory() === 'system' && isAdmin()) {
+            <button
+              id="settings-tile-scope-distribution"
+              type="button"
+              (click)="openSettingsModal('scope_distribution')"
+              class="group relative w-full min-h-[115px] sm:min-h-[220px] md:col-span-2 lg:col-span-3 rounded-2xl sm:rounded-3xl overflow-hidden border-2 border-amber-400/40 hover:border-amber-400 shadow-md hover:shadow-2xl transition-all duration-300 cursor-pointer flex flex-col justify-between p-4 sm:p-6 text-left bg-slate-950 focus:outline-none focus:ring-4 focus:ring-amber-400/40"
+            >
+              <div class="absolute inset-0 bg-gradient-to-r from-slate-950 via-slate-900 to-amber-950/80 group-hover:scale-[1.02] transition-transform duration-700 opacity-95"></div>
+              <div class="relative z-10 flex items-center justify-between w-full gap-3 flex-wrap">
+                <div class="flex items-center gap-3">
+                  <div class="w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-amber-500/20 backdrop-blur-xs border border-amber-400/40 text-amber-300 flex items-center justify-center shadow-sm shrink-0">
+                    <mat-icon class="text-xl sm:text-2xl">table_chart</mat-icon>
+                  </div>
+                  <div>
+                    <span class="px-2.5 py-0.5 rounded-full bg-amber-400/20 border border-amber-400/40 text-amber-300 text-3xs sm:text-2xs font-extrabold uppercase tracking-wider">
+                      Адміністрування рівнів доступу
+                    </span>
+                    <h3 class="text-base sm:text-2xl font-black text-white tracking-tight drop-shadow-xs mt-1">
+                      Таблиця розподілу налаштувань: Користувацькі чи Системні
+                    </h3>
+                  </div>
+                </div>
+                <span class="px-3.5 py-1.5 rounded-xl bg-amber-500 group-hover:bg-amber-400 text-slate-950 text-xs font-extrabold flex items-center gap-1.5 shadow-sm transition-colors">
+                  <mat-icon class="text-base leading-none">open_in_new</mat-icon>
+                  <span>Відкрити таблицю налаштувань</span>
+                </span>
+              </div>
+
+              <div class="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-2 mt-3 pt-3 border-t border-white/10">
+                <p class="text-2xs sm:text-xs text-slate-300">
+                  Натисніть, щоб відкрити модальне вікно розподілу налаштувань між індивідуальними (<code class="font-mono text-amber-300">user_settings</code>) та загальносистемними (<code class="font-mono text-emerald-300">system_settings_config</code>) або перейти до конкретного розділу.
+                </p>
+                <div class="flex items-center gap-2 shrink-0 text-2xs font-bold">
+                  <span class="px-2.5 py-1 rounded-lg bg-sky-500/20 text-sky-300 border border-sky-400/30">
+                    Користувацьких: {{ userScopedSectionsCount() }}
+                  </span>
+                  <span class="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
+                    Системних: {{ systemScopedSectionsCount() }}
+                  </span>
+                </div>
               </div>
             </button>
           }
@@ -466,7 +699,7 @@ export type SettingsGroupModalId =
                           <div>
                             <label for="settings-outage-variant-select" class="text-xs sm:text-sm font-black text-slate-900 flex items-center gap-1.5">
                               <mat-icon class="text-amber-600 text-base leading-none">lightbulb</mat-icon>
-                              <span>Варіант відображення графіку відключень світла (10 стилів)</span>
+                              <span>Варіант відображення графіку відключень світла (11 стилів)</span>
                             </label>
                             <p class="text-2xs text-slate-600 mt-0.5">
                               Оберіть бажаний вигляд погодинного графіку ДТЕК за замовчуванням для вкладки «Графік відключень»
@@ -479,7 +712,7 @@ export type SettingsGroupModalId =
                               class="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-2xs font-bold flex items-center gap-1 cursor-pointer shadow-2xs"
                             >
                               <mat-icon class="text-xs leading-none">palette</mat-icon>
-                              <span>Галерея 10 варіантів</span>
+                              <span>Галерея 11 варіантів</span>
                             </button>
                             <button
                               type="button"
@@ -506,7 +739,7 @@ export type SettingsGroupModalId =
                     </div>
                   }
 
-                  <!-- 1B. DEDICATED 10 OUTAGE SCHEDULE VARIANTS GALLERY -->
+                  <!-- 1B. DEDICATED 11 OUTAGE SCHEDULE VARIANTS GALLERY -->
                   @case ('outage_display') {
                     <div class="space-y-4">
                       <div class="p-4 rounded-2xl bg-gradient-to-r from-slate-900 via-amber-950 to-slate-900 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -516,7 +749,7 @@ export type SettingsGroupModalId =
                             <span>Активний стиль: {{ activeOutageVariantMeta().name }}</span>
                           </div>
                           <p class="text-xs text-slate-200">
-                            Натисніть на будь-який із 10 варіантів нижче, щоб встановити його як основний стиль відображення графіку відключень світла ДТЕК.
+                            Натисніть на будь-який із 11 варіантів нижче, щоб встановити його як основний стиль відображення графіку відключень світла ДТЕК.
                           </p>
                         </div>
                         <button
@@ -1068,16 +1301,147 @@ export type SettingsGroupModalId =
                     </div>
                   }
 
-                  <!-- 5. WATER & WASTE TARIFFS -->
+                  <!-- 5A. WATER TARIFFS -->
+                  @case ('water_tariffs') {
+                    <div class="space-y-4">
+                      <div class="p-4 sm:p-5 rounded-xl border border-slate-200 bg-white space-y-3">
+                        <div class="flex items-center justify-between pb-2 border-b border-slate-100">
+                          <div class="flex items-center gap-2">
+                            <mat-icon class="text-cyan-600">water_drop</mat-icon>
+                            <h4 class="text-xs sm:text-sm font-bold text-slate-900">Тариф на водопостачання (холодна вода)</h4>
+                          </div>
+                          <span class="px-2.5 py-0.5 rounded-full bg-cyan-50 text-cyan-800 border border-cyan-200 text-2xs font-bold">
+                            {{ getSectionScope('water_tariffs') === 'user' ? 'Індивідуальний тариф (user_settings)' : 'Системний тариф' }}
+                          </span>
+                        </div>
+
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div>
+                            <label for="set-water-price-only" class="block text-2xs font-semibold text-slate-700 mb-1">
+                              Ціна за 1 м³ (грн) *
+                            </label>
+                            <input
+                              id="set-water-price-only"
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              formControlName="waterPrice"
+                              placeholder="32.00"
+                              class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-cyan-600"
+                            />
+                          </div>
+
+                          <div>
+                            <label for="set-water-fee-only" class="block text-2xs font-semibold text-slate-700 mb-1">
+                              Місячна абоноплата (грн/міс)
+                            </label>
+                            <input
+                              id="set-water-fee-only"
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              formControlName="waterMonthlyFee"
+                              placeholder="0.00"
+                              class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-cyan-600"
+                            />
+                          </div>
+
+                          <div>
+                            <label for="set-water-date-only" class="block text-2xs font-semibold text-slate-700 mb-1">
+                              Дата початку дії *
+                            </label>
+                            <input
+                              id="set-water-date-only"
+                              type="date"
+                              formControlName="waterValidFrom"
+                              class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-cyan-600"
+                            />
+                          </div>
+
+                          <div>
+                            <label for="set-water-date-to-only" class="block text-2xs font-semibold text-slate-700 mb-1">
+                              Дата закінчення дії
+                            </label>
+                            <input
+                              id="set-water-date-to-only"
+                              type="date"
+                              formControlName="waterValidTo"
+                              class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-cyan-600"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  }
+
+                  <!-- 5B. WASTE TARIFFS -->
+                  @case ('waste_tariffs') {
+                    <div class="space-y-4">
+                      <div class="p-4 sm:p-5 rounded-xl border border-slate-200 bg-white space-y-3">
+                        <div class="flex items-center justify-between pb-2 border-b border-slate-100">
+                          <div class="flex items-center gap-2">
+                            <mat-icon class="text-emerald-600">delete_outline</mat-icon>
+                            <h4 class="text-xs sm:text-sm font-bold text-slate-900">Тариф на вивіз сміття (ТПВ)</h4>
+                          </div>
+                          <span class="px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 text-2xs font-bold">
+                            {{ getSectionScope('waste_tariffs') === 'user' ? 'Індивідуальний тариф (user_settings)' : 'Системний тариф' }}
+                          </span>
+                        </div>
+
+                        <div class="space-y-3">
+                          <div>
+                            <label for="set-waste-price-only" class="block text-2xs font-semibold text-slate-700 mb-1">
+                              Ціна на місяць за 1 особу (грн) *
+                            </label>
+                            <input
+                              id="set-waste-price-only"
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              formControlName="wastePrice"
+                              placeholder="45.00"
+                              class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600"
+                            />
+                          </div>
+
+                          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                              <label for="set-waste-date-only" class="block text-2xs font-semibold text-slate-700 mb-1">
+                                Дата початку дії *
+                              </label>
+                              <input
+                                id="set-waste-date-only"
+                                type="date"
+                                formControlName="wasteValidFrom"
+                                class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+                              />
+                            </div>
+
+                            <div>
+                              <label for="set-waste-date-to-only" class="block text-2xs font-semibold text-slate-700 mb-1">
+                                Дата закінчення дії
+                              </label>
+                              <input
+                                id="set-waste-date-to-only"
+                                type="date"
+                                formControlName="wasteValidTo"
+                                class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  }
+
+                  <!-- 5C. COMBINED WATER & WASTE TARIFFS (LEGACY COMPATIBILITY) -->
                   @case ('water_waste_tariffs') {
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <!-- Water Supply Tariff Card -->
                       <div class="p-4 sm:p-5 rounded-xl border border-slate-200 bg-white space-y-3">
                         <div class="flex items-center gap-2 pb-2 border-b border-slate-100">
                           <mat-icon class="text-cyan-600">water_drop</mat-icon>
                           <h4 class="text-xs sm:text-sm font-bold text-slate-900">Водопостачання (холодна вода)</h4>
                         </div>
-
                         <div class="space-y-3">
                           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             <div>
@@ -1090,11 +1454,9 @@ export type SettingsGroupModalId =
                                 step="0.01"
                                 min="0"
                                 formControlName="waterPrice"
-                                placeholder="32.00"
                                 class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-cyan-600"
                               />
                             </div>
-
                             <div>
                               <label for="set-water-fee" class="block text-2xs font-semibold text-slate-700 mb-1">
                                 Місячна абоноплата (грн/міс)
@@ -1105,47 +1467,18 @@ export type SettingsGroupModalId =
                                 step="0.01"
                                 min="0"
                                 formControlName="waterMonthlyFee"
-                                placeholder="0.00"
                                 class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-cyan-600"
-                              />
-                            </div>
-                          </div>
-
-                          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <div>
-                              <label for="set-water-date" class="block text-2xs font-semibold text-slate-700 mb-1">
-                                Дата початку дії *
-                              </label>
-                              <input
-                                id="set-water-date"
-                                type="date"
-                                formControlName="waterValidFrom"
-                                class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-cyan-600"
-                              />
-                            </div>
-
-                            <div>
-                              <label for="set-water-date-to" class="block text-2xs font-semibold text-slate-700 mb-1">
-                                Дата закінчення дії
-                              </label>
-                              <input
-                                id="set-water-date-to"
-                                type="date"
-                                formControlName="waterValidTo"
-                                class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-cyan-600"
                               />
                             </div>
                           </div>
                         </div>
                       </div>
 
-                      <!-- Waste Removal Tariff Card -->
                       <div class="p-4 sm:p-5 rounded-xl border border-slate-200 bg-white space-y-3">
                         <div class="flex items-center gap-2 pb-2 border-b border-slate-100">
                           <mat-icon class="text-emerald-600">delete_outline</mat-icon>
                           <h4 class="text-xs sm:text-sm font-bold text-slate-900">Вивіз сміття (ТПВ)</h4>
                         </div>
-
                         <div class="space-y-3">
                           <div>
                             <label for="set-waste-price" class="block text-2xs font-semibold text-slate-700 mb-1">
@@ -1157,35 +1490,8 @@ export type SettingsGroupModalId =
                               step="0.01"
                               min="0"
                               formControlName="wastePrice"
-                              placeholder="45.00"
                               class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-emerald-600"
                             />
-                          </div>
-
-                          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                            <div>
-                              <label for="set-waste-date" class="block text-2xs font-semibold text-slate-700 mb-1">
-                                Дата початку дії *
-                              </label>
-                              <input
-                                id="set-waste-date"
-                                type="date"
-                                formControlName="wasteValidFrom"
-                                class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
-                              />
-                            </div>
-
-                            <div>
-                              <label for="set-waste-date-to" class="block text-2xs font-semibold text-slate-700 mb-1">
-                                Дата закінчення дії
-                              </label>
-                              <input
-                                id="set-waste-date-to"
-                                type="date"
-                                formControlName="wasteValidTo"
-                                class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
-                              />
-                            </div>
                           </div>
                         </div>
                       </div>
@@ -1193,6 +1499,245 @@ export type SettingsGroupModalId =
                   }
                 }
               </form>
+
+              <!-- PER-USER HOUSE VISIBILITY MODAL CONTENT -->
+              @if (modalId === 'house_visibility') {
+                <div class="space-y-4">
+                  <div class="p-4 rounded-2xl bg-sky-50/80 border border-sky-200 flex items-start gap-3">
+                    <div class="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center shrink-0">
+                      <mat-icon>visibility</mat-icon>
+                    </div>
+                    <div class="space-y-1">
+                      <h4 class="text-xs sm:text-sm font-black text-slate-900">
+                        Індивідуальне відображення будинків по вкладках ({{ currentUser()?.name || 'Користувач' }})
+                      </h4>
+                      <p class="text-2xs sm:text-xs text-slate-600">
+                        Налаштуйте, на яких вкладках показувати чи приховувати кожен будинок особисто для вас. Навіть якщо будинок спільний для декількох користувачів, ваш вибір зберігається індивідуально у таблиці <code class="font-mono text-sky-900">user_settings</code>.
+                      </p>
+                    </div>
+                  </div>
+
+                  @if (utilityAccounts().length === 0) {
+                    <div class="p-6 rounded-2xl bg-slate-50 border border-slate-200 text-center text-xs text-slate-500">
+                      Немає доступних будинків для налаштування видимості.
+                    </div>
+                  } @else {
+                    <div class="space-y-3">
+                      @for (acc of utilityAccounts(); track acc.id) {
+                        @let isWaterGroup = acc.type === 'water_waste';
+                        <div class="p-4 rounded-2xl border border-slate-200 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
+                          <div>
+                            <div class="flex items-center gap-2">
+                              <span
+                                class="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"
+                                [class.bg-amber-100]="!isWaterGroup"
+                                [class.text-amber-700]="!isWaterGroup"
+                                [class.bg-cyan-100]="isWaterGroup"
+                                [class.text-cyan-700]="isWaterGroup"
+                              >
+                                <mat-icon class="text-base">{{ isWaterGroup ? 'water_drop' : 'bolt' }}</mat-icon>
+                              </span>
+                              <div>
+                                <div class="text-xs sm:text-sm font-bold text-slate-900">{{ acc.name }}</div>
+                                <div class="text-2xs text-slate-500 font-mono">
+                                  Особовий рахунок: {{ acc.accountNumber || '—' }}
+                                  @if (acc.address) { • {{ acc.address }} }
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div class="flex items-center gap-2 flex-wrap">
+                            @if (!isWaterGroup) {
+                              @let hiddenOutage = isHouseHidden(acc, 'outage_schedule');
+                              <button
+                                type="button"
+                                (click)="toggleHouseTab(acc.id, 'outage_schedule')"
+                                class="px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 transition-all cursor-pointer"
+                                [class.bg-emerald-600]="!hiddenOutage"
+                                [class.text-white]="!hiddenOutage"
+                                [class.border-emerald-600]="!hiddenOutage"
+                                [class.bg-slate-100]="hiddenOutage"
+                                [class.text-slate-500]="hiddenOutage"
+                                [class.border-slate-300]="hiddenOutage"
+                              >
+                                <mat-icon class="text-sm">{{ hiddenOutage ? 'visibility_off' : 'visibility' }}</mat-icon>
+                                <span>Графік відключень: {{ hiddenOutage ? 'Приховано' : 'Видимий' }}</span>
+                              </button>
+
+                              @let hiddenElec = isHouseHidden(acc, 'electricity');
+                              <button
+                                type="button"
+                                (click)="toggleHouseTab(acc.id, 'electricity')"
+                                class="px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 transition-all cursor-pointer"
+                                [class.bg-emerald-600]="!hiddenElec"
+                                [class.text-white]="!hiddenElec"
+                                [class.border-emerald-600]="!hiddenElec"
+                                [class.bg-slate-100]="hiddenElec"
+                                [class.text-slate-500]="hiddenElec"
+                                [class.border-slate-300]="hiddenElec"
+                              >
+                                <mat-icon class="text-sm">{{ hiddenElec ? 'visibility_off' : 'visibility' }}</mat-icon>
+                                <span>Електроенергія: {{ hiddenElec ? 'Приховано' : 'Видимий' }}</span>
+                              </button>
+                            } @else {
+                              @let hiddenWater = isHouseHidden(acc, 'water');
+                              <button
+                                type="button"
+                                (click)="toggleHouseTab(acc.id, 'water')"
+                                class="px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 transition-all cursor-pointer"
+                                [class.bg-emerald-600]="!hiddenWater"
+                                [class.text-white]="!hiddenWater"
+                                [class.border-emerald-600]="!hiddenWater"
+                                [class.bg-slate-100]="hiddenWater"
+                                [class.text-slate-500]="hiddenWater"
+                                [class.border-slate-300]="hiddenWater"
+                              >
+                                <mat-icon class="text-sm">{{ hiddenWater ? 'visibility_off' : 'visibility' }}</mat-icon>
+                                <span>Вода: {{ hiddenWater ? 'Приховано' : 'Видимий' }}</span>
+                              </button>
+
+                              @let hiddenWaste = isHouseHidden(acc, 'waste');
+                              <button
+                                type="button"
+                                (click)="toggleHouseTab(acc.id, 'waste')"
+                                class="px-3 py-1.5 rounded-xl text-xs font-bold border flex items-center gap-1.5 transition-all cursor-pointer"
+                                [class.bg-emerald-600]="!hiddenWaste"
+                                [class.text-white]="!hiddenWaste"
+                                [class.border-emerald-600]="!hiddenWaste"
+                                [class.bg-slate-100]="hiddenWaste"
+                                [class.text-slate-500]="hiddenWaste"
+                                [class.border-slate-300]="hiddenWaste"
+                              >
+                                <mat-icon class="text-sm">{{ hiddenWaste ? 'visibility_off' : 'visibility' }}</mat-icon>
+                                <span>Вивіз сміття: {{ hiddenWaste ? 'Приховано' : 'Видимий' }}</span>
+                              </button>
+                            }
+                          </div>
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
+              }
+
+              <!-- THEME SETTINGS MODAL CONTENT -->
+              @if (modalId === 'theme') {
+                <div class="space-y-6">
+                  <div class="p-4 sm:p-5 rounded-2xl bg-indigo-50/70 border border-indigo-200 flex items-start gap-3.5">
+                    <div class="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                      <mat-icon class="text-xl">palette</mat-icon>
+                    </div>
+                    <div class="space-y-1">
+                      <h4 class="text-sm sm:text-base font-bold text-slate-900">
+                        Вибір теми оформлення
+                      </h4>
+                      <p class="text-xs text-slate-600">
+                        Обрана тема застосовується миттєво для всіх розділів додатка (комбінований графік ДТЕК, таблиці, аналітика, білінг та облікові записи).
+                      </p>
+                    </div>
+                  </div>
+
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <!-- OPTION 1: AUTO (SYSTEM) -->
+                    <button
+                      type="button"
+                      (click)="themeService.setThemeMode('system')"
+                      [class]="themeService.themeMode() === 'system'
+                        ? 'border-indigo-600 ring-2 ring-indigo-500/30 bg-indigo-50/50'
+                        : 'border-slate-200 hover:border-indigo-400 bg-white'"
+                      class="relative p-5 rounded-2xl border-2 text-left transition-all duration-200 cursor-pointer flex flex-col justify-between space-y-4 group"
+                    >
+                      <div class="flex items-center justify-between w-full">
+                        <div class="w-10 h-10 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center">
+                          <mat-icon class="text-xl">contrast</mat-icon>
+                        </div>
+                        @if (themeService.themeMode() === 'system') {
+                          <span class="w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center">
+                            <mat-icon class="text-xs font-bold">check</mat-icon>
+                          </span>
+                        }
+                      </div>
+                      <div>
+                        <h5 class="text-sm font-black text-slate-900 group-hover:text-indigo-600">
+                          Автоматична (Системна)
+                        </h5>
+                        <p class="text-2xs text-slate-500 mt-1">
+                          Адаптується під системну тему вашого пристрою (Windows, macOS, iOS, Android)
+                        </p>
+                      </div>
+                    </button>
+
+                    <!-- OPTION 2: LIGHT MODE -->
+                    <button
+                      type="button"
+                      (click)="themeService.setThemeMode('light')"
+                      [class]="themeService.themeMode() === 'light'
+                        ? 'border-amber-500 ring-2 ring-amber-500/30 bg-amber-50/50'
+                        : 'border-slate-200 hover:border-amber-400 bg-white'"
+                      class="relative p-5 rounded-2xl border-2 text-left transition-all duration-200 cursor-pointer flex flex-col justify-between space-y-4 group"
+                    >
+                      <div class="flex items-center justify-between w-full">
+                        <div class="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center">
+                          <mat-icon class="text-xl">light_mode</mat-icon>
+                        </div>
+                        @if (themeService.themeMode() === 'light') {
+                          <span class="w-6 h-6 rounded-full bg-amber-500 text-white flex items-center justify-center">
+                            <mat-icon class="text-xs font-bold">check</mat-icon>
+                          </span>
+                        }
+                      </div>
+                      <div>
+                        <h5 class="text-sm font-black text-slate-900 group-hover:text-amber-600">
+                          Світла тема
+                        </h5>
+                        <p class="text-2xs text-slate-500 mt-1">
+                          Класичний світлий інтерфейс з білим тлом та високим контрастом
+                        </p>
+                      </div>
+                    </button>
+
+                    <!-- OPTION 3: DARK MODE -->
+                    <button
+                      type="button"
+                      (click)="themeService.setThemeMode('dark')"
+                      [class]="themeService.themeMode() === 'dark'
+                        ? 'border-purple-600 ring-2 ring-purple-500/30 bg-purple-950/20'
+                        : 'border-slate-200 hover:border-purple-400 bg-white'"
+                      class="relative p-5 rounded-2xl border-2 text-left transition-all duration-200 cursor-pointer flex flex-col justify-between space-y-4 group"
+                    >
+                      <div class="flex items-center justify-between w-full">
+                        <div class="w-10 h-10 rounded-xl bg-purple-950 text-purple-300 border border-purple-800 flex items-center justify-center">
+                          <mat-icon class="text-xl">dark_mode</mat-icon>
+                        </div>
+                        @if (themeService.themeMode() === 'dark') {
+                          <span class="w-6 h-6 rounded-full bg-purple-600 text-white flex items-center justify-center">
+                            <mat-icon class="text-xs font-bold">check</mat-icon>
+                          </span>
+                        }
+                      </div>
+                      <div>
+                        <h5 class="text-sm font-black text-slate-900 group-hover:text-purple-600">
+                          Темна тема (Dark Mode)
+                        </h5>
+                        <p class="text-2xs text-slate-500 mt-1">
+                          Глибокий темний інтерфейс (Deep Slate) для комфортної роботи ввечері
+                        </p>
+                      </div>
+                    </button>
+                  </div>
+
+                  <div class="pt-3 flex justify-end">
+                    <button
+                      type="button"
+                      (click)="closeSettingsModal()"
+                      class="px-5 py-2.5 rounded-xl bg-slate-900 text-white hover:bg-slate-800 text-xs font-bold transition-colors cursor-pointer"
+                    >
+                      Готово
+                    </button>
+                  </div>
+                </div>
+              }
 
               <!-- 6. DATABASE MANAGEMENT MODAL CONTENT -->
               @if (modalId === 'database') {
@@ -1275,56 +1820,23 @@ export type SettingsGroupModalId =
                       </div>
 
                       <form [formGroup]="addDbForm" (ngSubmit)="submitNewCustomDb()" class="space-y-3">
-                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                           <div>
                             <label class="block text-2xs font-bold text-indigo-900 mb-1">Назва бази даних *</label>
                             <input
                               type="text"
                               formControlName="name"
-                              placeholder="Наприклад: Neon Postgres Read-Replica"
-                              class="w-full px-3 py-1.5 bg-white border border-indigo-200 rounded-xl text-xs text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                              placeholder="Наприклад: Neon Postgres / Aiven Backup DB"
+                              class="w-full px-3 py-2 bg-white border border-indigo-200 rounded-xl text-xs text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-400"
                             />
                           </div>
                           <div>
-                            <label class="block text-2xs font-bold text-indigo-900 mb-1">Тип СУБД *</label>
-                            <select
-                              formControlName="type"
-                              class="w-full px-3 py-1.5 bg-white border border-indigo-200 rounded-xl text-xs text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                            >
-                              <option value="postgresql">PostgreSQL (Cloud SQL / Aiven / Neon)</option>
-                              <option value="sqlite">SQLite (Local In-Memory Cache)</option>
-                              <option value="firestore">Google Firestore DB</option>
-                              <option value="mysql">MySQL / MariaDB Cluster</option>
-                            </select>
-                          </div>
-                          <div>
-                            <label class="block text-2xs font-bold text-indigo-900 mb-1">Ім'я бази / Database ID *</label>
+                            <label class="block text-2xs font-bold text-indigo-900 mb-1">URL підключення * (SQLALCHEMY_URI)</label>
                             <input
                               type="text"
-                              formControlName="database"
-                              placeholder="iptv_production_db"
-                              class="w-full px-3 py-1.5 bg-white border border-indigo-200 rounded-xl text-xs text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                            />
-                          </div>
-                        </div>
-
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                          <div>
-                            <label class="block text-2xs font-bold text-indigo-900 mb-1">Хост / Хостинг сервера</label>
-                            <input
-                              type="text"
-                              formControlName="host"
-                              placeholder="db-cluster.us-east-2.cloud.net:5432"
-                              class="w-full px-3 py-1.5 bg-white border border-indigo-200 rounded-xl text-xs text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-400 font-mono"
-                            />
-                          </div>
-                          <div>
-                            <label class="block text-2xs font-bold text-indigo-900 mb-1">Короткий опис або примітка</label>
-                            <input
-                              type="text"
-                              formControlName="description"
-                              placeholder="Для тестування локальної швидкодії"
-                              class="w-full px-3 py-1.5 bg-white border border-indigo-200 rounded-xl text-xs text-slate-900 font-medium focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                              formControlName="connectionUrl"
+                              placeholder="postgresql://username:password@hostname:5432/dbname?sslmode=require"
+                              class="w-full px-3 py-2 bg-white border border-indigo-200 rounded-xl text-xs text-slate-900 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-400"
                             />
                           </div>
                         </div>
@@ -1339,9 +1851,10 @@ export type SettingsGroupModalId =
                           </button>
                           <button
                             type="submit"
-                            class="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-2xs sm:text-xs font-bold cursor-pointer shadow-xs"
+                            class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-2xs sm:text-xs font-bold flex items-center gap-1 cursor-pointer shadow-2xs"
                           >
-                            Зберегти конфігурацію БД
+                            <mat-icon class="text-sm">add_circle</mat-icon>
+                            <span>Зберегти та підключити БД</span>
                           </button>
                         </div>
                       </form>
@@ -1573,7 +2086,13 @@ export type SettingsGroupModalId =
 
                       <!-- Option 5: Custom User Databases -->
                       @for (customDb of dbStatus()?.customDatabases || []; track customDb.id) {
-                        <div class="p-4 rounded-2xl border border-slate-200 bg-white space-y-3 flex flex-col justify-between">
+                        <div
+                          class="p-4 rounded-2xl border-2 transition-all space-y-3 flex flex-col justify-between"
+                          [class.border-emerald-600]="activeDbMode() === customDb.id"
+                          [class.bg-emerald-50/40]="activeDbMode() === customDb.id"
+                          [class.border-slate-200]="activeDbMode() !== customDb.id"
+                          [class.bg-white]="activeDbMode() !== customDb.id"
+                        >
                           <div class="space-y-2">
                             <div class="flex items-start justify-between gap-2">
                               <div class="flex items-center gap-2">
@@ -1581,33 +2100,81 @@ export type SettingsGroupModalId =
                                   <mat-icon class="text-lg">database</mat-icon>
                                 </div>
                                 <div>
-                                  <div class="text-xs font-bold text-slate-900 truncate max-w-[180px]">{{ customDb.name }}</div>
-                                  <div class="text-3xs text-slate-500 font-mono truncate max-w-[180px]">{{ customDb.database }}</div>
+                                  <div class="text-xs sm:text-sm font-bold text-slate-900 truncate max-w-[180px]">{{ customDb.name }}</div>
+                                  <div class="text-3xs text-slate-500 font-mono truncate max-w-[180px]" [title]="customDb.connectionString || customDb.host">
+                                    {{ customDb.connectionString || customDb.host }}
+                                  </div>
                                 </div>
                               </div>
-                              <button
-                                type="button"
-                                (click)="deleteCustomDb(customDb.id)"
-                                class="text-slate-400 hover:text-rose-600 cursor-pointer p-1"
-                                title="Видалити"
-                              >
-                                <mat-icon class="text-base">delete</mat-icon>
-                              </button>
+                              <div class="flex items-center gap-1.5 shrink-0">
+                                @if (activeDbMode() === customDb.id) {
+                                  <span class="px-2.5 py-0.5 rounded-md text-2xs font-bold uppercase bg-emerald-600 text-white shrink-0 shadow-2xs">
+                                    Активна БД
+                                  </span>
+                                } @else {
+                                  <span class="px-2 py-0.5 rounded-md text-2xs font-semibold bg-slate-100 text-slate-600 shrink-0 border border-slate-200">
+                                    Додаткова
+                                  </span>
+                                }
+                                <button
+                                  type="button"
+                                  (click)="deleteCustomDb(customDb.id)"
+                                  class="text-slate-400 hover:text-rose-600 cursor-pointer p-1"
+                                  title="Видалити"
+                                >
+                                  <mat-icon class="text-base">delete</mat-icon>
+                                </button>
+                              </div>
                             </div>
 
-                            <div class="p-2 rounded-xl bg-slate-50 border border-slate-200/80">
-                              <span class="text-3xs font-bold uppercase text-slate-400 block">Затримка відгуку</span>
-                              <span class="text-xs font-mono font-bold text-slate-800 flex items-center gap-1">
-                                <mat-icon class="text-xs">bolt</mat-icon>
-                                <span>{{ dbStatus()?.benchmarks?.[customDb.id]?.latencyMs ?? 22 }} ms</span>
+                            <div class="grid grid-cols-2 gap-2 pt-1">
+                              <div class="p-2 rounded-xl bg-slate-50 border border-slate-200/80">
+                                <span class="text-3xs font-bold uppercase text-slate-400 block">Швидкодія / Затримка</span>
+                                <span class="text-xs font-mono font-bold text-indigo-700 flex items-center gap-1">
+                                  <mat-icon class="text-xs">bolt</mat-icon>
+                                  <span>{{ dbStatus()?.benchmarks?.[customDb.id]?.latencyMs ?? 18 }} ms</span>
+                                  <span class="text-3xs font-sans text-slate-500 font-normal">(Швидка)</span>
+                                </span>
+                              </div>
+                              <div class="p-2 rounded-xl bg-slate-50 border border-slate-200/80">
+                                <span class="text-3xs font-bold uppercase text-slate-400 block">Записів у БД (всі сутності)</span>
+                                <span class="text-3xs font-bold text-slate-800 font-mono leading-relaxed block mt-0.5">
+                                  {{ getDbCountsFormatted(customDb.id) }}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div class="text-3xs text-slate-500 font-mono pt-0.5 flex flex-wrap items-center justify-between gap-1">
+                              <div class="flex items-center gap-1">
+                                <mat-icon class="text-xs text-indigo-600">access_time</mat-icon>
+                                <span>Останнє оновлення: {{ getDbLastUpdateTime(customDb.id) }}</span>
+                              </div>
+                              <span class="px-2 py-0.5 rounded-md bg-indigo-900 text-indigo-200 font-bold font-mono text-3xs shadow-2xs">
+                                Версія: {{ getDbVersion(customDb.id) }}
                               </span>
                             </div>
-
-                            <div class="text-3xs text-slate-500 font-mono pt-0.5 flex items-center gap-1">
-                              <mat-icon class="text-xs text-slate-500">access_time</mat-icon>
-                              <span>Останнє оновлення: {{ dbStatus()?.dbLastUpdateTimes?.[customDb.id] || dbStatus()?.globalLastUpdate || 'Підключено' }}</span>
-                            </div>
                           </div>
+
+                          <button
+                            type="button"
+                            (click)="selectDatabaseMode(customDb.id)"
+                            [disabled]="activeDbMode() === customDb.id || isSwitchingDb() || isCopyingDb() || !canEdit()"
+                            class="w-full px-3.5 py-2 rounded-xl text-2xs sm:text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60"
+                            [class.bg-emerald-600]="activeDbMode() === customDb.id"
+                            [class.text-white]="true"
+                            [class.bg-slate-900]="activeDbMode() !== customDb.id"
+                          >
+                            <mat-icon class="text-base leading-none">
+                              {{ activeDbMode() === customDb.id ? 'check_circle' : 'swap_horiz' }}
+                            </mat-icon>
+                            <span>
+                              {{
+                                activeDbMode() === customDb.id
+                                  ? 'Використовується для всіх користувачів'
+                                  : 'Обрати як Активну БД'
+                              }}
+                            </span>
+                          </button>
                         </div>
                       }
                     </div>
@@ -1763,6 +2330,123 @@ export type SettingsGroupModalId =
                   </div>
                 </div>
               }
+
+              <!-- 8. SCOPE DISTRIBUTION TABLE MODAL CONTENT -->
+              @if (modalId === 'scope_distribution') {
+                <div class="space-y-4">
+                  <div class="p-4 rounded-2xl bg-slate-900 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div class="space-y-1">
+                      <div class="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                        <mat-icon class="text-sm leading-none">tune</mat-icon>
+                        <span>Розподіл параметрів між користувачами та системою</span>
+                      </div>
+                      <p class="text-2xs text-slate-300">
+                        Оберіть тип збереження для кожного розділу або натисніть на назву розділу, щоб одразу відкрити його налаштування.
+                      </p>
+                    </div>
+                    <span class="px-3 py-1 rounded-xl bg-white/10 border border-white/15 text-2xs font-semibold text-emerald-300 shrink-0">
+                      Зміни зберігаються миттєво у БД
+                    </span>
+                  </div>
+
+                  <div class="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+                    <table class="w-full text-left border-collapse">
+                      <thead>
+                        <tr class="bg-slate-50 border-b border-slate-200 text-2xs font-bold text-slate-500 uppercase tracking-wider">
+                          <th class="py-3 px-4">Налаштування (натисніть для відкриття)</th>
+                          <th class="py-3 px-4 hidden md:table-cell">Опис параметра</th>
+                          <th class="py-3 px-4 hidden sm:table-cell">Таблиця збереження у БД</th>
+                          <th class="py-3 px-4 text-center">Поточний статус</th>
+                          <th class="py-3 px-4 text-right">Призначення типу налаштування</th>
+                        </tr>
+                      </thead>
+                      <tbody class="divide-y divide-slate-100 text-xs">
+                        @for (sec of allSettingsSectionsMeta; track sec.id) {
+                          @let currentScope = getSectionScope(sec.id);
+                          <tr class="hover:bg-slate-50/90 transition-colors">
+                            <td class="py-3 px-4">
+                              <button
+                                type="button"
+                                (click)="openSettingsModal(sec.id)"
+                                class="flex items-center gap-2.5 text-left group cursor-pointer"
+                                title="Натисніть, щоб відкрити налаштування цього розділу"
+                              >
+                                <div
+                                  class="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-transform group-hover:scale-105"
+                                  [class.bg-sky-100]="currentScope === 'user'"
+                                  [class.text-sky-700]="currentScope === 'user'"
+                                  [class.bg-emerald-100]="currentScope === 'system'"
+                                  [class.text-emerald-700]="currentScope === 'system'"
+                                >
+                                  <mat-icon class="text-base">{{ sec.icon }}</mat-icon>
+                                </div>
+                                <div>
+                                  <div class="font-bold text-slate-900 group-hover:text-indigo-600 transition-colors flex items-center gap-1">
+                                    <span>{{ sec.label }}</span>
+                                    <mat-icon class="text-xs opacity-60 group-hover:opacity-100">open_in_new</mat-icon>
+                                  </div>
+                                  <div class="text-3xs text-slate-400 md:hidden">{{ sec.subtitle }}</div>
+                                </div>
+                              </button>
+                            </td>
+                            <td class="py-3 px-4 text-slate-600 hidden md:table-cell">
+                              {{ sec.subtitle }}
+                            </td>
+                            <td class="py-3 px-4 hidden sm:table-cell">
+                              <span class="px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 font-mono text-2xs text-slate-700">
+                                {{ currentScope === 'user' ? sec.dbTable : 'settings / system_settings_config' }}
+                              </span>
+                            </td>
+                            <td class="py-3 px-4 text-center">
+                              @if (currentScope === 'user') {
+                                <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-sky-100 text-sky-800 border border-sky-200 text-2xs font-bold">
+                                  <mat-icon class="text-xs">person</mat-icon>
+                                  <span>Користувацьке</span>
+                                </span>
+                              } @else {
+                                <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 text-2xs font-bold">
+                                  <mat-icon class="text-xs">public</mat-icon>
+                                  <span>Системне (Загальне)</span>
+                                </span>
+                              }
+                            </td>
+                            <td class="py-3 px-4 text-right">
+                              <div class="inline-flex rounded-xl p-1 bg-slate-100 border border-slate-200">
+                                <button
+                                  type="button"
+                                  (click)="setSectionScope(sec.id, 'user')"
+                                  [disabled]="isSavingScope()"
+                                  class="px-2.5 py-1 rounded-lg text-2xs font-bold flex items-center gap-1 transition-all cursor-pointer"
+                                  [class.bg-sky-600]="currentScope === 'user'"
+                                  [class.text-white]="currentScope === 'user'"
+                                  [class.shadow-2xs]="currentScope === 'user'"
+                                  [class.text-slate-600]="currentScope !== 'user'"
+                                >
+                                  <mat-icon class="text-xs">person</mat-icon>
+                                  <span>Користувацькі</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  (click)="setSectionScope(sec.id, 'system')"
+                                  [disabled]="isSavingScope()"
+                                  class="px-2.5 py-1 rounded-lg text-2xs font-bold flex items-center gap-1 transition-all cursor-pointer"
+                                  [class.bg-slate-900]="currentScope === 'system'"
+                                  [class.text-white]="currentScope === 'system'"
+                                  [class.shadow-2xs]="currentScope === 'system'"
+                                  [class.text-slate-600]="currentScope !== 'system'"
+                                >
+                                  <mat-icon class="text-xs">admin_panel_settings</mat-icon>
+                                  <span>Системні</span>
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        }
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              }
             </div>
 
             <!-- Modal Footer -->
@@ -1803,17 +2487,34 @@ export type SettingsGroupModalId =
 })
 export class SettingsView implements OnInit {
   private readonly dataService = inject(IptvData);
+  readonly themeService = inject(ThemeService);
 
   @ViewChild('reminderInput') reminderInputRef?: ElementRef<HTMLTextAreaElement>;
   @ViewChild('renewalInput') renewalInputRef?: ElementRef<HTMLTextAreaElement>;
 
   readonly activeSettingsModal = signal<SettingsGroupModalId | null>(null);
+  readonly activeSettingsCategory = signal<'user' | 'system'>('user');
   readonly isSaving = signal(false);
+  readonly isSavingScope = signal(false);
   readonly canEdit = this.dataService.canEdit;
+  readonly isAdmin = this.dataService.isAdmin;
+  readonly currentUser = this.dataService.currentUser;
+  readonly allSettingsSectionsMeta: SettingsSectionMeta[] = ALL_SETTINGS_SECTIONS;
   readonly allowedSettingsSections = this.dataService.allowedSettingsSections;
   readonly hasAnyAllowedSettings = computed<boolean>(
     () => this.dataService.isAdmin() || this.allowedSettingsSections().length > 0
   );
+
+  readonly userScopedSectionsCount = computed<number>(() => {
+    return this.allSettingsSectionsMeta.filter(
+      (s) => this.getSectionScope(s.id) === 'user' && this.isSectionAllowed(s.id)
+    ).length;
+  });
+
+  readonly systemScopedSectionsCount = computed<number>(() => {
+    return this.allSettingsSectionsMeta.filter((s) => this.getSectionScope(s.id) === 'system').length;
+  });
+
   readonly isSyncingCloud = this.dataService.isSyncingCloud;
   readonly isSwitchingDb = this.dataService.isSwitchingDb;
   readonly isCopyingDb = this.dataService.isCopyingDb;
@@ -1840,6 +2541,39 @@ export class SettingsView implements OnInit {
     );
   });
 
+  getSectionScope(sectionId: SettingsSectionId): SettingScopeType {
+    return this.dataService.getSettingScope(sectionId);
+  }
+
+  async setSectionScope(sectionId: SettingsSectionId, scope: SettingScopeType): Promise<void> {
+    if (!this.isAdmin()) return;
+    this.isSavingScope.set(true);
+    try {
+      const currentScopes = { ...(this.dataService.systemSettingsConfig().scopesConfig || {}) };
+      currentScopes[sectionId] = scope;
+      await this.dataService.saveSystemSettingsScopes(currentScopes);
+    } finally {
+      this.isSavingScope.set(false);
+    }
+  }
+
+  shouldShowTile(sectionId: SettingsSectionId): boolean {
+    if (!this.isSectionAllowed(sectionId)) return false;
+    const scope = this.getSectionScope(sectionId);
+    if (this.activeSettingsCategory() === 'user') {
+      return scope === 'user';
+    }
+    return this.isAdmin() && scope === 'system';
+  }
+
+  isHouseHidden(acc: UtilityAccount, tab: UtilityServiceTabId): boolean {
+    return this.dataService.isHouseHiddenInTab(acc, tab);
+  }
+
+  async toggleHouseTab(accountId: string, tab: UtilityServiceTabId): Promise<void> {
+    await this.dataService.toggleHouseVisibilityInTab(accountId, tab);
+  }
+
   isSectionAllowed(sectionId: SettingsSectionId): boolean {
     return this.dataService.isSettingsSectionAllowed(sectionId);
   }
@@ -1849,7 +2583,13 @@ export class SettingsView implements OnInit {
   }
 
   openSettingsModal(modalId: SettingsGroupModalId): void {
+    if (modalId === 'scope_distribution') {
+      if (!this.isAdmin()) return;
+      this.activeSettingsModal.set(modalId);
+      return;
+    }
     if (!this.isSectionAllowed(modalId as SettingsSectionId)) return;
+    this.patchFormValues(this.dataService.settings());
     this.activeSettingsModal.set(modalId);
   }
 
@@ -1880,12 +2620,20 @@ export class SettingsView implements OnInit {
       modalId === 'telegram' ||
       modalId === 'viber' ||
       modalId === 'electricity_tariffs' ||
+      modalId === 'water_tariffs' ||
+      modalId === 'waste_tariffs' ||
       modalId === 'water_waste_tariffs'
     );
   }
 
   getModalMeta(modalId: SettingsGroupModalId): { title: string; subtitle: string; icon: string } {
     switch (modalId) {
+      case 'theme':
+        return {
+          title: 'Тема оформлення додатку',
+          subtitle: 'Світла, темна або автоматична тема за системними налаштуваннями OS',
+          icon: 'dark_mode',
+        };
       case 'billing':
         return {
           title: 'Загальні налаштування, графік та реквізити',
@@ -1894,9 +2642,15 @@ export class SettingsView implements OnInit {
         };
       case 'outage_display':
         return {
-          title: 'Варіанти відображення графіку відключень (10 стилів)',
+          title: 'Варіанти відображення графіку відключень (11 стилів)',
           subtitle: 'Оберіть зручний візуальний формат погодинного графіку світла ДТЕК',
           icon: 'view_timeline',
+        };
+      case 'house_visibility':
+        return {
+          title: 'Відображення будинків по вкладках',
+          subtitle: 'Індивідуальний показ або приховування спільних будинків для кожної окремої вкладки',
+          icon: 'visibility',
         };
       case 'telegram':
         return {
@@ -1912,9 +2666,21 @@ export class SettingsView implements OnInit {
         };
       case 'electricity_tariffs':
         return {
-          title: 'Тарифи на електроенергію',
+          title: 'Тариф електро',
           subtitle: 'Однотарифний та двотарифний (День / Ніч) плани, сезонність і ліміти',
           icon: 'bolt',
+        };
+      case 'water_tariffs':
+        return {
+          title: 'Тариф на воду',
+          subtitle: 'Індивідуальна вартість 1 м³ холодної води та щомісячна абонплата',
+          icon: 'water_drop',
+        };
+      case 'waste_tariffs':
+        return {
+          title: 'Тариф на вивіз сміття',
+          subtitle: 'Індивідуальний щомісячний тариф на ТПВ за 1 зареєстровану особу',
+          icon: 'delete_outline',
         };
       case 'water_waste_tariffs':
         return {
@@ -1933,6 +2699,12 @@ export class SettingsView implements OnInit {
           title: 'Резервне копіювання та відновлення даних (JSON)',
           subtitle: 'Експорт та імпорт повної резервної копії бази даних',
           icon: 'cloud_download',
+        };
+      case 'scope_distribution':
+        return {
+          title: 'Таблиця розподілу налаштувань: Користувацькі чи Системні',
+          subtitle: 'Призначайте, які налаштування є індивідуальними для кожного користувача, а які — спільними для всіх',
+          icon: 'table_chart',
         };
     }
   }
@@ -2011,8 +2783,12 @@ export class SettingsView implements OnInit {
   private patchFormValues(s: AppSettings): void {
     const reminderTmpl = s.viberReminderMessageTemplate || DEFAULT_VIBER_REMINDER_TEMPLATE;
     const renewalTmpl = s.viberRenewalMessageTemplate || DEFAULT_VIBER_RENEWAL_TEMPLATE;
-    const tariffs = s.utilityTariffsSettings || DEFAULT_UTILITY_TARIFFS;
+    const tariffs =
+      this.activeSettingsCategory() === 'system'
+        ? this.dataService.systemUtilityTariffs()
+        : this.dataService.utilityTariffs();
     const outageVariant: OutageScheduleViewVariant =
+      this.dataService.outageScheduleViewVariant() ||
       tariffs.outageScheduleViewVariant ||
       (s.outageScheduleViewVariant as OutageScheduleViewVariant) ||
       'v10_minimal_pills';
@@ -2350,21 +3126,58 @@ export class SettingsView implements OnInit {
         },
       };
 
-      await this.dataService.saveSettings({
-        ...current,
-        defaultMonthlyPrice: Number(val.defaultMonthlyPrice),
-        cardRequisites: val.cardRequisites?.trim() || '',
-        reminderDaysBefore: Number(val.reminderDaysBefore),
-        outageScheduleViewVariant: selectedOutageVariant,
-        viberReminderMessageTemplate:
-          val.viberReminderMessageTemplate?.trim() || DEFAULT_VIBER_REMINDER_TEMPLATE,
-        viberRenewalMessageTemplate:
-          val.viberRenewalMessageTemplate?.trim() || DEFAULT_VIBER_RENEWAL_TEMPLATE,
-        telegramBotToken: val.telegramBotToken?.trim() || '',
-        telegramBotUsername: val.telegramBotUsername?.trim() || 'iptv_billing_bot',
-        telegramSenderName: val.telegramSenderName?.trim() || 'IPTV Підтримка',
-        utilityTariffsSettings: tariffs,
-      });
+      const modal = this.activeSettingsModal();
+      const isSystemEdit = this.activeSettingsCategory() === 'system' && this.isAdmin();
+
+      if (modal === 'electricity_tariffs') {
+        await this.dataService.updateUtilityTariffs(
+          {
+            electricitySingle: tariffs.electricitySingle,
+            electricityDual: tariffs.electricityDual,
+          },
+          { forceSystem: isSystemEdit }
+        );
+      } else if (modal === 'water_tariffs') {
+        await this.dataService.updateUtilityTariffs(
+          {
+            water: tariffs.water,
+          },
+          { forceSystem: isSystemEdit }
+        );
+      } else if (modal === 'waste_tariffs') {
+        await this.dataService.updateUtilityTariffs(
+          {
+            waste: tariffs.waste,
+          },
+          { forceSystem: isSystemEdit }
+        );
+      } else if (modal === 'water_waste_tariffs') {
+        await this.dataService.updateUtilityTariffs(
+          {
+            water: tariffs.water,
+            waste: tariffs.waste,
+          },
+          { forceSystem: isSystemEdit }
+        );
+      } else if (modal === 'outage_display') {
+        await this.dataService.setOutageScheduleViewVariant(selectedOutageVariant, true);
+      } else {
+        await this.dataService.saveSettings({
+          ...current,
+          defaultMonthlyPrice: Number(val.defaultMonthlyPrice),
+          cardRequisites: val.cardRequisites?.trim() || '',
+          reminderDaysBefore: Number(val.reminderDaysBefore),
+          outageScheduleViewVariant: selectedOutageVariant,
+          viberReminderMessageTemplate:
+            val.viberReminderMessageTemplate?.trim() || DEFAULT_VIBER_REMINDER_TEMPLATE,
+          viberRenewalMessageTemplate:
+            val.viberRenewalMessageTemplate?.trim() || DEFAULT_VIBER_RENEWAL_TEMPLATE,
+          telegramBotToken: val.telegramBotToken?.trim() || '',
+          telegramBotUsername: val.telegramBotUsername?.trim() || 'iptv_billing_bot',
+          telegramSenderName: val.telegramSenderName?.trim() || 'IPTV Підтримка',
+          utilityTariffsSettings: isSystemEdit ? tariffs : current.utilityTariffsSettings,
+        });
+      }
       this.patchFormValues(this.dataService.settings());
       this.form.markAsPristine();
     } finally {
@@ -2398,11 +3211,7 @@ export class SettingsView implements OnInit {
 
   readonly addDbForm = new FormGroup({
     name: new FormControl('', [Validators.required]),
-    type: new FormControl<'postgresql' | 'sqlite' | 'firestore' | 'mysql'>('postgresql', [Validators.required]),
-    host: new FormControl(''),
-    database: new FormControl('', [Validators.required]),
-    description: new FormControl(''),
-    connectionString: new FormControl(''),
+    connectionUrl: new FormControl('', [Validators.required]),
   });
 
   readonly isRefreshingDb = signal<boolean>(false);
@@ -2464,14 +3273,10 @@ export class SettingsView implements OnInit {
     const val = this.addDbForm.getRawValue();
     const ok = await this.dataService.addCustomDatabase({
       name: val.name || '',
-      type: val.type || 'postgresql',
-      host: val.host || '',
-      database: val.database || '',
-      description: val.description || '',
-      connectionString: val.connectionString || '',
+      connectionUrl: val.connectionUrl || '',
     });
     if (ok) {
-      this.addDbForm.reset({ type: 'postgresql' });
+      this.addDbForm.reset();
       this.isAddDbModalOpen.set(false);
     }
   }
@@ -2484,7 +3289,7 @@ export class SettingsView implements OnInit {
 
   async selectDatabaseMode(mode: string): Promise<void> {
     if (this.activeDbMode() === mode) return;
-    await this.dataService.switchDatabaseMode(mode as 'sqlite_local' | 'cloudsql' | 'external');
+    await this.dataService.switchDatabaseMode(mode);
   }
 
   async executeDualCopy(): Promise<void> {

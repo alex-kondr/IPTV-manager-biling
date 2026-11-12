@@ -81,8 +81,8 @@ function startBackendServer() {
       },
     });
   } else {
-    if (!fs.existsSync(ngJs) || (process.env.START_EXPRESS_SERVER !== 'true' && Date.now() - startupTime < 90000)) {
-      setTimeout(startBackendServer, 2000);
+    if (!fs.existsSync(ngJs)) {
+      setTimeout(startBackendServer, 1000);
       return;
     }
     childMode = 'ng-build';

@@ -27,6 +27,37 @@ type BalanceCalibTab = 'exact' | 'delta';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div id="budget-dashboard-container" class="space-y-4 sm:space-y-6">
+      <!-- Shared Household & Budget Invite Link Banner -->
+      <div class="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-slate-900 via-teal-950 to-slate-900 text-white border border-teal-500/30 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3.5">
+        <div class="flex items-start sm:items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-teal-500/20 border border-teal-400/40 text-teal-300 flex items-center justify-center shrink-0">
+            <mat-icon class="text-xl">family_restroom</mat-icon>
+          </div>
+          <div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <h3 class="text-xs sm:text-sm font-extrabold text-white">
+                Спільний бюджет та Спільний дім
+              </h3>
+              <span class="px-2 py-0.5 rounded-full bg-teal-500/20 text-teal-300 border border-teal-400/30 text-3xs font-bold">
+                Доступ за Invite-посиланням
+              </span>
+            </div>
+            <p class="text-2xs text-slate-300 mt-0.5">
+              Запрошуйте членів сім'ї або близьких до спільного бюджету та вашого будинку (режим «Тільки для перегляду» за замовчуванням або «Повний доступ» + теги Сім'я, Друг, Подруга, Донька, Син, Знайомий).
+            </p>
+          </div>
+        </div>
+        <button
+          id="btn-budget-invite-link"
+          type="button"
+          (click)="dataService.openSharedHouseholdModal()"
+          class="px-4 py-2.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-slate-950 font-extrabold text-xs flex items-center justify-center gap-1.5 cursor-pointer shrink-0 shadow-xs transition-all"
+        >
+          <mat-icon class="text-base">add_link</mat-icon>
+          <span>Invite Link • Спільний дім</span>
+        </button>
+      </div>
+
       <!-- Top Cards: Dual Currency Accounting (USD for Provider, UAH for Owner Budget) -->
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <!-- Card 1: Provider Balance USD & Management Trigger -->
@@ -279,231 +310,377 @@ type BalanceCalibTab = 'exact' | 'delta';
 
         <!-- VIEW 1: COMBINED CASHFLOW LEDGER -->
         @if (activeViewMode() === 'ledger') {
-          <div class="overflow-x-auto">
+          <div>
             @if (filteredLedger().length === 0) {
               <div class="p-8 text-center text-slate-500 text-sm">
                 Записів у журналі не знайдено. Натисніть кнопку вище, щоб додати запис.
               </div>
             } @else {
-              <table class="w-full text-left text-xs sm:text-sm">
-                <thead class="bg-slate-50 text-slate-500 uppercase tracking-wider text-2xs border-b border-slate-200">
-                  <tr>
-                    <th class="px-4 py-3 font-semibold">Дата</th>
-                    <th class="px-4 py-3 font-semibold">Тип операції</th>
-                    <th class="px-4 py-3 font-semibold">Призначення / Опис</th>
-                    <th class="px-4 py-3 font-semibold">Деталі / Спосіб</th>
-                    <th class="px-4 py-3 font-semibold text-right">Сума (грн / $)</th>
-                    <th class="px-4 py-3 font-semibold text-center whitespace-nowrap">Баланс провайдера ($)</th>
-                    <th class="px-4 py-3 font-semibold text-right">Дії</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-100">
-                  @for (item of filteredLedger(); track item.id) {
-                    <tr class="hover:bg-slate-50/70 transition-colors">
-                      <td class="px-4 py-3 text-slate-500 whitespace-nowrap">
-                        {{ formatDateTime(item.date) }}
-                      </td>
-                      <td class="px-4 py-3 whitespace-nowrap">
-                        @if (item.type === 'income') {
-                          <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-2xs font-bold">
-                            <mat-icon class="text-xs">add</mat-icon>
-                            Надходження (+)
-                          </span>
-                        } @else if (item.type === 'expense') {
-                          <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 text-2xs font-bold">
-                            <mat-icon class="text-xs">remove</mat-icon>
-                            Витрата (-)
-                          </span>
-                        } @else if (item.type === 'adjustment') {
-                          <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-2xs font-bold">
-                            <mat-icon class="text-xs">tune</mat-icon>
-                            Коригування ($)
-                          </span>
-                        } @else {
-                          <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 text-2xs font-bold">
-                            <mat-icon class="text-xs">sync_alt</mat-icon>
-                            Списання лінії ($)
-                          </span>
-                        }
-                      </td>
-                      <td class="px-4 py-3">
-                        <div class="flex items-center gap-1.5 flex-wrap">
-                          <strong class="text-slate-900 font-semibold">{{ item.title }}</strong>
-                          @if (item.clientName) {
-                            <span class="px-1.5 py-0.2 rounded bg-sky-50 text-sky-700 border border-sky-200 text-2xs">
-                              Клієнт: {{ item.clientName }}
-                            </span>
-                          }
-                          @if (item.accountName) {
-                            <span class="px-1.5 py-0.2 rounded bg-purple-50 text-purple-700 border border-purple-200 text-2xs">
-                              Акаунт: {{ item.accountName }}
-                            </span>
-                          }
-                          @if (item.isCustom) {
-                            <span class="px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 text-2xs">
-                              Ручний запис
-                            </span>
-                          }
+              <!-- Mobile Card View (< md) -->
+              <div class="md:hidden divide-y divide-slate-100">
+                @for (item of filteredLedger(); track item.id) {
+                  <div class="p-4 space-y-2.5 hover:bg-slate-50/70 transition-colors">
+                    <div class="flex items-start justify-between gap-2">
+                      <div class="min-w-0">
+                        <div class="font-bold text-sm text-slate-900">{{ item.title }}</div>
+                        <div class="text-2xs text-slate-500 mt-0.5">{{ item.subtitle }}</div>
+                        <div class="text-3xs text-slate-400 mt-0.5">{{ formatDateTime(item.date) }}</div>
+                      </div>
+                      <div class="text-right shrink-0">
+                        <div
+                          class="font-bold font-mono text-sm"
+                          [class.text-emerald-700]="item.amountUah > 0"
+                          [class.text-rose-600]="item.amountUah < 0"
+                          [class.text-slate-600]="item.amountUah === 0"
+                        >
+                          {{ (item.amountUah || 0) > 0 ? '+' : '' }}{{ (item.amountUah || 0) !== 0 ? (item.amountUah || 0).toLocaleString('uk-UA') + ' ₴' : (item.amountUsd ? (item.amountUsd > 0 ? '+$' : '-$') + Math.abs(item.amountUsd) + ' USD' : '—') }}
                         </div>
-                        <span class="text-slate-500 text-2xs block mt-0.5">{{ item.subtitle }}</span>
-                      </td>
-                      <td class="px-4 py-3 text-slate-600 text-2xs">
-                        @if (item.paymentMethod) {
-                          <span class="px-1.5 py-0.5 bg-slate-100 rounded text-slate-700 font-medium mr-1.5">
-                            {{ item.paymentMethod }}
-                          </span>
-                        }
                         @if (item.amountUsd !== undefined && item.amountUsd !== 0) {
-                          <span class="font-mono font-semibold" [class.text-emerald-700]="item.amountUsd > 0" [class.text-rose-600]="item.amountUsd < 0">
+                          <span class="text-3xs font-mono font-semibold" [class.text-emerald-700]="item.amountUsd > 0" [class.text-rose-600]="item.amountUsd < 0">
                             ({{ item.amountUsd > 0 ? '+' : '' }}\${{ item.amountUsd }} USD)
                           </span>
                         }
-                        @if (item.note) {
-                          <span class="text-slate-500 italic ml-1">"{{ item.note }}"</span>
-                        }
-                      </td>
-                      <td
-                        class="px-4 py-3 text-right font-bold font-mono text-sm whitespace-nowrap"
-                        [class.text-emerald-700]="item.amountUah > 0"
-                        [class.text-rose-600]="item.amountUah < 0"
-                        [class.text-slate-500]="item.amountUah === 0"
-                      >
-                        {{ (item.amountUah || 0) > 0 ? '+' : '' }}{{ (item.amountUah || 0) !== 0 ? (item.amountUah || 0).toLocaleString('uk-UA') + ' ₴' : (item.amountUsd ? (item.amountUsd > 0 ? '+$' : '-$') + Math.abs(item.amountUsd) + ' USD' : '—') }}
-                      </td>
-                      <td class="px-4 py-3 whitespace-nowrap text-center">
-                        @if (item.balanceBeforeUsd !== undefined && item.balanceAfterUsd !== undefined) {
-                          <div class="inline-flex flex-col items-center">
-                            <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200/90 font-mono text-xs">
-                              <span class="text-slate-500 font-medium" title="Баланс до операції">\${{ item.balanceBeforeUsd.toFixed(2) }}</span>
-                              <mat-icon class="text-xs text-slate-400">arrow_forward</mat-icon>
-                              <span
-                                class="font-bold"
-                                [class.text-emerald-700]="item.balanceAfterUsd > item.balanceBeforeUsd"
-                                [class.text-rose-600]="item.balanceAfterUsd < item.balanceBeforeUsd"
-                                [class.text-slate-800]="item.balanceAfterUsd === item.balanceBeforeUsd"
-                                title="Баланс після операції"
-                              >
-                                \${{ item.balanceAfterUsd.toFixed(2) }}
-                              </span>
-                            </div>
-                            <span class="text-3xs text-slate-400 mt-0.5 font-medium">до → після</span>
-                          </div>
+                      </div>
+                    </div>
+
+                    <div class="flex flex-wrap items-center justify-between gap-2 bg-slate-50 rounded-xl p-2.5 border border-slate-100 text-2xs">
+                      <div class="flex flex-wrap items-center gap-1.5">
+                        @if (item.type === 'income') {
+                          <span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold">Надходження (+)</span>
+                        } @else if (item.type === 'expense') {
+                          <span class="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 font-bold">Витрата (-)</span>
+                        } @else if (item.type === 'adjustment') {
+                          <span class="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold">Коригування ($)</span>
                         } @else {
-                          <span class="text-slate-300 font-mono text-xs" title="Не впливає на баланс провайдера">—</span>
+                          <span class="px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 font-bold">Списання лінії ($)</span>
                         }
-                      </td>
-                      <td class="px-4 py-3 text-right whitespace-nowrap">
-                        <div class="flex items-center justify-end gap-1">
-                          <button
-                            type="button"
-                            (click)="editLedgerItem(item)"
-                            class="p-1.5 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
-                            title="Редагувати цей запис"
-                          >
-                            <mat-icon class="text-base">edit</mat-icon>
-                          </button>
-                          <button
-                            type="button"
-                            (click)="deleteLedgerItem(item)"
-                            class="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                            title="Видалити цей запис"
-                          >
-                            <mat-icon class="text-base">delete</mat-icon>
-                          </button>
+                        @if (item.clientName) {
+                          <span class="px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 border border-sky-200">Клієнт: {{ item.clientName }}</span>
+                        }
+                        @if (item.accountName) {
+                          <span class="px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 border border-purple-200">Акаунт: {{ item.accountName }}</span>
+                        }
+                        @if (item.paymentMethod) {
+                          <span class="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-slate-700">{{ item.paymentMethod }}</span>
+                        }
+                      </div>
+
+                      @if (item.balanceBeforeUsd !== undefined && item.balanceAfterUsd !== undefined) {
+                        <div class="font-mono text-2xs text-slate-600">
+                          Баланс $: <b>\${{ item.balanceBeforeUsd.toFixed(2) }}</b> → <b class="text-slate-900">\${{ item.balanceAfterUsd.toFixed(2) }}</b>
                         </div>
-                      </td>
+                      }
+                    </div>
+
+                    @if (item.note) {
+                      <div class="text-2xs text-slate-500 italic">"{{ item.note }}"</div>
+                    }
+
+                    <div class="flex items-center justify-end gap-2 pt-1 border-t border-slate-100">
+                      <button
+                        type="button"
+                        (click)="editLedgerItem(item)"
+                        class="px-2.5 py-1 text-xs rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-100 inline-flex items-center gap-1 cursor-pointer"
+                      >
+                        <mat-icon class="text-xs">edit</mat-icon>
+                        <span>Редагувати</span>
+                      </button>
+                      <button
+                        type="button"
+                        (click)="deleteLedgerItem(item)"
+                        class="px-2.5 py-1 text-xs rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 inline-flex items-center gap-1 cursor-pointer"
+                      >
+                        <mat-icon class="text-xs">delete</mat-icon>
+                        <span>Видалити</span>
+                      </button>
+                    </div>
+                  </div>
+                }
+              </div>
+
+              <!-- Desktop Table (>= md) -->
+              <div class="hidden md:block overflow-x-auto">
+                <table class="w-full text-left text-xs sm:text-sm">
+                  <thead class="bg-slate-50 text-slate-500 uppercase tracking-wider text-2xs border-b border-slate-200">
+                    <tr>
+                      <th class="px-4 py-3 font-semibold">Дата</th>
+                      <th class="px-4 py-3 font-semibold">Тип операції</th>
+                      <th class="px-4 py-3 font-semibold">Призначення / Опис</th>
+                      <th class="px-4 py-3 font-semibold">Деталі / Спосіб</th>
+                      <th class="px-4 py-3 font-semibold text-right">Сума (грн / $)</th>
+                      <th class="px-4 py-3 font-semibold text-center whitespace-nowrap">Баланс провайдера ($)</th>
+                      <th class="px-4 py-3 font-semibold text-right">Дії</th>
                     </tr>
-                  }
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody class="divide-y divide-slate-100">
+                    @for (item of filteredLedger(); track item.id) {
+                      <tr class="hover:bg-slate-50/70 transition-colors">
+                        <td class="px-4 py-3 text-slate-500 whitespace-nowrap">
+                          {{ formatDateTime(item.date) }}
+                        </td>
+                        <td class="px-4 py-3 whitespace-nowrap">
+                          @if (item.type === 'income') {
+                            <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-2xs font-bold">
+                              <mat-icon class="text-xs">add</mat-icon>
+                              Надходження (+)
+                            </span>
+                          } @else if (item.type === 'expense') {
+                            <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-rose-100 text-rose-800 text-2xs font-bold">
+                              <mat-icon class="text-xs">remove</mat-icon>
+                              Витрата (-)
+                            </span>
+                          } @else if (item.type === 'adjustment') {
+                            <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-2xs font-bold">
+                              <mat-icon class="text-xs">tune</mat-icon>
+                              Коригування ($)
+                            </span>
+                          } @else {
+                            <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 text-2xs font-bold">
+                              <mat-icon class="text-xs">sync_alt</mat-icon>
+                              Списання лінії ($)
+                            </span>
+                          }
+                        </td>
+                        <td class="px-4 py-3">
+                          <div class="flex items-center gap-1.5 flex-wrap">
+                            <strong class="text-slate-900 font-semibold">{{ item.title }}</strong>
+                            @if (item.clientName) {
+                              <span class="px-1.5 py-0.2 rounded bg-sky-50 text-sky-700 border border-sky-200 text-2xs">
+                                Клієнт: {{ item.clientName }}
+                              </span>
+                            }
+                            @if (item.accountName) {
+                              <span class="px-1.5 py-0.2 rounded bg-purple-50 text-purple-700 border border-purple-200 text-2xs">
+                                Акаунт: {{ item.accountName }}
+                              </span>
+                            }
+                            @if (item.isCustom) {
+                              <span class="px-1.5 py-0.2 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 text-2xs">
+                                Ручний запис
+                              </span>
+                            }
+                          </div>
+                          <span class="text-slate-500 text-2xs block mt-0.5">{{ item.subtitle }}</span>
+                        </td>
+                        <td class="px-4 py-3 text-slate-600 text-2xs">
+                          @if (item.paymentMethod) {
+                            <span class="px-1.5 py-0.5 bg-slate-100 rounded text-slate-700 font-medium mr-1.5">
+                              {{ item.paymentMethod }}
+                            </span>
+                          }
+                          @if (item.amountUsd !== undefined && item.amountUsd !== 0) {
+                            <span class="font-mono font-semibold" [class.text-emerald-700]="item.amountUsd > 0" [class.text-rose-600]="item.amountUsd < 0">
+                              ({{ item.amountUsd > 0 ? '+' : '' }}\${{ item.amountUsd }} USD)
+                            </span>
+                          }
+                          @if (item.note) {
+                            <span class="text-slate-500 italic ml-1">"{{ item.note }}"</span>
+                          }
+                        </td>
+                        <td
+                          class="px-4 py-3 text-right font-bold font-mono text-sm whitespace-nowrap"
+                          [class.text-emerald-700]="item.amountUah > 0"
+                          [class.text-rose-600]="item.amountUah < 0"
+                          [class.text-slate-500]="item.amountUah === 0"
+                        >
+                          {{ (item.amountUah || 0) > 0 ? '+' : '' }}{{ (item.amountUah || 0) !== 0 ? (item.amountUah || 0).toLocaleString('uk-UA') + ' ₴' : (item.amountUsd ? (item.amountUsd > 0 ? '+$' : '-$') + Math.abs(item.amountUsd) + ' USD' : '—') }}
+                        </td>
+                        <td class="px-4 py-3 whitespace-nowrap text-center">
+                          @if (item.balanceBeforeUsd !== undefined && item.balanceAfterUsd !== undefined) {
+                            <div class="inline-flex flex-col items-center">
+                              <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 border border-slate-200/90 font-mono text-xs">
+                                <span class="text-slate-500 font-medium" title="Баланс до операції">\${{ item.balanceBeforeUsd.toFixed(2) }}</span>
+                                <mat-icon class="text-xs text-slate-400">arrow_forward</mat-icon>
+                                <span
+                                  class="font-bold"
+                                  [class.text-emerald-700]="item.balanceAfterUsd > item.balanceBeforeUsd"
+                                  [class.text-rose-600]="item.balanceAfterUsd < item.balanceBeforeUsd"
+                                  [class.text-slate-800]="item.balanceAfterUsd === item.balanceBeforeUsd"
+                                  title="Баланс після операції"
+                                >
+                                  \${{ item.balanceAfterUsd.toFixed(2) }}
+                                </span>
+                              </div>
+                              <span class="text-3xs text-slate-400 mt-0.5 font-medium">до → після</span>
+                            </div>
+                          } @else {
+                            <span class="text-slate-300 font-mono text-xs" title="Не впливає на баланс провайдера">—</span>
+                          }
+                        </td>
+                        <td class="px-4 py-3 text-right whitespace-nowrap">
+                          <div class="flex items-center justify-end gap-1">
+                            <button
+                              type="button"
+                              (click)="editLedgerItem(item)"
+                              class="p-1.5 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
+                              title="Редагувати цей запис"
+                            >
+                              <mat-icon class="text-base">edit</mat-icon>
+                            </button>
+                            <button
+                              type="button"
+                              (click)="deleteLedgerItem(item)"
+                              class="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                              title="Видалити цей запис"
+                            >
+                              <mat-icon class="text-base">delete</mat-icon>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              </div>
             }
           </div>
         }
 
         <!-- VIEW 2: PROVIDER DEPOSITS LIST -->
         @if (activeViewMode() === 'deposits') {
-          <div class="overflow-x-auto">
+          <div>
             @if (deposits().length === 0) {
               <div class="p-8 text-center text-slate-500 text-sm">
                 Поповнень ще не зафіксовано. Натисніть кнопку вище, щоб додати суму поповнення.
               </div>
             } @else {
-              <table class="w-full text-left text-xs sm:text-sm">
-                <thead class="bg-slate-50 text-slate-500 uppercase tracking-wider text-2xs border-b border-slate-200">
-                  <tr>
-                    <th class="px-4 py-3 font-semibold">Дата поповнення</th>
-                    <th class="px-4 py-3 font-semibold text-right">Сума на баланс ($)</th>
-                    <th class="px-4 py-3 font-semibold text-center whitespace-nowrap">Баланс провайдера ($)</th>
-                    <th class="px-4 py-3 font-semibold text-right">Витрачено в гривнях (₴)</th>
-                    <th class="px-4 py-3 font-semibold text-right">Фактичний курс</th>
-                    <th class="px-4 py-3 font-semibold">Спосіб оплати</th>
-                    <th class="px-4 py-3 font-semibold">Примітка</th>
-                    <th class="px-4 py-3 text-right font-semibold">Дії</th>
-                  </tr>
-                </thead>
-                <tbody class="divide-y divide-slate-100">
-                  @for (dep of deposits(); track dep.id) {
-                    <tr class="hover:bg-slate-50/70 transition-colors">
-                      <td class="px-4 py-3 text-slate-600 whitespace-nowrap font-medium">
-                        {{ formatDate(dep.date) }}
-                      </td>
-                      <td class="px-4 py-3 text-right font-mono font-bold text-emerald-700 whitespace-nowrap text-sm">
-                        +\${{ dep.amountUsd.toFixed(2) }}
-                      </td>
-                      <td class="px-4 py-3 whitespace-nowrap text-center">
-                        @if (dep.balanceBeforeUsd !== undefined && dep.balanceAfterUsd !== undefined) {
-                          <div class="inline-flex flex-col items-center">
-                            <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50/80 border border-emerald-200/80 font-mono text-xs">
-                              <span class="text-slate-500 font-medium" title="Баланс до поповнення">\${{ dep.balanceBeforeUsd.toFixed(2) }}</span>
-                              <mat-icon class="text-xs text-emerald-500">arrow_forward</mat-icon>
-                              <span class="font-bold text-emerald-700" title="Баланс після поповнення">
-                                \${{ dep.balanceAfterUsd.toFixed(2) }}
-                              </span>
-                            </div>
-                            <span class="text-3xs text-slate-400 mt-0.5 font-medium">до → після</span>
-                          </div>
-                        } @else {
-                          <span class="text-slate-300 font-mono text-xs">—</span>
-                        }
-                      </td>
-                      <td class="px-4 py-3 text-right font-mono font-bold text-rose-600 whitespace-nowrap text-sm">
-                        -{{ (dep.spentUah || 0).toLocaleString('uk-UA') }} ₴
-                      </td>
-                      <td class="px-4 py-3 text-right font-mono text-slate-700 whitespace-nowrap">
-                        {{ (dep.exchangeRate || ((dep.spentUah || 0) / (dep.amountUsd || 1))).toFixed(2) }} ₴/$
-                      </td>
-                      <td class="px-4 py-3 text-slate-700 whitespace-nowrap">
-                        <span class="px-2 py-0.5 rounded bg-slate-100 text-2xs font-medium">
+              <!-- Mobile Card View (< md) -->
+              <div class="md:hidden divide-y divide-slate-100">
+                @for (dep of deposits(); track dep.id) {
+                  <div class="p-4 space-y-2.5 hover:bg-slate-50/70 transition-colors">
+                    <div class="flex items-start justify-between gap-2">
+                      <div>
+                        <div class="font-bold text-sm text-slate-900">{{ formatDate(dep.date) }}</div>
+                        <span class="inline-block mt-1 px-2 py-0.5 rounded bg-slate-100 text-2xs font-medium text-slate-700">
                           {{ dep.paymentMethod || 'Картка' }}
                         </span>
-                      </td>
-                      <td class="px-4 py-3 text-slate-500 text-xs truncate max-w-xs" [title]="dep.note || ''">
-                        {{ dep.note || '—' }}
-                      </td>
-                      <td class="px-4 py-3 text-right whitespace-nowrap">
-                        <div class="flex items-center justify-end gap-1">
-                          <button
-                            type="button"
-                            (click)="openEditDepositModal(dep)"
-                            class="p-1.5 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
-                            title="Редагувати запис поповнення"
-                          >
-                            <mat-icon class="text-base">edit</mat-icon>
-                          </button>
-                          <button
-                            type="button"
-                            (click)="deleteDepositConfirm(dep)"
-                            class="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                            title="Видалити запис"
-                          >
-                            <mat-icon class="text-base">delete</mat-icon>
-                          </button>
-                        </div>
-                      </td>
+                      </div>
+                      <div class="text-right">
+                        <div class="font-mono font-bold text-emerald-700 text-sm">+\${{ dep.amountUsd.toFixed(2) }}</div>
+                        <div class="font-mono font-semibold text-rose-600 text-xs">-{{ (dep.spentUah || 0).toLocaleString('uk-UA') }} ₴</div>
+                      </div>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2 bg-slate-50 rounded-xl p-2.5 border border-slate-100 text-xs">
+                      <div>
+                        <span class="text-3xs text-slate-400 uppercase font-semibold block">Фактичний курс</span>
+                        <strong class="font-mono text-slate-800">{{ (dep.exchangeRate || ((dep.spentUah || 0) / (dep.amountUsd || 1))).toFixed(2) }} ₴/$</strong>
+                      </div>
+                      <div class="text-right">
+                        <span class="text-3xs text-slate-400 uppercase font-semibold block">Баланс провайдера</span>
+                        @if (dep.balanceBeforeUsd !== undefined && dep.balanceAfterUsd !== undefined) {
+                          <strong class="font-mono text-emerald-700">\${{ dep.balanceBeforeUsd.toFixed(2) }} → \${{ dep.balanceAfterUsd.toFixed(2) }}</strong>
+                        } @else {
+                          <span class="text-slate-400">—</span>
+                        }
+                      </div>
+                    </div>
+
+                    @if (dep.note) {
+                      <div class="text-2xs text-slate-500 italic">{{ dep.note }}</div>
+                    }
+
+                    <div class="flex items-center justify-end gap-2 pt-1 border-t border-slate-100">
+                      <button
+                        type="button"
+                        (click)="openEditDepositModal(dep)"
+                        class="px-2.5 py-1 text-xs rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-100 inline-flex items-center gap-1 cursor-pointer"
+                      >
+                        <mat-icon class="text-xs">edit</mat-icon>
+                        <span>Редагувати</span>
+                      </button>
+                      <button
+                        type="button"
+                        (click)="deleteDepositConfirm(dep)"
+                        class="px-2.5 py-1 text-xs rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 inline-flex items-center gap-1 cursor-pointer"
+                      >
+                        <mat-icon class="text-xs">delete</mat-icon>
+                        <span>Видалити</span>
+                      </button>
+                    </div>
+                  </div>
+                }
+              </div>
+
+              <!-- Desktop Table (>= md) -->
+              <div class="hidden md:block overflow-x-auto">
+                <table class="w-full text-left text-xs sm:text-sm">
+                  <thead class="bg-slate-50 text-slate-500 uppercase tracking-wider text-2xs border-b border-slate-200">
+                    <tr>
+                      <th class="px-4 py-3 font-semibold">Дата поповнення</th>
+                      <th class="px-4 py-3 font-semibold text-right">Сума на баланс ($)</th>
+                      <th class="px-4 py-3 font-semibold text-center whitespace-nowrap">Баланс провайдера ($)</th>
+                      <th class="px-4 py-3 font-semibold text-right">Витрачено в гривнях (₴)</th>
+                      <th class="px-4 py-3 font-semibold text-right">Фактичний курс</th>
+                      <th class="px-4 py-3 font-semibold">Спосіб оплати</th>
+                      <th class="px-4 py-3 font-semibold">Примітка</th>
+                      <th class="px-4 py-3 text-right font-semibold">Дії</th>
                     </tr>
-                  }
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody class="divide-y divide-slate-100">
+                    @for (dep of deposits(); track dep.id) {
+                      <tr class="hover:bg-slate-50/70 transition-colors">
+                        <td class="px-4 py-3 text-slate-600 whitespace-nowrap font-medium">
+                          {{ formatDate(dep.date) }}
+                        </td>
+                        <td class="px-4 py-3 text-right font-mono font-bold text-emerald-700 whitespace-nowrap text-sm">
+                          +\${{ dep.amountUsd.toFixed(2) }}
+                        </td>
+                        <td class="px-4 py-3 whitespace-nowrap text-center">
+                          @if (dep.balanceBeforeUsd !== undefined && dep.balanceAfterUsd !== undefined) {
+                            <div class="inline-flex flex-col items-center">
+                              <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50/80 border border-emerald-200/80 font-mono text-xs">
+                                <span class="text-slate-500 font-medium" title="Баланс до поповнення">\${{ dep.balanceBeforeUsd.toFixed(2) }}</span>
+                                <mat-icon class="text-xs text-emerald-500">arrow_forward</mat-icon>
+                                <span class="font-bold text-emerald-700" title="Баланс після поповнення">
+                                  \${{ dep.balanceAfterUsd.toFixed(2) }}
+                                </span>
+                              </div>
+                              <span class="text-3xs text-slate-400 mt-0.5 font-medium">до → після</span>
+                            </div>
+                          } @else {
+                            <span class="text-slate-300 font-mono text-xs">—</span>
+                          }
+                        </td>
+                        <td class="px-4 py-3 text-right font-mono font-bold text-rose-600 whitespace-nowrap text-sm">
+                          -{{ (dep.spentUah || 0).toLocaleString('uk-UA') }} ₴
+                        </td>
+                        <td class="px-4 py-3 text-right font-mono text-slate-700 whitespace-nowrap">
+                          {{ (dep.exchangeRate || ((dep.spentUah || 0) / (dep.amountUsd || 1))).toFixed(2) }} ₴/$
+                        </td>
+                        <td class="px-4 py-3 text-slate-700 whitespace-nowrap">
+                          <span class="px-2 py-0.5 rounded bg-slate-100 text-2xs font-medium">
+                            {{ dep.paymentMethod || 'Картка' }}
+                          </span>
+                        </td>
+                        <td class="px-4 py-3 text-slate-500 text-xs truncate max-w-xs" [title]="dep.note || ''">
+                          {{ dep.note || '—' }}
+                        </td>
+                        <td class="px-4 py-3 text-right whitespace-nowrap">
+                          <div class="flex items-center justify-end gap-1">
+                            <button
+                              type="button"
+                              (click)="openEditDepositModal(dep)"
+                              class="p-1.5 text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
+                              title="Редагувати запис поповнення"
+                            >
+                              <mat-icon class="text-base">edit</mat-icon>
+                            </button>
+                            <button
+                              type="button"
+                              (click)="deleteDepositConfirm(dep)"
+                              class="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                              title="Видалити запис"
+                            >
+                              <mat-icon class="text-base">delete</mat-icon>
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              </div>
             }
           </div>
         }
@@ -1325,7 +1502,7 @@ type BalanceCalibTab = 'exact' | 'delta';
   `,
 })
 export class BudgetView {
-  private readonly dataService = inject(IptvData);
+  readonly dataService = inject(IptvData);
   private readonly tgApp = inject(TelegramWebApp);
   readonly Math = Math;
 
