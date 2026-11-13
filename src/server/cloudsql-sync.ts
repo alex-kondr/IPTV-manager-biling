@@ -87,8 +87,8 @@ export function getModeMetadata(mode: DatabaseMode): {
     };
   }
 
-  let host = 'internet-shop-4-alex-kondr.e.aivencloud.com:13316';
-  let database = 'iptv';
+  let host = process.env['EXTERNAL_DATABASE_HOST'] || 'External PostgreSQL';
+  let database = process.env['EXTERNAL_DATABASE_NAME'] || 'postgres';
   const dbUrl = getExternalDatabaseUrl();
   if (dbUrl) {
     try {
@@ -101,7 +101,7 @@ export function getModeMetadata(mode: DatabaseMode): {
   }
   return {
     mode: 'external',
-    provider: 'Зовнішня PostgreSQL (Aiven Cloud)',
+    provider: 'Зовнішня PostgreSQL',
     host,
     database,
     configured: isExternalDbConfigured(),
@@ -156,9 +156,6 @@ CREATE TABLE IF NOT EXISTS clients (
   balance REAL NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'active',
   provider_account_id TEXT,
-  telegram_chat_id TEXT,
-  telegram_username TEXT,
-  viber_id TEXT,
   notes TEXT,
   group_name TEXT,
   group_balance REAL DEFAULT 0,
@@ -220,16 +217,11 @@ CREATE TABLE IF NOT EXISTS provider_deposits (
 
 CREATE TABLE IF NOT EXISTS settings (
   id TEXT PRIMARY KEY,
-  telegram_bot_token TEXT NOT NULL DEFAULT '',
-  telegram_bot_username TEXT NOT NULL DEFAULT '',
-  telegram_sender_name TEXT NOT NULL DEFAULT '',
   default_monthly_price REAL NOT NULL DEFAULT 100,
   reminder_days_before INTEGER NOT NULL DEFAULT 7,
   card_requisites TEXT NOT NULL DEFAULT '',
   reminder_message_template TEXT NOT NULL DEFAULT '',
   auto_reminder_enabled BOOLEAN NOT NULL DEFAULT false,
-  viber_auth_token TEXT,
-  viber_sender_name TEXT,
   viber_reminder_message_template TEXT,
   viber_renewal_message_template TEXT,
   utility_tariffs_settings JSONB
@@ -380,7 +372,43 @@ ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS ooek_cabinet_status TEXT;
 ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS ooek_cabinet_last_sync TEXT;
 ALTER TABLE utility_accounts ADD COLUMN IF NOT EXISTS devices JSONB DEFAULT '[]'::jsonb;
 
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS period_month TEXT;
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS reading_t1 REAL;
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS reading_t2 REAL;
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS consumption_t1 REAL;
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS consumption_t2 REAL;
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS rate_t1 REAL;
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS rate_t2 REAL;
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS total_cost REAL DEFAULT 0;
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS season TEXT;
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS is_paid BOOLEAN DEFAULT false;
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS paid_date TEXT;
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS paid_amount REAL;
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS note TEXT;
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS is_control_only BOOLEAN DEFAULT false;
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS reading_purpose TEXT DEFAULT 'billing';
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS days_since_last_reading REAL;
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS daily_avg_consumption REAL;
 ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS owner_user_id TEXT;
+ALTER TABLE utility_readings ADD COLUMN IF NOT EXISTS created_at TEXT;
+
+ALTER TABLE custom_ledger_entries ADD COLUMN IF NOT EXISTS subtitle TEXT;
+ALTER TABLE custom_ledger_entries ADD COLUMN IF NOT EXISTS note TEXT;
+ALTER TABLE custom_ledger_entries ADD COLUMN IF NOT EXISTS payment_method TEXT;
+ALTER TABLE custom_ledger_entries ADD COLUMN IF NOT EXISTS client_id TEXT;
+ALTER TABLE custom_ledger_entries ADD COLUMN IF NOT EXISTS client_name TEXT;
+ALTER TABLE custom_ledger_entries ADD COLUMN IF NOT EXISTS account_id TEXT;
+ALTER TABLE custom_ledger_entries ADD COLUMN IF NOT EXISTS account_name TEXT;
+ALTER TABLE custom_ledger_entries ADD COLUMN IF NOT EXISTS balance_before_usd REAL;
+ALTER TABLE custom_ledger_entries ADD COLUMN IF NOT EXISTS balance_after_usd REAL;
+ALTER TABLE custom_ledger_entries ADD COLUMN IF NOT EXISTS created_at TEXT;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS picture TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'admin';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TEXT;
+
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS owner_user_id TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS group_name TEXT;
 ALTER TABLE clients ADD COLUMN IF NOT EXISTS group_balance REAL DEFAULT 0;
@@ -437,12 +465,13 @@ CREATE TABLE IF NOT EXISTS system_settings_config (
 
 type QueryResult<T> = { ok: true; rows: T[] } | { ok: false; error: string };
 
-async function trySelect<T>(queryPromise: Promise<T[]>): Promise<QueryResult<T>> {
+async function trySelect<T>(queryPromise: Promise<T[]>, label?: string): Promise<QueryResult<T>> {
   try {
     const rows = await queryPromise;
     return { ok: true, rows };
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e);
+    console.warn(`[PostgreSQL] trySelect${label ? ` (${label})` : ''} warning:`, err);
     return { ok: false, error: err };
   }
 }
@@ -487,19 +516,19 @@ export async function loadAllFromCloudSql(mode?: DatabaseMode): Promise<CloudSql
       userSettingsRes,
       systemSettingsConfigRes,
     ] = await Promise.all([
-      trySelect(targetDb.select().from(clients)),
-      trySelect(targetDb.select().from(payments)),
-      trySelect(targetDb.select().from(providerAccounts)),
-      trySelect(targetDb.select().from(providerDeposits)),
-      trySelect(targetDb.select().from(settings)),
-      trySelect(targetDb.select().from(utilityAccounts)),
-      trySelect(targetDb.select().from(utilityReadings)),
-      trySelect(targetDb.select().from(customLedgerEntries)),
-      trySelect(targetDb.select().from(providerBalanceAdjustments)),
-      trySelect(targetDb.select().from(accountDeductionOverrides)),
-      trySelect(targetDb.select().from(users)),
-      trySelect(targetDb.select().from(userSettings)),
-      trySelect(targetDb.select().from(systemSettingsConfig)),
+      trySelect(targetDb.select().from(clients), 'clients'),
+      trySelect(targetDb.select().from(payments), 'payments'),
+      trySelect(targetDb.select().from(providerAccounts), 'provider_accounts'),
+      trySelect(targetDb.select().from(providerDeposits), 'provider_deposits'),
+      trySelect(targetDb.select().from(settings), 'settings'),
+      trySelect(targetDb.select().from(utilityAccounts), 'utility_accounts'),
+      trySelect(targetDb.select().from(utilityReadings), 'utility_readings'),
+      trySelect(targetDb.select().from(customLedgerEntries), 'custom_ledger_entries'),
+      trySelect(targetDb.select().from(providerBalanceAdjustments), 'provider_balance_adjustments'),
+      trySelect(targetDb.select().from(accountDeductionOverrides), 'account_deduction_overrides'),
+      trySelect(targetDb.select().from(users), 'users'),
+      trySelect(targetDb.select().from(userSettings), 'user_settings'),
+      trySelect(targetDb.select().from(systemSettingsConfig), 'system_settings_config'),
     ]);
 
     if (!mode || mode === getActiveDbMode()) {
@@ -524,85 +553,13 @@ export async function loadAllFromCloudSql(mode?: DatabaseMode): Promise<CloudSql
       }
     }
 
-    const mappedUtilityAccounts = (utilityAccountsRes.ok ? utilityAccountsRes.rows : []).map((row) => {
-      const rawAssigned = Array.isArray(row.assignedUserIds) ? row.assignedUserIds : [];
-      const hiddenUtilityTabs = rawAssigned
-        .filter((x) => typeof x === 'string' && x.startsWith('__hidden_tab__:'))
-        .map((x) => x.slice('__hidden_tab__:'.length));
-      const cleanAssignedUserIds = rawAssigned.filter(
-        (x) => typeof x === 'string' && !x.startsWith('__hidden_tab__:')
-      );
-      return {
-        ...row,
-        assignedUserIds: cleanAssignedUserIds,
-        hiddenUtilityTabs,
-      } as Record<string, unknown>;
-    });
+    const mappedUtilityAccounts = (utilityAccountsRes.ok ? utilityAccountsRes.rows : []).map((row) =>
+      mapUtilityAccountRow(row as unknown as Record<string, unknown>)
+    );
 
-    const mappedUsers = (usersRes.ok ? usersRes.rows : []).map((row) => {
-      const rawTabs = Array.isArray(row.allowedTabs) ? row.allowedTabs : null;
-      const allowedSettings = rawTabs
-        ? rawTabs
-            .filter((x) => typeof x === 'string' && x.startsWith('settings:'))
-            .map((x) => x.slice('settings:'.length))
-        : [];
-      const userVariant = rawTabs
-        ? rawTabs
-            .filter((x) => typeof x === 'string' && x.startsWith('variant:'))
-            .map((x) => x.slice('variant:'.length))[0]
-        : null;
-      const memberTags = rawTabs
-        ? rawTabs
-            .filter((x) => typeof x === 'string' && x.startsWith('tag:'))
-            .map((x) => x.slice('tag:'.length))
-        : [];
-      const accessTag = rawTabs
-        ? rawTabs
-            .filter((x) => typeof x === 'string' && x.startsWith('access:'))
-            .map((x) => x.slice('access:'.length))[0]
-        : null;
-      const invitedByUserId = rawTabs
-        ? rawTabs
-            .filter((x) => typeof x === 'string' && x.startsWith('invitedBy:'))
-            .map((x) => x.slice('invitedBy:'.length))[0]
-        : undefined;
-      const invitedByUserName = rawTabs
-        ? rawTabs
-            .filter((x) => typeof x === 'string' && x.startsWith('invitedByName:'))
-            .map((x) => x.slice('invitedByName:'.length))[0]
-        : undefined;
-      const cleanTabs = rawTabs
-        ? rawTabs.filter(
-            (x) =>
-              typeof x === 'string' &&
-              !x.startsWith('settings:') &&
-              !x.startsWith('variant:') &&
-              !x.startsWith('tag:') &&
-              !x.startsWith('access:') &&
-              !x.startsWith('invitedBy:') &&
-              !x.startsWith('invitedByName:')
-          )
-        : null;
-      const tariffs = (settingsObj?.['utilityTariffsSettings'] as Record<string, unknown>) || {};
-      const userVariantsMap = (tariffs['userOutageVariants'] as Record<string, string>) || {};
-      const resolvedVariant = userVariant || userVariantsMap[String(row.id)] || 'v10_minimal_pills';
-      const resolvedAccess =
-        accessTag === 'view_only' || accessTag === 'full'
-          ? accessTag
-          : row.canManageOwnData === false
-            ? 'view_only'
-            : 'full';
-      return {
-        ...row,
-        allowedTabs: cleanTabs,
-        allowedSettings,
-        outageScheduleViewVariant: resolvedVariant,
-        memberTags,
-        householdAccessLevel: resolvedAccess,
-        ...(invitedByUserId ? { invitedByUserId } : {}),
-        ...(invitedByUserName ? { invitedByUserName } : {}),
-      } as Record<string, unknown>;
-    });
+    const mappedUsers = (usersRes.ok ? usersRes.rows : []).map((row) =>
+      mapUserRow(row as unknown as Record<string, unknown>, settingsObj)
+    );
 
     let systemConfigObj: Record<string, unknown> | null = null;
     if (systemSettingsConfigRes.ok && systemSettingsConfigRes.rows.length > 0) {
@@ -638,6 +595,150 @@ export async function loadAllFromCloudSql(mode?: DatabaseMode): Promise<CloudSql
   }
 }
 
+function mapUtilityAccountRow(row: Record<string, unknown>): Record<string, unknown> {
+  const rawAssigned = Array.isArray(row['assignedUserIds']) ? row['assignedUserIds'] : [];
+  const hiddenUtilityTabs = rawAssigned
+    .filter((x) => typeof x === 'string' && x.startsWith('__hidden_tab__:'))
+    .map((x) => x.slice('__hidden_tab__:'.length));
+  const cleanAssignedUserIds = rawAssigned.filter(
+    (x) => typeof x === 'string' && !x.startsWith('__hidden_tab__:')
+  );
+  return {
+    ...row,
+    assignedUserIds: cleanAssignedUserIds,
+    hiddenUtilityTabs,
+  };
+}
+
+function mapUserRow(
+  row: Record<string, unknown>,
+  settingsObj?: Record<string, unknown> | null
+): Record<string, unknown> {
+  const rawTabs = Array.isArray(row['allowedTabs']) ? row['allowedTabs'] : null;
+  const allowedSettings = rawTabs
+    ? rawTabs
+        .filter((x) => typeof x === 'string' && x.startsWith('settings:'))
+        .map((x) => x.slice('settings:'.length))
+    : [];
+  const userVariant = rawTabs
+    ? rawTabs
+        .filter((x) => typeof x === 'string' && x.startsWith('variant:'))
+        .map((x) => x.slice('variant:'.length))[0]
+    : null;
+  const memberTags = rawTabs
+    ? rawTabs
+        .filter((x) => typeof x === 'string' && x.startsWith('tag:'))
+        .map((x) => x.slice('tag:'.length))
+    : [];
+  const accessTag = rawTabs
+    ? rawTabs
+        .filter((x) => typeof x === 'string' && x.startsWith('access:'))
+        .map((x) => x.slice('access:'.length))[0]
+    : null;
+  const invitedByUserId = rawTabs
+    ? rawTabs
+        .filter((x) => typeof x === 'string' && x.startsWith('invitedBy:'))
+        .map((x) => x.slice('invitedBy:'.length))[0]
+    : undefined;
+  const invitedByUserName = rawTabs
+    ? rawTabs
+        .filter((x) => typeof x === 'string' && x.startsWith('invitedByName:'))
+        .map((x) => x.slice('invitedByName:'.length))[0]
+    : undefined;
+  const cleanTabs = rawTabs
+    ? rawTabs.filter(
+        (x) =>
+          typeof x === 'string' &&
+          !x.startsWith('settings:') &&
+          !x.startsWith('variant:') &&
+          !x.startsWith('tag:') &&
+          !x.startsWith('access:') &&
+          !x.startsWith('invitedBy:') &&
+          !x.startsWith('invitedByName:')
+      )
+    : null;
+  const tariffs = (settingsObj?.['utilityTariffsSettings'] as Record<string, unknown>) || {};
+  const userVariantsMap = (tariffs['userOutageVariants'] as Record<string, string>) || {};
+  const resolvedVariant = userVariant || userVariantsMap[String(row['id'])] || 'v10_minimal_pills';
+  const resolvedAccess =
+    accessTag === 'view_only' || accessTag === 'full'
+      ? accessTag
+      : row['canManageOwnData'] === false
+        ? 'view_only'
+        : 'full';
+  return {
+    ...row,
+    allowedTabs: cleanTabs,
+    allowedSettings,
+    outageScheduleViewVariant: resolvedVariant,
+    memberTags,
+    householdAccessLevel: resolvedAccess,
+    ...(invitedByUserId ? { invitedByUserId } : {}),
+    ...(invitedByUserName ? { invitedByUserName } : {}),
+  };
+}
+
+export async function loadUsersOnlyFromCloudSql(
+  mode?: DatabaseMode,
+  settingsObj?: Record<string, unknown> | null
+): Promise<Record<string, unknown>[] | null> {
+  const targetMode = mode || getActiveDbMode();
+  if (!isCloudSqlAvailable(targetMode)) return null;
+  try {
+    const targetDb = getDbForMode(targetMode);
+    const [usersRes, settingsRes] = await Promise.all([
+      trySelect(targetDb.select().from(users), 'users_only'),
+      settingsObj
+        ? Promise.resolve(null)
+        : trySelect(targetDb.select().from(settings), 'users_only_settings'),
+    ]);
+    if (!usersRes.ok) return null;
+    let resolvedSettings = settingsObj || null;
+    if (!resolvedSettings && settingsRes && settingsRes.ok && settingsRes.rows.length > 0) {
+      const validRows = settingsRes.rows.filter((s) => s.id !== '__db_mode__');
+      const globalDoc = validRows.find((s) => s.id === 'global') || validRows[0];
+      if (globalDoc) {
+        const rest = { ...globalDoc };
+        delete (rest as { id?: string }).id;
+        resolvedSettings = rest as Record<string, unknown>;
+      }
+    }
+    return usersRes.rows.map((row) =>
+      mapUserRow(row as unknown as Record<string, unknown>, resolvedSettings)
+    );
+  } catch (err) {
+    console.warn('[PostgreSQL] loadUsersOnly error:', err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
+
+export async function loadUtilityOnlyFromCloudSql(
+  mode?: DatabaseMode
+): Promise<{
+  utilityAccounts: Record<string, unknown>[];
+  utilityReadings: Record<string, unknown>[];
+} | null> {
+  const targetMode = mode || getActiveDbMode();
+  if (!isCloudSqlAvailable(targetMode)) return null;
+  try {
+    const targetDb = getDbForMode(targetMode);
+    const [accountsRes, readingsRes] = await Promise.all([
+      trySelect(targetDb.select().from(utilityAccounts), 'utility_accounts_only'),
+      trySelect(targetDb.select().from(utilityReadings), 'utility_readings_only'),
+    ]);
+    if (!accountsRes.ok && !readingsRes.ok) return null;
+    return {
+      utilityAccounts: (accountsRes.ok ? accountsRes.rows : []).map((row) =>
+        mapUtilityAccountRow(row as unknown as Record<string, unknown>)
+      ),
+      utilityReadings: (readingsRes.ok ? readingsRes.rows : []) as Record<string, unknown>[],
+    };
+  } catch (err) {
+    console.warn('[PostgreSQL] loadUtilityOnly error:', err instanceof Error ? err.message : String(err));
+    return null;
+  }
+}
+
 export async function saveClientToCloudSql(client: Record<string, unknown>, mode?: DatabaseMode): Promise<boolean> {
   const targetMode = mode || getActiveDbMode();
   if (targetMode === 'sqlite_local') return true;
@@ -658,9 +759,6 @@ export async function saveClientToCloudSql(client: Record<string, unknown>, mode
       balance: Number(client['balance']) || 0,
       status: String(client['status'] || 'active'),
       providerAccountId: client['providerAccountId'] ? String(client['providerAccountId']) : null,
-      telegramChatId: client['telegramChatId'] ? String(client['telegramChatId']) : null,
-      telegramUsername: client['telegramUsername'] ? String(client['telegramUsername']) : null,
-      viberId: client['viberId'] ? String(client['viberId']) : null,
       notes: client['notes'] ? String(client['notes']) : null,
       groupName: client['groupName'] ? String(client['groupName']) : null,
       groupBalance: client['groupBalance'] != null ? Number(client['groupBalance']) : 0,
@@ -1253,16 +1351,11 @@ export async function saveSettingsToCloudSql(settingsObj: Record<string, unknown
     const targetDb = getDbForMode(targetMode);
     const data = {
       id: 'global',
-      telegramBotToken: String(settingsObj['telegramBotToken'] || ''),
-      telegramBotUsername: String(settingsObj['telegramBotUsername'] || ''),
-      telegramSenderName: String(settingsObj['telegramSenderName'] || ''),
       defaultMonthlyPrice: Number(settingsObj['defaultMonthlyPrice']) || 100,
       reminderDaysBefore: Number(settingsObj['reminderDaysBefore']) || 7,
       cardRequisites: String(settingsObj['cardRequisites'] || ''),
       reminderMessageTemplate: String(settingsObj['reminderMessageTemplate'] || ''),
       autoReminderEnabled: Boolean(settingsObj['autoReminderEnabled']),
-      viberAuthToken: settingsObj['viberAuthToken'] ? String(settingsObj['viberAuthToken']) : null,
-      viberSenderName: settingsObj['viberSenderName'] ? String(settingsObj['viberSenderName']) : null,
       viberReminderMessageTemplate: settingsObj['viberReminderMessageTemplate'] ? String(settingsObj['viberReminderMessageTemplate']) : null,
       viberRenewalMessageTemplate: settingsObj['viberRenewalMessageTemplate'] ? String(settingsObj['viberRenewalMessageTemplate']) : null,
       utilityTariffsSettings: settingsObj['utilityTariffsSettings'] || null,
@@ -1511,16 +1604,11 @@ export async function savePersistedDbMode(mode: DatabaseMode): Promise<void> {
     await ensureDatabaseSchema(mode);
     const modeRow = {
       id: '__db_mode__',
-      telegramBotToken: '',
-      telegramBotUsername: '',
-      telegramSenderName: mode,
       defaultMonthlyPrice: 100,
       reminderDaysBefore: 7,
       cardRequisites: mode,
       reminderMessageTemplate: '',
       autoReminderEnabled: false,
-      viberAuthToken: null,
-      viberSenderName: null,
       viberReminderMessageTemplate: null,
       viberRenewalMessageTemplate: null,
       utilityTariffsSettings: null,

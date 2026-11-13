@@ -32,7 +32,6 @@ export type SettingsSectionId =
   | 'outage_sync_interval'
   | 'billing'
   | 'viber'
-  | 'telegram'
   | 'database'
   | 'backup';
 
@@ -118,15 +117,6 @@ export const ALL_SETTINGS_SECTIONS: SettingsSectionMeta[] = [
     subtitle: 'Тексти нагадувань та підтверджень оплати',
     icon: 'chat',
     defaultScope: 'system',
-    dbTable: 'settings',
-  },
-  {
-    id: 'telegram',
-    label: 'Telegram Bot та сповіщення',
-    subtitle: 'Токен бота, юзернейм та параметри відправки',
-    icon: 'send',
-    defaultScope: 'system',
-    isSystem: true,
     dbTable: 'settings',
   },
   {
@@ -615,9 +605,6 @@ export interface Client {
   balance: number; // leftover balance in UAH
   status: ClientStatus;
   providerAccountId?: string; // Linked provider account ID (max 2 users per account)
-  telegramChatId?: string; // Telegram Chat ID for automated bot messages
-  telegramUsername?: string; // Telegram @username
-  viberId?: string; // Legacy field if present
   notes?: string;
   groupName?: string; // Назва групи (якщо один клієнт має декілька підписок)
   groupBalance?: number; // Залишок гривень на балансі даної групи (₴)
@@ -670,11 +657,6 @@ export interface BudgetSummary {
 }
 
 export interface AppSettings {
-  telegramBotToken: string;
-  telegramBotUsername: string;
-  telegramSenderName: string;
-  viberAuthToken?: string;
-  viberSenderName?: string;
   defaultMonthlyPrice: number;
   reminderDaysBefore: number; // default 7
   cardRequisites: string;

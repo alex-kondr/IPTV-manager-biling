@@ -5,6 +5,7 @@ import {
   inject,
   signal,
 } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
 import { IptvData } from '../../services/iptv-data';
@@ -730,13 +731,16 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin' | 'inactive';
       <!-- MODAL: FULL USER SETTINGS (Role, Tabs, Settings, Bound Houses + Per-Tab Visibility, Individual Tariffs, IPTV Clients) -->
       @if (editingUserForPermissions(); as targetUser) {
         <div
-          class="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-xs"
+          class="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-900/60 backdrop-blur-xs"
           (click)="closePermissionsModal()"
         >
           <div
-            class="bg-white rounded-3xl p-5 sm:p-7 max-w-3xl w-full shadow-2xl border border-slate-200 max-h-[92vh] flex flex-col"
+            class="bg-white rounded-t-3xl sm:rounded-3xl p-5 sm:p-7 max-w-3xl w-full shadow-2xl border border-slate-200 max-h-[92dvh] flex flex-col pb-safe"
             (click)="$event.stopPropagation()"
           >
+            <div class="sm:hidden flex justify-center -mt-2 mb-2 shrink-0">
+              <span class="w-10 h-1 rounded-full bg-slate-300"></span>
+            </div>
             <!-- Header -->
             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100 shrink-0">
               <div class="flex items-center gap-3 min-w-0">
@@ -1260,6 +1264,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin' | 'inactive';
                         <label class="block text-3xs font-semibold text-slate-500">Однозонний (грн/кВт·год)</label>
                         <input
                           type="number"
+                          inputmode="decimal"
                           step="0.01"
                           [value]="modalElecSingle()"
                           (input)="modalElecSingle.set(+$any($event.target).value)"
@@ -1271,6 +1276,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin' | 'inactive';
                           <label class="block text-3xs font-semibold text-slate-500">День (грн)</label>
                           <input
                             type="number"
+                            inputmode="decimal"
                             step="0.01"
                             [value]="modalElecDay()"
                             (input)="modalElecDay.set(+$any($event.target).value)"
@@ -1281,6 +1287,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin' | 'inactive';
                           <label class="block text-3xs font-semibold text-slate-500">Ніч (грн)</label>
                           <input
                             type="number"
+                            inputmode="decimal"
                             step="0.01"
                             [value]="modalElecNight()"
                             (input)="modalElecNight.set(+$any($event.target).value)"
@@ -1302,6 +1309,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin' | 'inactive';
                         <label class="block text-3xs font-semibold text-slate-500">Водопостачання (грн/м³)</label>
                         <input
                           type="number"
+                          inputmode="decimal"
                           step="0.01"
                           [value]="modalWaterPerM3()"
                           (input)="modalWaterPerM3.set(+$any($event.target).value)"
@@ -1312,6 +1320,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin' | 'inactive';
                         <label class="block text-3xs font-semibold text-slate-500">Абонплата (грн/міс)</label>
                         <input
                           type="number"
+                          inputmode="decimal"
                           step="0.01"
                           [value]="modalWaterSubFee()"
                           (input)="modalWaterSubFee.set(+$any($event.target).value)"
@@ -1332,6 +1341,7 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin' | 'inactive';
                         <label class="block text-3xs font-semibold text-slate-500">За 1 мешканця (грн/міс)</label>
                         <input
                           type="number"
+                          inputmode="decimal"
                           step="0.01"
                           [value]="modalWastePerPerson()"
                           (input)="modalWastePerPerson.set(+$any($event.target).value)"
@@ -1425,8 +1435,11 @@ type UserFilterRole = 'all' | 'new' | 'user' | 'admin' | 'inactive';
 
       <!-- ADD USER MODAL -->
       @if (isAddModalOpen()) {
-        <div class="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-          <div class="bg-white rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl border border-slate-200">
+        <div class="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div class="bg-white rounded-t-3xl sm:rounded-3xl p-6 sm:p-8 max-w-md w-full shadow-2xl border border-slate-200 max-h-[92dvh] overflow-y-auto pb-safe">
+            <div class="sm:hidden flex justify-center -mt-3 mb-3">
+              <span class="w-10 h-1 rounded-full bg-slate-300"></span>
+            </div>
             <div class="flex items-center justify-between mb-5">
               <div class="flex items-center gap-2.5">
                 <div class="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
@@ -1527,7 +1540,15 @@ export class UsersView {
   }
 
   async deleteUserFromModal(user: AppUser): Promise<void> {
-    if (confirm(`Ви впевнені, що бажаєте видалити користувача ${user.email}?`)) {
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Видалити користувача?',
+      message: `Ви впевнені, що бажаєте видалити користувача ${user.email}?`,
+      confirmText: 'Видалити',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'person_remove',
+    });
+    if (ok) {
       this.closePermissionsModal();
       await this.dataService.deleteUser(user.id);
     }
@@ -1548,6 +1569,7 @@ export class UsersView {
 
   readonly selectedRoleFilter = signal<UserFilterRole>('all');
   readonly searchControl = new FormControl('');
+  readonly searchQuery = toSignal(this.searchControl.valueChanges, { initialValue: '' });
   readonly isAddModalOpen = signal<boolean>(false);
 
   // Invite Link Creator state
@@ -1600,7 +1622,7 @@ export class UsersView {
   readonly filteredUsers = computed(() => {
     const list = this.users();
     const filter = this.selectedRoleFilter();
-    const query = (this.searchControl.value || '').trim().toLowerCase();
+    const query = (this.searchQuery() || '').trim().toLowerCase();
 
     return list.filter((user) => {
       if (filter === 'inactive') {
@@ -1618,7 +1640,7 @@ export class UsersView {
   });
 
   constructor() {
-    this.dataService.fetchAdminUtilityAccounts();
+    void this.dataService.fetchUsers();
     void this.dataService.fetchHouseholdInvites();
   }
 

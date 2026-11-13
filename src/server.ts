@@ -7,12 +7,15 @@ import {
 import express from 'express';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { GoogleGenAI, Type } from '@google/genai';
 import * as webpush from 'web-push';
 import { FIREBASE_APPLET_CONFIG } from './app/firebase-config';
-import { verifyFirebaseTokenSafe } from './server/firebase-admin';
+import { verifyFirebaseTokenSafe, verifyGoogleAccessTokenSafe } from './server/firebase-admin';
 import {
   loadAllFromCloudSql,
+  loadUsersOnlyFromCloudSql,
+  loadUtilityOnlyFromCloudSql,
   saveClientToCloudSql,
   deleteClientFromCloudSql,
   savePaymentToCloudSql,
@@ -58,6 +61,15 @@ app.use(express.json({ limit: '15mb' }));
 app.use('/src/assets', express.static(resolve(process.cwd(), 'src/assets')));
 app.use('/assets', express.static(resolve(process.cwd(), 'src/assets')));
 
+// Security response headers
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
+  next();
+});
+
 // Ensure Angular SSR never fails with 400 Bad Request on proxied Cloud Run hosts
 app.use((req, _res, next) => {
   delete req.headers['x-forwarded-host'];
@@ -67,6 +79,92 @@ app.use((req, _res, next) => {
 app.get(['/_ah/health', '/healthz'], (_req, res) => {
   res.status(200).send('OK');
 });
+
+const SESSION_HMAC_SECRET = process.env['SESSION_SECRET']?.trim() || randomBytes(32).toString('hex');
+const ADMIN_EMAILS_SET = new Set(
+  (process.env['ADMIN_EMAILS'] || '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter((e) => e.includes('@'))
+);
+
+function getCabinetEncryptionKey(): Buffer {
+  const raw = process.env['CABINET_ENCRYPTION_KEY']?.trim() || SESSION_HMAC_SECRET;
+  return createHash('sha256').update(raw, 'utf8').digest();
+}
+
+function encryptStoredPassword(plainText: string): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', getCabinetEncryptionKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(plainText, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return `enc2:${iv.toString('base64url')}:${authTag.toString('base64url')}:${encrypted.toString('base64url')}`;
+}
+
+function sanitizeUtilityAccountForClient(acc: Record<string, unknown>): Record<string, unknown> {
+  const copy = { ...acc };
+  const hasDtek = Boolean(copy['dtekPasswordEnc'] || copy['hasDtekPassword']);
+  const hasOoek = Boolean(copy['ooekPasswordEnc'] || copy['hasOoekPassword']);
+  delete copy['dtekPasswordEnc'];
+  delete copy['ooekPasswordEnc'];
+  copy['hasDtekPassword'] = hasDtek;
+  copy['hasOoekPassword'] = hasOoek;
+  return copy;
+}
+
+function sanitizeSettingsForClient(s: Record<string, unknown>): Record<string, unknown> {
+  const copy = { ...s };
+  delete copy['telegramBotToken'];
+  delete copy['telegramBotUsername'];
+  delete copy['telegramSenderName'];
+  delete copy['viberAuthToken'];
+  delete copy['viberSenderName'];
+  return copy;
+}
+
+function signSessionToken(userId: string, normEmail: string): string {
+  const emailB64 = Buffer.from(normEmail, 'utf8').toString('base64url');
+  const payload = `${userId}__${emailB64}`;
+  const sig = createHmac('sha256', SESSION_HMAC_SECRET).update(payload).digest('base64url');
+  return `gauth3_${payload}__${sig}`;
+}
+
+function verifySignedSessionToken(rawToken: string): { userId: string; email: string } | null {
+  if (!rawToken) return null;
+  const parts = rawToken.split('__');
+  if (parts.length !== 3) return null;
+  const [userId, emailB64, sigB64] = parts;
+  if (!userId || !emailB64 || !sigB64) return null;
+  const expectedSig = createHmac('sha256', SESSION_HMAC_SECRET)
+    .update(`${userId}__${emailB64}`)
+    .digest('base64url');
+  try {
+    const a = Buffer.from(sigB64, 'utf8');
+    const b = Buffer.from(expectedSig, 'utf8');
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      return null;
+    }
+    const email = Buffer.from(emailB64, 'base64url').toString('utf8').trim().toLowerCase();
+    return email.includes('@') ? { userId, email } : null;
+  } catch {
+    return null;
+  }
+}
+
+const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
+function checkRateLimit(bucketKey: string, maxRequests: number, windowMs: number): boolean {
+  const now = Date.now();
+  const entry = rateLimitStore.get(bucketKey);
+  if (!entry || entry.resetAt <= now) {
+    rateLimitStore.set(bucketKey, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  if (entry.count >= maxRequests) {
+    return false;
+  }
+  entry.count += 1;
+  return true;
+}
 
 interface AppState {
   version: number;
@@ -96,7 +194,6 @@ const DEFAULT_SCOPES_CONFIG: Record<string, 'user' | 'system'> = {
   outage_sync_interval: 'system',
   billing: 'system',
   viber: 'system',
-  telegram: 'system',
   database: 'system',
   backup: 'system',
 };
@@ -143,10 +240,7 @@ function ensureUserDefaultSettings(user: Record<string, unknown>): boolean {
 }
 
 const DEFAULT_SETTINGS_OBJ: Record<string, unknown> = {
-  telegramBotToken: process.env['TELEGRAM_BOT_TOKEN'] || '',
-  telegramBotUsername: process.env['TELEGRAM_BOT_USERNAME'] || 'iptv_billing_bot',
-  telegramSenderName: 'IPTV Підтримка',
-  cardRequisites: '4441 1144 2233 5566 (Монобанк)',
+  cardRequisites: process.env['DEFAULT_CARD_REQUISITES'] || '',
   reminderDaysBefore: 7,
   defaultMonthlyPrice: 100,
   autoReminderEnabled: true,
@@ -165,6 +259,7 @@ const DEFAULT_SETTINGS_OBJ: Record<string, unknown> = {
   },
 };
 
+const initialAdminEmail = Array.from(ADMIN_EMAILS_SET)[0] || '';
 const state: AppState = {
   version: 1,
   lastUpdate: new Date().toISOString(),
@@ -177,21 +272,23 @@ const state: AppState = {
   customLedgerEntries: [],
   providerBalanceAdjustments: [],
   accountDeductionOverrides: [],
-  users: [
-    {
-      id: 'admin_default',
-      email: 'alex.kondr@gmail.com',
-      name: 'Олександр (Адміністратор)',
-      role: 'admin',
-      status: 'active',
-      allowedTabs: ['electricity', 'water_waste', 'clients', 'accounts', 'budget', 'analytics', 'payments', 'users', 'settings'],
-      assignedUtilityAccountIds: [],
-      assignedClientIds: [],
-      canManageOwnData: true,
-      createdAt: new Date().toISOString(),
-      lastLoginAt: new Date().toISOString(),
-    },
-  ],
+  users: initialAdminEmail
+    ? [
+        {
+          id: 'usr_admin_default',
+          email: initialAdminEmail,
+          name: process.env['ADMIN_NAME'] || 'Адміністратор',
+          role: 'admin',
+          status: 'active',
+          allowedTabs: ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'clients', 'accounts', 'budget', 'analytics', 'payments', 'users', 'settings'],
+          assignedUtilityAccountIds: [],
+          assignedClientIds: [],
+          canManageOwnData: true,
+          createdAt: new Date().toISOString(),
+          lastLoginAt: new Date().toISOString(),
+        },
+      ]
+    : [],
   userSettings: {},
   systemSettingsConfig: { ...DEFAULT_SYSTEM_SETTINGS_CONFIG },
   settings: { ...DEFAULT_SETTINGS_OBJ },
@@ -316,70 +413,131 @@ function addMonthsExactIso(dateStr: string, months: number): string {
   return `${y}-${m}-${d}`;
 }
 
+function mergeRecordsById(
+  primary: Record<string, unknown>[],
+  secondary: Record<string, unknown>[],
+  key = 'id'
+): Record<string, unknown>[] {
+  const map = new Map<string, Record<string, unknown>>();
+  for (const item of secondary || []) {
+    const id = String(item[key] || '');
+    if (id) map.set(id, item);
+  }
+  for (const item of primary || []) {
+    const id = String(item[key] || '');
+    if (id) map.set(id, item);
+  }
+  return Array.from(map.values());
+}
+
+function cleanUtilityAccountsHiddenTabs(accounts: Record<string, unknown>[]): void {
+  for (const acc of accounts) {
+    const isWaterWaste = acc['type'] === 'water_waste';
+    const allowedGroupTabs = isWaterWaste
+      ? ['water', 'waste']
+      : ['outage_schedule', 'electricity'];
+    if (Array.isArray(acc['hiddenUtilityTabs'])) {
+      const filtered = (acc['hiddenUtilityTabs'] as string[]).filter((t) =>
+        allowedGroupTabs.includes(t)
+      );
+      if (filtered.length !== (acc['hiddenUtilityTabs'] as string[]).length) {
+        acc['hiddenUtilityTabs'] = filtered;
+        void saveUtilityAccountToCloudSql(acc);
+      }
+    }
+  }
+}
+
+function normalizeUsersAndSettingsInState(): void {
+  const allAdminTabs = [
+    'outage_schedule',
+    'electricity',
+    'water',
+    'waste',
+    'water_waste',
+    'clients',
+    'accounts',
+    'budget',
+    'analytics',
+    'payments',
+    'users',
+    'settings',
+  ];
+  for (const u of state.users) {
+    const email = String(u['email'] || '').toLowerCase();
+    if (u['id'] === 'usr_admin_default' || (ADMIN_EMAILS_SET.size > 0 && ADMIN_EMAILS_SET.has(email))) {
+      u['role'] = 'admin';
+      const curTabs = Array.isArray(u['allowedTabs']) ? (u['allowedTabs'] as string[]) : [];
+      const mergedAdminTabs = Array.from(new Set([...allAdminTabs, ...curTabs]));
+      if (curTabs.length < allAdminTabs.length) {
+        u['allowedTabs'] = mergedAdminTabs;
+        void saveUserToCloudSql(u);
+      }
+    } else if (u['id'] === 'user_test_sandbox' || email === 'test.user@homehub.local') {
+      if (u['role'] === 'new') {
+        u['role'] = 'user';
+      }
+      const curTabs = Array.isArray(u['allowedTabs']) ? (u['allowedTabs'] as string[]) : [];
+      if (curTabs.length <= 1 && curTabs[0] === 'electricity') {
+        u['allowedTabs'] = ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste'];
+      }
+      if (Array.isArray(u['assignedUtilityAccountIds'])) {
+        const validIds = new Set(state.utilityAccounts.map((a) => String(a['id'])));
+        u['assignedUtilityAccountIds'] = (u['assignedUtilityAccountIds'] as string[]).filter(
+          (id) => validIds.has(String(id)) && id !== 'uacc_1793074929176_nj7sf'
+        );
+      }
+      void saveUserToCloudSql(u);
+    } else if (u['role'] === 'new') {
+      u['role'] = 'user';
+      if (!Array.isArray(u['allowedTabs']) || (u['allowedTabs'] as string[]).length === 0) {
+        u['allowedTabs'] = ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste'];
+      }
+      void saveUserToCloudSql(u);
+    }
+
+    if (ensureUserDefaultSettings(u)) {
+      void saveUserToCloudSql(u);
+    }
+    const uid = String(u['id'] || '');
+    if (uid && !state.userSettings[uid]) {
+      const entry = getOrCreateUserSettingsEntry(uid);
+      void saveUserSettingsToCloudSql(entry);
+    }
+  }
+}
+
 async function hydrateFromDatabase(): Promise<boolean> {
   try {
     const activeMode = await loadPersistedDbMode();
     const loaded = await loadAllFromCloudSql(activeMode);
     if (!loaded) return false;
 
-    // Cross-database self-healing: if active DB is missing providerAccounts or payments,
-    // check standby DB (external <-> cloudsql) and merge missing records automatically
+    // Cross-database self-healing: whenever standby DB is configured, merge missing records
     const standbyMode: DatabaseMode = activeMode === 'cloudsql' ? 'external' : 'cloudsql';
     const isStandbyReady =
       standbyMode === 'cloudsql' ? isCloudSqlEnvConfigured() : isExternalDbConfigured();
-    if (
-      isStandbyReady &&
-      ((loaded.providerAccounts?.length || 0) === 0 ||
-        (loaded.payments?.length || 0) === 0 ||
-        (loaded.providerDeposits?.length || 0) === 0)
-    ) {
+    if (isStandbyReady) {
       try {
         const standbyLoaded = await loadAllFromCloudSql(standbyMode);
         if (standbyLoaded) {
-          const mergeById = (
-            primary: Record<string, unknown>[],
-            secondary: Record<string, unknown>[],
-            key = 'id'
-          ): Record<string, unknown>[] => {
-            const map = new Map<string, Record<string, unknown>>();
-            for (const item of secondary || []) {
-              const id = String(item[key] || '');
-              if (id) map.set(id, item);
-            }
-            for (const item of primary || []) {
-              const id = String(item[key] || '');
-              if (id) map.set(id, item);
-            }
-            return Array.from(map.values());
-          };
-
-          if ((standbyLoaded.providerAccounts?.length || 0) > (loaded.providerAccounts?.length || 0)) {
-            loaded.providerAccounts = mergeById(loaded.providerAccounts, standbyLoaded.providerAccounts);
-          }
-          if ((standbyLoaded.providerDeposits?.length || 0) > (loaded.providerDeposits?.length || 0)) {
-            loaded.providerDeposits = mergeById(loaded.providerDeposits, standbyLoaded.providerDeposits);
-          }
-          if ((standbyLoaded.payments?.length || 0) > (loaded.payments?.length || 0)) {
-            loaded.payments = mergeById(loaded.payments, standbyLoaded.payments);
-          }
-          if ((standbyLoaded.clients?.length || 0) > (loaded.clients?.length || 0)) {
-            loaded.clients = mergeById(loaded.clients, standbyLoaded.clients);
-          }
-          if ((standbyLoaded.customLedgerEntries?.length || 0) > (loaded.customLedgerEntries?.length || 0)) {
-            loaded.customLedgerEntries = mergeById(loaded.customLedgerEntries, standbyLoaded.customLedgerEntries);
-          }
-          if ((standbyLoaded.accountDeductionOverrides?.length || 0) > (loaded.accountDeductionOverrides?.length || 0)) {
-            loaded.accountDeductionOverrides = mergeById(
-              loaded.accountDeductionOverrides,
-              standbyLoaded.accountDeductionOverrides
-            );
-          }
-          if ((standbyLoaded.utilityAccounts?.length || 0) > (loaded.utilityAccounts?.length || 0)) {
-            loaded.utilityAccounts = mergeById(loaded.utilityAccounts, standbyLoaded.utilityAccounts);
-          }
-          if ((standbyLoaded.utilityReadings?.length || 0) > (loaded.utilityReadings?.length || 0)) {
-            loaded.utilityReadings = mergeById(loaded.utilityReadings, standbyLoaded.utilityReadings);
-          }
+          loaded.clients = mergeRecordsById(loaded.clients, standbyLoaded.clients);
+          loaded.payments = mergeRecordsById(loaded.payments, standbyLoaded.payments);
+          loaded.providerAccounts = mergeRecordsById(loaded.providerAccounts, standbyLoaded.providerAccounts);
+          loaded.providerDeposits = mergeRecordsById(loaded.providerDeposits, standbyLoaded.providerDeposits);
+          loaded.utilityAccounts = mergeRecordsById(loaded.utilityAccounts, standbyLoaded.utilityAccounts);
+          loaded.utilityReadings = mergeRecordsById(loaded.utilityReadings, standbyLoaded.utilityReadings);
+          loaded.customLedgerEntries = mergeRecordsById(loaded.customLedgerEntries, standbyLoaded.customLedgerEntries);
+          loaded.providerBalanceAdjustments = mergeRecordsById(
+            loaded.providerBalanceAdjustments,
+            standbyLoaded.providerBalanceAdjustments
+          );
+          loaded.accountDeductionOverrides = mergeRecordsById(
+            loaded.accountDeductionOverrides,
+            standbyLoaded.accountDeductionOverrides
+          );
+          loaded.users = mergeRecordsById(loaded.users, standbyLoaded.users);
+          loaded.userSettings = mergeRecordsById(loaded.userSettings, standbyLoaded.userSettings, 'userId');
         }
       } catch (standbyErr) {
         console.warn('[Server] Standby DB check warning:', standbyErr);
@@ -398,74 +556,11 @@ async function hydrateFromDatabase(): Promise<boolean> {
     if (loaded.users && loaded.users.length > 0) {
       state.users = loaded.users;
     }
-    // Clean up cross-group hiddenUtilityTabs so electricity houses only hide within ['outage_schedule', 'electricity']
-    // and water_waste houses only hide within ['water', 'waste']
-    for (const acc of state.utilityAccounts) {
-      const isWaterWaste = acc['type'] === 'water_waste';
-      const allowedGroupTabs = isWaterWaste
-        ? ['water', 'waste']
-        : ['outage_schedule', 'electricity'];
-      if (Array.isArray(acc['hiddenUtilityTabs'])) {
-        const filtered = (acc['hiddenUtilityTabs'] as string[]).filter((t) =>
-          allowedGroupTabs.includes(t)
-        );
-        if (filtered.length !== (acc['hiddenUtilityTabs'] as string[]).length) {
-          acc['hiddenUtilityTabs'] = filtered;
-          void saveUtilityAccountToCloudSql(acc);
-        }
-      }
-    }
-    // Normalize users: ensure admin email is admin with all tabs, and new/test users have default utility tabs
-    const allAdminTabs = [
-      'outage_schedule',
-      'electricity',
-      'water',
-      'waste',
-      'water_waste',
-      'clients',
-      'accounts',
-      'budget',
-      'analytics',
-      'payments',
-      'users',
-      'settings',
-    ];
-    for (const u of state.users) {
-      const email = String(u['email'] || '').toLowerCase();
-      if (u['id'] === 'usr_admin_default' || email === 'djsahbok@gmail.com' || email === 'alex.kondr@gmail.com') {
-        u['role'] = 'admin';
-        const curTabs = Array.isArray(u['allowedTabs']) ? (u['allowedTabs'] as string[]) : [];
-        const mergedAdminTabs = Array.from(new Set([...allAdminTabs, ...curTabs]));
-        if (curTabs.length < allAdminTabs.length) {
-          u['allowedTabs'] = mergedAdminTabs;
-          void saveUserToCloudSql(u);
-        }
-      } else if (u['id'] === 'user_test_sandbox' || email === 'test.user@homehub.local') {
-        if (u['role'] === 'new') {
-          u['role'] = 'user';
-        }
-        const curTabs = Array.isArray(u['allowedTabs']) ? (u['allowedTabs'] as string[]) : [];
-        if (curTabs.length <= 1 && curTabs[0] === 'electricity') {
-          u['allowedTabs'] = ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste'];
-        }
-        // Remove stale non-existent utility account IDs
-        if (Array.isArray(u['assignedUtilityAccountIds'])) {
-          const validIds = new Set(state.utilityAccounts.map((a) => String(a['id'])));
-          u['assignedUtilityAccountIds'] = (u['assignedUtilityAccountIds'] as string[]).filter((id) =>
-            validIds.has(String(id)) && id !== 'uacc_1793074929176_nj7sf'
-          );
-        }
-        void saveUserToCloudSql(u);
-      } else if (u['role'] === 'new') {
-        u['role'] = 'user';
-        if (!Array.isArray(u['allowedTabs']) || (u['allowedTabs'] as string[]).length === 0) {
-          u['allowedTabs'] = ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste'];
-        }
-        void saveUserToCloudSql(u);
-      }
-    }
+
+    cleanUtilityAccountsHiddenTabs(state.utilityAccounts);
+
     if (loaded.settings) {
-      state.settings = { ...DEFAULT_SETTINGS_OBJ, ...loaded.settings };
+      state.settings = sanitizeSettingsForClient({ ...DEFAULT_SETTINGS_OBJ, ...loaded.settings });
     }
     if (loaded.systemSettingsConfig) {
       const loadedScopes =
@@ -500,16 +595,7 @@ async function hydrateFromDatabase(): Promise<boolean> {
       state.userSettings = map;
     }
 
-    for (const u of state.users) {
-      if (ensureUserDefaultSettings(u)) {
-        void saveUserToCloudSql(u);
-      }
-      const uid = String(u['id'] || '');
-      if (uid && !state.userSettings[uid]) {
-        const entry = getOrCreateUserSettingsEntry(uid);
-        void saveUserSettingsToCloudSql(entry);
-      }
-    }
+    normalizeUsersAndSettingsInState();
 
     bumpVersion();
     return true;
@@ -550,26 +636,18 @@ function resolveRequestUser(req: express.Request): {
   realAdmin: Record<string, unknown> | null;
 } {
   const authHeader = req.headers['authorization'] as string | undefined;
-  // Require explicit gauth3_ session token; reject legacy tok_ tokens and bare headers
   const rawToken =
     authHeader && authHeader.startsWith('Bearer gauth3_')
       ? authHeader.slice('Bearer gauth3_'.length).trim()
       : '';
-  const [tokenUserId, tokenEmailB64] = rawToken ? rawToken.split('__') : ['', ''];
-  let tokenEmail = '';
-  if (tokenEmailB64) {
-    try {
-      tokenEmail = Buffer.from(tokenEmailB64, 'base64url').toString('utf8').trim().toLowerCase();
-    } catch {
-      tokenEmail = '';
-    }
-  }
+  const verified = verifySignedSessionToken(rawToken);
+  const tokenUserId = verified?.userId || '';
+  const tokenEmail = verified?.email || '';
   const impersonateId = req.headers['x-impersonate-user-id'] as string | undefined;
 
-  // Ensure primary admin account always retains admin role
   for (const u of state.users) {
     const email = String(u['email'] || '').toLowerCase();
-    if (u['id'] === 'usr_admin_default' || email === 'djsahbok@gmail.com' || email === 'alex.kondr@gmail.com') {
+    if (u['id'] === 'usr_admin_default' || (ADMIN_EMAILS_SET.size > 0 && ADMIN_EMAILS_SET.has(email))) {
       u['role'] = 'admin';
     } else if (u['role'] === 'new') {
       u['role'] = 'user';
@@ -578,39 +656,40 @@ function resolveRequestUser(req: express.Request): {
 
   let matchedUser: Record<string, unknown> | null = null;
 
-  if (tokenUserId) {
-    matchedUser = state.users.find((u) => u['id'] === tokenUserId) || null;
-  }
-  if (!matchedUser && tokenEmail) {
+  if (verified) {
     matchedUser =
-      state.users.find((u) => String(u['email'] || '').toLowerCase() === tokenEmail) || null;
-  }
-  // If user has a valid explicit gauth3_ token with email and server cold-started before user sync, restore their user profile
-  if (!matchedUser && tokenUserId && tokenEmail && tokenEmail.includes('@')) {
-    const isOwnerAdmin =
-      tokenEmail === 'djsahbok@gmail.com' || tokenEmail === 'alex.kondr@gmail.com';
-    matchedUser = {
-      id: isOwnerAdmin ? 'usr_admin_default' : tokenUserId,
-      email: tokenEmail,
-      name: tokenEmail.split('@')[0],
-      picture: '',
-      role: isOwnerAdmin ? 'admin' : 'user',
-      status: 'active',
-      allowedTabs: isOwnerAdmin
-        ? ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'clients', 'accounts', 'budget', 'analytics', 'payments', 'users', 'settings']
-        : ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'settings'],
-      allowedSettings: isOwnerAdmin ? Object.keys(DEFAULT_SCOPES_CONFIG) : getDefaultUserSettingsIds(),
-      assignedUtilityAccountIds: [],
-      assignedClientIds: [],
-      canManageOwnData: true,
-      createdAt: new Date().toISOString(),
-      lastLoginAt: new Date().toISOString(),
-    };
-    state.users.push(matchedUser);
-    void saveUserToCloudSql(matchedUser);
+      state.users.find((u) => u['id'] === tokenUserId) ||
+      state.users.find((u) => String(u['email'] || '').toLowerCase() === tokenEmail) ||
+      null;
+
+    // Restore user profile if DB cold-started and token has valid HMAC signature
+    if (!matchedUser && tokenEmail) {
+      const isOwnerAdmin =
+        ADMIN_EMAILS_SET.has(tokenEmail) ||
+        (ADMIN_EMAILS_SET.size === 0 && !state.users.some((u) => u['role'] === 'admin'));
+      matchedUser = {
+        id: isOwnerAdmin && !state.users.some((u) => u['id'] === 'usr_admin_default') ? 'usr_admin_default' : tokenUserId,
+        email: tokenEmail,
+        name: tokenEmail.split('@')[0],
+        picture: '',
+        role: isOwnerAdmin ? 'admin' : 'user',
+        status: 'active',
+        allowedTabs: isOwnerAdmin
+          ? ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'clients', 'accounts', 'budget', 'analytics', 'payments', 'users', 'settings']
+          : ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'settings'],
+        allowedSettings: isOwnerAdmin ? Object.keys(DEFAULT_SCOPES_CONFIG) : getDefaultUserSettingsIds(),
+        assignedUtilityAccountIds: [],
+        assignedClientIds: [],
+        canManageOwnData: true,
+        createdAt: new Date().toISOString(),
+        lastLoginAt: new Date().toISOString(),
+      };
+      state.users.push(matchedUser);
+      void saveUserToCloudSql(matchedUser);
+    }
   }
 
-  // Impersonation (Test User Sandbox) is only allowed when authenticated as an admin
+  // Impersonation is ONLY allowed when authenticated with a valid HMAC session belonging to an admin
   if (impersonateId && matchedUser && matchedUser['role'] === 'admin') {
     let imp = state.users.find((u) => u['id'] === impersonateId) || null;
     if (!imp && impersonateId === 'user_test_sandbox') {
@@ -776,45 +855,41 @@ app.get('/api/auth/me', (req, res) => {
 });
 
 app.post('/api/auth/google', async (req, res) => {
-  let { email, name, picture, sub } = req.body || {};
-  const { idToken, credential } = req.body || {};
-
-  // 1. Verify Firebase Auth ID Token if provided from signInWithPopup
-  if (idToken && typeof idToken === 'string') {
-    const decoded = await verifyFirebaseTokenSafe(idToken);
-    if (decoded) {
-      email = decoded.email || email;
-      name = decoded.name || name;
-      picture = decoded.picture || picture;
-      sub = decoded.uid || sub;
-    }
-  }
-
-  // 2. Decode Google Identity Services JWT credential if provided
-  if (!email && credential && typeof credential === 'string') {
-    try {
-      const parts = credential.split('.');
-      if (parts.length === 3) {
-        const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf8');
-        const parsed = JSON.parse(payloadJson) as Record<string, unknown>;
-        email = String(parsed['email'] || '');
-        name = String(parsed['name'] || name || '');
-        picture = String(parsed['picture'] || picture || '');
-        sub = String(parsed['sub'] || sub || '');
-      }
-    } catch (e) {
-      console.warn('Failed to decode Google credential JWT:', e);
-    }
-  }
-
-  const normEmail = String(email || '').trim().toLowerCase();
-  if (!normEmail || !normEmail.includes('@')) {
-    res.status(400).json({ success: false, error: 'Не вдалося визначити Google Email. Спробуйте увійти ще раз.' });
+  const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+  if (!checkRateLimit(`auth:${clientIp}`, 25, 15 * 60 * 1000)) {
+    res.status(429).json({ success: false, error: 'Забагато спроб авторизації. Спробуйте через кілька хвилин.' });
     return;
   }
 
+  const { idToken, credential, accessToken } = req.body || {};
+  let verifiedPayload: { email?: string; name?: string; picture?: string; uid?: string } | null = null;
+
+  // 1. Cryptographically verify Firebase Auth ID Token or Google ID Token
+  if (idToken && typeof idToken === 'string') {
+    verifiedPayload = await verifyFirebaseTokenSafe(idToken);
+  } else if (credential && typeof credential === 'string') {
+    verifiedPayload = await verifyFirebaseTokenSafe(credential);
+  } else if (accessToken && typeof accessToken === 'string') {
+    // 2. Cryptographically verify Google OAuth Access Token via Google userinfo endpoint
+    verifiedPayload = await verifyGoogleAccessTokenSafe(accessToken);
+  }
+
+  const normEmail = String(verifiedPayload?.email || '').trim().toLowerCase();
+  if (!verifiedPayload || !normEmail || !normEmail.includes('@')) {
+    res.status(401).json({
+      success: false,
+      error: 'Недійсний або непідтверджений токен Google. Увійдіть повторно.',
+    });
+    return;
+  }
+
+  const name = verifiedPayload.name;
+  const picture = verifiedPayload.picture;
+  const sub = verifiedPayload.uid;
+
   const isOwnerAdmin =
-    normEmail === 'djsahbok@gmail.com' || normEmail === 'alex.kondr@gmail.com';
+    ADMIN_EMAILS_SET.has(normEmail) ||
+    (ADMIN_EMAILS_SET.size === 0 && !state.users.some((u) => u['role'] === 'admin'));
 
   let existing = state.users.find(
     (u) => String(u['email'] || '').toLowerCase() === normEmail
@@ -822,7 +897,7 @@ app.post('/api/auth/google', async (req, res) => {
 
   if (!existing) {
     existing = {
-      id: isOwnerAdmin ? 'usr_admin_default' : 'u_' + Date.now(),
+      id: isOwnerAdmin && !state.users.some((u) => u['id'] === 'usr_admin_default') ? 'usr_admin_default' : 'u_' + Date.now(),
       email: normEmail,
       name: name || normEmail.split('@')[0],
       picture: picture || '',
@@ -842,7 +917,7 @@ app.post('/api/auth/google', async (req, res) => {
     state.users.push(existing);
   } else {
     existing['lastLoginAt'] = new Date().toISOString();
-    if (isOwnerAdmin) {
+    if (ADMIN_EMAILS_SET.has(normEmail)) {
       existing['role'] = 'admin';
       existing['status'] = 'active';
     } else if (existing['role'] === 'new' && existing['status'] !== 'inactive') {
@@ -862,11 +937,11 @@ app.post('/api/auth/google', async (req, res) => {
   bumpVersion();
 
   const appReleaseInfo = getAppReleaseInfoForUser(existing);
-  const emailB64 = Buffer.from(normEmail, 'utf8').toString('base64url');
+  const signedToken = signSessionToken(String(existing['id']), normEmail);
   res.json({
     success: true,
     user: existing,
-    token: `gauth3_${existing['id']}__${emailB64}`,
+    token: signedToken,
     appReleaseInfo,
     message: `Вітаємо, ${existing['name']}!`,
   });
@@ -1007,14 +1082,114 @@ app.post('/api/app-release/dismiss', handleDismissAppRelease);
 app.put('/api/app-release/dismiss', handleDismissAppRelease);
 
 // ============================================================================
-// USERS & PERMISSIONS API
+// GLOBAL AUTHENTICATION & ACCESS CONTROL HELPERS FOR PROTECTED API ROUTES
 // ============================================================================
 
-app.get('/api/users', (_req, res) => {
+const PUBLIC_API_EXACT = new Set([
+  '/sync/version',
+  '/auth/me',
+  '/auth/google',
+  '/auth/logout',
+  '/app-release/status',
+  '/push/changes',
+  '/push/vapid-public-key',
+  '/utility/dtek-streets',
+  '/utility/dtek-shutdowns',
+]);
+
+function isAdminUser(user: Record<string, unknown>, realAdmin: Record<string, unknown> | null): boolean {
+  return user['role'] === 'admin' || Boolean(realAdmin && realAdmin['role'] === 'admin');
+}
+
+function userCanAccessUtilityAccount(
+  user: Record<string, unknown>,
+  realAdmin: Record<string, unknown> | null,
+  acc: Record<string, unknown>
+): boolean {
+  if (isAdminUser(user, realAdmin)) return true;
+  const userIdStr = String(user['id'] || '');
+  if (!userIdStr) return false;
+  const ownerId = String(acc['ownerUserId'] || '');
+  if (ownerId && ownerId === userIdStr) return true;
+  const accAssigned = Array.isArray(acc['assignedUserIds']) ? (acc['assignedUserIds'] as string[]) : [];
+  const userAssigned = Array.isArray(user['assignedUtilityAccountIds'])
+    ? (user['assignedUtilityAccountIds'] as string[])
+    : [];
+  return accAssigned.includes(userIdStr) || userAssigned.includes(String(acc['id'] || ''));
+}
+
+function userCanEditAccountOrData(
+  user: Record<string, unknown>,
+  realAdmin: Record<string, unknown> | null
+): boolean {
+  if (isAdminUser(user, realAdmin)) return true;
+  if (user['status'] === 'inactive' || user['role'] === 'new') return false;
+  if (user['householdAccessLevel'] === 'view_only') return false;
+  return user['canManageOwnData'] !== false;
+}
+
+app.use('/api', (req, res, next) => {
+  if (PUBLIC_API_EXACT.has(req.path)) {
+    next();
+    return;
+  }
+  // Allow unauthenticated invite preview GET (sanitized without owner email)
+  if (req.method === 'GET' && req.path.startsWith('/household/invites/') && req.path.split('/').length === 4) {
+    next();
+    return;
+  }
+  const { authenticated, user } = resolveRequestUser(req);
+  if (!authenticated || user['status'] === 'inactive') {
+    res.status(401).json({ success: false, error: 'Необхідна авторизація в Google акаунті' });
+    return;
+  }
+  const isInviteAccept =
+    req.method === 'POST' && req.path.startsWith('/household/invites/') && req.path.endsWith('/accept');
+  if (user['role'] === 'new' && !isInviteAccept) {
+    res.status(403).json({ success: false, error: 'Акаунт очікує активації адміністратором або запрошенням' });
+    return;
+  }
+  next();
+});
+
+// ============================================================================
+// USERS & PERMISSIONS API (ADMIN ONLY)
+// ============================================================================
+
+app.get('/api/users', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!isAdminUser(user, realAdmin)) {
+    res.status(403).json({ error: 'Тільки адміністратор може переглядати список користувачів' });
+    return;
+  }
+  try {
+    const activeMode = await loadPersistedDbMode();
+    const standbyMode: DatabaseMode = activeMode === 'cloudsql' ? 'external' : 'cloudsql';
+    const isStandbyReady =
+      standbyMode === 'cloudsql' ? isCloudSqlEnvConfigured() : isExternalDbConfigured();
+    const [activeUsers, standbyUsers] = await Promise.all([
+      loadUsersOnlyFromCloudSql(activeMode, state.settings),
+      isStandbyReady ? loadUsersOnlyFromCloudSql(standbyMode, state.settings) : Promise.resolve(null),
+    ]);
+    if (activeUsers !== null || standbyUsers !== null) {
+      let merged = mergeRecordsById(activeUsers || [], standbyUsers || []);
+      // Keep any newly created in-memory users if DB load returned partial set
+      merged = mergeRecordsById(merged, state.users);
+      state.users = merged;
+      normalizeUsersAndSettingsInState();
+    }
+  } catch (err) {
+    console.warn('[Users] Refresh warning:', err instanceof Error ? err.message : String(err));
+  }
   res.json(state.users);
 });
 
 app.post('/api/users', async (req, res) => {
+  const { user: caller, realAdmin } = resolveRequestUser(req);
+  if (!isAdminUser(caller, realAdmin)) {
+    res.status(403).json({ error: 'Тільки адміністратор може додавати користувачів' });
+    return;
+  }
   const { email, name, role } = req.body || {};
   const normEmail = String(email || '').trim().toLowerCase();
   if (!normEmail) {
@@ -1048,6 +1223,11 @@ app.post('/api/users', async (req, res) => {
 });
 
 app.put('/api/users/:id/role', async (req, res) => {
+  const { user: caller, realAdmin } = resolveRequestUser(req);
+  if (!isAdminUser(caller, realAdmin)) {
+    res.status(403).json({ error: 'Тільки адміністратор може змінювати ролі' });
+    return;
+  }
   const { id } = req.params;
   const { role, status } = req.body || {};
   const normId = String(id || '').trim().toLowerCase();
@@ -1077,6 +1257,11 @@ app.put('/api/users/:id/role', async (req, res) => {
 });
 
 app.put('/api/users/:id/status', async (req, res) => {
+  const { user: caller, realAdmin } = resolveRequestUser(req);
+  if (!isAdminUser(caller, realAdmin)) {
+    res.status(403).json({ error: 'Тільки адміністратор може блокувати або активувати користувачів' });
+    return;
+  }
   const { id } = req.params;
   const { status } = req.body || {};
   const normId = String(id || '').trim().toLowerCase();
@@ -1101,6 +1286,11 @@ app.put('/api/users/:id/status', async (req, res) => {
 });
 
 app.put('/api/users/:id/permissions', async (req, res) => {
+  const { user: caller, realAdmin } = resolveRequestUser(req);
+  if (!isAdminUser(caller, realAdmin)) {
+    res.status(403).json({ error: 'Тільки адміністратор може змінювати права доступу' });
+    return;
+  }
   const { id } = req.params;
   const payload = req.body || {};
   const normId = String(id || '').trim().toLowerCase();
@@ -1195,6 +1385,11 @@ app.put('/api/users/:id/permissions', async (req, res) => {
 });
 
 app.delete('/api/users/:id', async (req, res) => {
+  const { user: caller, realAdmin } = resolveRequestUser(req);
+  if (!isAdminUser(caller, realAdmin)) {
+    res.status(403).json({ error: 'Тільки адміністратор може видаляти користувачів' });
+    return;
+  }
   const { id } = req.params;
   state.users = state.users.filter((u) => u['id'] !== id);
   await deleteUserFromCloudSql(id);
@@ -1202,8 +1397,13 @@ app.delete('/api/users/:id', async (req, res) => {
   res.json({ success: true });
 });
 
-app.get('/api/admin/utility-accounts', (_req, res) => {
-  res.json(state.utilityAccounts);
+app.get('/api/admin/utility-accounts', (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!isAdminUser(user, realAdmin)) {
+    res.status(403).json({ error: 'Тільки адміністратор має доступ до списку всіх будинків' });
+    return;
+  }
+  res.json(state.utilityAccounts.map(sanitizeUtilityAccountForClient));
 });
 
 // ============================================================================
@@ -1300,6 +1500,13 @@ app.get('/api/household/invites/:code', (req, res) => {
     res.status(404).json({ error: 'Запрошення не знайдено або термін його дії закінчився' });
     return;
   }
+  const { authenticated } = resolveRequestUser(req);
+  if (!authenticated) {
+    const safeInvite = { ...invite };
+    delete safeInvite['ownerEmail'];
+    res.json({ success: true, invite: safeInvite });
+    return;
+  }
   res.json({ success: true, invite });
 });
 
@@ -1373,7 +1580,7 @@ app.post('/api/household/invites', async (req, res) => {
 });
 
 app.put('/api/household/invites/:code', async (req, res) => {
-  const { authenticated, user } = resolveRequestUser(req);
+  const { authenticated, user, realAdmin } = resolveRequestUser(req);
   if (!authenticated || !user) {
     res.status(401).json({ error: 'Необхідна авторизація' });
     return;
@@ -1385,6 +1592,10 @@ app.put('/api/household/invites/:code', async (req, res) => {
   );
   if (!invite) {
     res.status(404).json({ error: 'Запрошення не знайдено' });
+    return;
+  }
+  if (!isAdminUser(user, realAdmin) && String(invite['ownerUserId'] || '') !== String(user['id'] || '')) {
+    res.status(403).json({ error: 'Ви можете редагувати лише власні запрошення' });
     return;
   }
   const body = req.body || {};
@@ -1490,9 +1701,21 @@ app.post('/api/household/invites/:code/accept', async (req, res) => {
 });
 
 app.delete('/api/household/invites/:id', async (req, res) => {
+  const { authenticated, user, realAdmin } = resolveRequestUser(req);
+  if (!authenticated || !user) {
+    res.status(401).json({ error: 'Необхідна авторизація' });
+    return;
+  }
   const { id } = req.params;
   const sysVals = getSystemValuesMap();
   const invites = getStoredHouseholdInvites();
+  const target = invites.find(
+    (inv) => String(inv['id'] || '') === id || String(inv['code'] || '') === id
+  );
+  if (target && !isAdminUser(user, realAdmin) && String(target['ownerUserId'] || '') !== String(user['id'] || '')) {
+    res.status(403).json({ error: 'Ви можете видаляти лише власні запрошення' });
+    return;
+  }
   sysVals['householdInvites'] = invites.filter(
     (inv) => String(inv['id'] || '') !== id && String(inv['code'] || '') !== id
   );
@@ -1749,7 +1972,12 @@ app.delete('/api/database/custom/:id', async (req, res) => {
   }
 });
 
-app.post('/api/database/sync', async (_req, res) => {
+app.post('/api/database/sync', async (req, res) => {
+  const { user } = resolveRequestUser(req);
+  if (!userHasSettingsPermission(user, 'database')) {
+    res.status(403).json({ success: false, error: 'Доступ до синхронізації бази даних закрито' });
+    return;
+  }
   const ok = await hydrateFromDatabase();
   res.json({
     success: ok,
@@ -1938,9 +2166,13 @@ app.get('/api/clients', (req, res) => {
 });
 
 app.post('/api/clients', async (req, res) => {
-  const { authenticated, user } = resolveRequestUser(req);
+  const { authenticated, user, realAdmin } = resolveRequestUser(req);
   if (!authenticated) {
     res.status(401).json({ error: 'Необхідна авторизація в Google акаунті' });
+    return;
+  }
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
     return;
   }
   const body = req.body || {};
@@ -1985,6 +2217,11 @@ app.post('/api/clients', async (req, res) => {
 });
 
 app.put('/api/clients/:id', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
   const idx = state.clients.findIndex((c) => c['id'] === id);
   if (idx < 0) {
@@ -2004,6 +2241,11 @@ app.put('/api/clients/:id', async (req, res) => {
 });
 
 app.delete('/api/clients/:id', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
   state.clients = state.clients.filter((c) => c['id'] !== id);
   state.payments = state.payments.filter((p) => p['clientId'] !== id);
@@ -2013,6 +2255,11 @@ app.delete('/api/clients/:id', async (req, res) => {
 });
 
 app.post('/api/clients/:id/pay', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
   const { amount, note, startFromToday } = req.body || {};
   const clientIdx = state.clients.findIndex((c) => c['id'] === id);
@@ -2093,6 +2340,11 @@ app.post('/api/clients/:id/pay', async (req, res) => {
 });
 
 app.post('/api/clients/group', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { groupName, previousGroupName, groupBalance, clientIds } = req.body || {};
   const trimmedName = String(groupName || '').trim();
   const bal = Number(groupBalance) || 0;
@@ -2125,7 +2377,12 @@ app.post('/api/clients/group', async (req, res) => {
   });
 });
 
-app.post('/api/clients/auto-group', async (_req, res) => {
+app.post('/api/clients/auto-group', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const buckets = new Map<string, Record<string, unknown>[]>();
   for (const c of state.clients) {
     const cleanPhone = String(c['phone'] || '').replace(/\D/g, '').slice(-9);
@@ -2204,6 +2461,11 @@ app.get('/api/payments', (req, res) => {
 });
 
 app.put('/api/payments/:id', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
   const idx = state.payments.findIndex((p) => p['id'] === id);
   if (idx < 0) {
@@ -2218,6 +2480,11 @@ app.put('/api/payments/:id', async (req, res) => {
 });
 
 app.delete('/api/payments/:id', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
   state.payments = state.payments.filter((p) => p['id'] !== id);
   await deletePaymentFromCloudSql(id);
@@ -2230,40 +2497,49 @@ app.delete('/api/payments/:id', async (req, res) => {
 // ============================================================================
 
 app.get('/api/settings', (_req, res) => {
-  res.set('Cache-Control', 'public, max-age=10, stale-while-revalidate=30');
-  res.json(state.settings);
+  res.set('Cache-Control', 'private, no-store');
+  res.json(sanitizeSettingsForClient(state.settings));
 });
 
 app.post('/api/settings', async (req, res) => {
-  const { user } = resolveRequestUser(req);
-  if (!userHasSettingsPermission(user)) {
-    res.status(403).json({ error: 'Доступ до зміни системних налаштувань закрито адміністратором' });
-    return;
-  }
-  const incoming = req.body || {};
-  state.settings = { ...state.settings, ...incoming };
+  try {
+    const { user } = resolveRequestUser(req);
+    if (!userHasSettingsPermission(user)) {
+      res.status(403).json({ error: 'Доступ до зміни системних налаштувань закрито адміністратором' });
+      return;
+    }
+    const incoming = sanitizeSettingsForClient((req.body || {}) as Record<string, unknown>);
+    state.settings = sanitizeSettingsForClient({ ...state.settings, ...incoming });
 
-  const incomingTariffs = incoming.utilityTariffsSettings as Record<string, unknown> | undefined;
-  const rawSyncMins =
-    incoming.dtekSyncIntervalMinutes ??
-    incomingTariffs?.['dtekSyncIntervalMinutes'];
-  if (rawSyncMins !== undefined && !isNaN(Number(rawSyncMins))) {
-    const clampedMins = Math.min(Math.max(Math.round(Number(rawSyncMins)), 1), 360);
-    state.settings['dtekSyncIntervalMinutes'] = clampedMins;
-    const curTariffs =
-      (state.settings['utilityTariffsSettings'] as Record<string, unknown>) || {};
-    state.settings['utilityTariffsSettings'] = {
-      ...curTariffs,
-      dtekSyncIntervalMinutes: clampedMins,
-    };
-    const sysVals = getSystemValuesMap();
-    sysVals['dtekSyncIntervalMinutes'] = clampedMins;
-    await persistSystemValues();
-  }
+    const incomingTariffs = incoming['utilityTariffsSettings'] as Record<string, unknown> | undefined;
+    const rawSyncMins =
+      incoming['dtekSyncIntervalMinutes'] ??
+      incomingTariffs?.['dtekSyncIntervalMinutes'];
+    if (rawSyncMins !== undefined && !isNaN(Number(rawSyncMins))) {
+      const clampedMins = Math.min(Math.max(Math.round(Number(rawSyncMins)), 1), 360);
+      state.settings['dtekSyncIntervalMinutes'] = clampedMins;
+      const curTariffs =
+        (state.settings['utilityTariffsSettings'] as Record<string, unknown>) || {};
+      state.settings['utilityTariffsSettings'] = {
+        ...curTariffs,
+        dtekSyncIntervalMinutes: clampedMins,
+      };
+      const sysVals = getSystemValuesMap();
+      sysVals['dtekSyncIntervalMinutes'] = clampedMins;
+      await persistSystemValues();
+    }
 
-  await saveSettingsToCloudSql(state.settings);
-  bumpVersion();
-  res.json(state.settings);
+    const dbSaved = await saveSettingsToCloudSql(state.settings);
+    if (!dbSaved && getCloudSqlDbStatus().activeMode !== 'sqlite_local') {
+      res.status(500).json({ error: 'Не вдалося зберегти налаштування у PostgreSQL' });
+      return;
+    }
+    bumpVersion();
+    res.json(sanitizeSettingsForClient(state.settings));
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Помилка збереження налаштувань';
+    res.status(500).json({ error: msg });
+  }
 });
 
 app.get('/api/user-settings', (req, res) => {
@@ -2498,7 +2774,17 @@ app.get('/api/stats', (_req, res) => {
     ensureMonth(mKey);
   }
 
+  const overridesMap = new Map<string, Record<string, unknown>>();
+  for (const ov of state.accountDeductionOverrides) {
+    if (ov && ov['id']) {
+      overridesMap.set(String(ov['id']), ov);
+    }
+  }
+
   for (const p of state.payments) {
+    const pId = String(p['id'] || '');
+    const ov = overridesMap.get(pId);
+    if (ov && ov['isExcluded'] === true) continue;
     const d = String(p['date'] || '');
     const mKey = d.substring(0, 7);
     if (!mKey || mKey.length < 7) continue;
@@ -2517,11 +2803,40 @@ app.get('/api/stats', (_req, res) => {
     item.depositsCount += 1;
   }
 
+  for (const c of state.customLedgerEntries) {
+    const cId = String(c['id'] || '');
+    const ov = overridesMap.get(cId);
+    if (ov && ov['isExcluded'] === true) continue;
+    const d = String(c['date'] || '');
+    const mKey = d.substring(0, 7);
+    if (!mKey || mKey.length < 7) continue;
+    const item = ensureMonth(mKey);
+    const amtUah = Number(c['amountUah']) || 0;
+    const amtUsd = Number(c['amountUsd']) || 0;
+    if (amtUah > 0) {
+      item.totalIncome += amtUah;
+      if (c['category'] === 'client_payment' || c['type'] === 'income') {
+        item.paymentsCount += 1;
+      }
+    } else if (amtUah < 0) {
+      item.totalExpenses += Math.abs(amtUah);
+    }
+    if (amtUsd > 0) {
+      item.usdDeposits += amtUsd;
+      if (c['category'] === 'provider_topup') {
+        item.depositsCount += 1;
+      }
+    } else if (amtUsd < 0) {
+      item.usdExpenses += Math.abs(amtUsd);
+    }
+  }
+
   for (const item of byMonth.values()) {
     item.totalIncome = Math.round(item.totalIncome * 100) / 100;
     item.totalExpenses = Math.round(item.totalExpenses * 100) / 100;
     item.netProfit = Math.round((item.totalIncome - item.totalExpenses) * 100) / 100;
     item.usdDeposits = Math.round(item.usdDeposits * 100) / 100;
+    item.usdExpenses = Math.round(item.usdExpenses * 100) / 100;
   }
 
   const monthlyBreakdown = Array.from(byMonth.values()).sort((a, b) =>
@@ -2807,7 +3122,7 @@ function computeBudgetAndAccountsData() {
     };
   });
 
-  const totalDepositedUsd =
+  const depositsUsdOnly =
     Math.round(
       state.providerDeposits.reduce((s, d) => s + (Number(d['amountUsd']) || 0), 0) * 100
     ) / 100;
@@ -2829,6 +3144,8 @@ function computeBudgetAndAccountsData() {
     return u > 0 ? s + u : s;
   }, 0);
 
+  const totalDepositedUsd =
+    Math.round((depositsUsdOnly + customPositiveUsd) * 100) / 100;
   const totalDeductedUsd =
     Math.round((deductionsSumUsd + customNegativeUsd) * 100) / 100;
   const providerBalanceAdjustmentsSum =
@@ -2840,15 +3157,35 @@ function computeBudgetAndAccountsData() {
     ) / 100;
 
   const calculatedProviderBalanceUsd =
-    Math.round((totalDepositedUsd + customPositiveUsd - totalDeductedUsd) * 100) / 100;
+    Math.round((totalDepositedUsd - totalDeductedUsd) * 100) / 100;
   const providerBalanceUsd =
     Math.round((calculatedProviderBalanceUsd + providerBalanceAdjustmentsSum) * 100) / 100;
 
+  const paymentsIncomeUah = paymentItems.reduce(
+    (s, p) => s + (Number(p['amountUah']) || 0),
+    0
+  );
+  const customPositiveUah = customItems.reduce((s, item) => {
+    const uah = Number(item['amountUah']) || 0;
+    return uah > 0 ? s + uah : s;
+  }, 0);
+  const deductionPositiveUah = deductionItems.reduce((s, item) => {
+    const uah = Number(item['amountUah']) || 0;
+    return uah > 0 ? s + uah : s;
+  }, 0);
+  const customNegativeUahAbs = customItems.reduce((s, item) => {
+    const uah = Number(item['amountUah']) || 0;
+    return uah < 0 ? s + Math.abs(uah) : s;
+  }, 0);
+  const deductionNegativeUahAbs = deductionItems.reduce((s, item) => {
+    const uah = Number(item['amountUah']) || 0;
+    return uah < 0 ? s + Math.abs(uah) : s;
+  }, 0);
+
   const totalIncomeUah =
-    Math.round(
-      paymentItems.reduce((s, p) => s + (Number(p['amountUah']) || 0), 0) * 100
-    ) / 100;
-  const totalExpensesUah = totalSpentUahOnDeposits;
+    Math.round((paymentsIncomeUah + customPositiveUah + deductionPositiveUah) * 100) / 100;
+  const totalExpensesUah =
+    Math.round((totalSpentUahOnDeposits + customNegativeUahAbs + deductionNegativeUahAbs) * 100) / 100;
   const netProfitUah = Math.round((totalIncomeUah - totalExpensesUah) * 100) / 100;
 
   const monthlyBurnUsd = state.providerAccounts.reduce((s, a) => {
@@ -2866,9 +3203,25 @@ function computeBudgetAndAccountsData() {
     (c) => c['status'] !== 'paused' && c['status'] !== 'expired'
   ).length;
 
+  const customTopupUsd = customItems.reduce((s, item) => {
+    const usd = Number(item['amountUsd']) || 0;
+    const uah = Number(item['amountUah']) || 0;
+    return (item['category'] === 'provider_topup' || (usd > 0 && uah < 0)) && usd > 0
+      ? s + usd
+      : s;
+  }, 0);
+  const customTopupSpentUah = customItems.reduce((s, item) => {
+    const usd = Number(item['amountUsd']) || 0;
+    const uah = Number(item['amountUah']) || 0;
+    return (item['category'] === 'provider_topup' || (usd > 0 && uah < 0)) && uah < 0
+      ? s + Math.abs(uah)
+      : s;
+  }, 0);
+  const rateDenominatorUsd = depositsUsdOnly + customTopupUsd;
+  const rateNumeratorUah = totalSpentUahOnDeposits + customTopupSpentUah;
   const averageExchangeRate =
-    totalDepositedUsd > 0
-      ? Math.round((totalExpensesUah / totalDepositedUsd) * 100) / 100
+    rateDenominatorUsd > 0
+      ? Math.round((rateNumeratorUah / rateDenominatorUsd) * 100) / 100
       : 41.5;
 
   return {
@@ -2952,6 +3305,11 @@ app.get('/api/accounts', (_req, res) => {
 });
 
 app.post('/api/accounts', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const body = req.body || {};
   const now = new Date().toISOString();
   const startDate = String(body.startDate || now.split('T')[0]);
@@ -2983,6 +3341,11 @@ app.post('/api/accounts', async (req, res) => {
 });
 
 app.put('/api/accounts/:id', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
   const idx = state.providerAccounts.findIndex((a) => a['id'] === id);
   if (idx < 0) {
@@ -3002,6 +3365,11 @@ app.put('/api/accounts/:id', async (req, res) => {
 });
 
 app.delete('/api/accounts/:id', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
   state.providerAccounts = state.providerAccounts.filter((a) => a['id'] !== id);
   await deleteProviderAccountFromCloudSql(id);
@@ -3010,6 +3378,11 @@ app.delete('/api/accounts/:id', async (req, res) => {
 });
 
 app.post('/api/accounts/:id/assign', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
   const { clientId, action } = req.body || {};
   const acc = state.providerAccounts.find((a) => a['id'] === id);
@@ -3040,6 +3413,11 @@ app.post('/api/accounts/:id/assign', async (req, res) => {
 });
 
 app.post('/api/accounts/:id/renew', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
   const { months, pricePerMonthUsd, note } = req.body || {};
   const acc = state.providerAccounts.find((a) => a['id'] === id);
@@ -3080,6 +3458,11 @@ app.post('/api/accounts/:id/renew', async (req, res) => {
 });
 
 app.put('/api/accounts/:id/renewals/:renewalId', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id, renewalId } = req.params;
   const acc = state.providerAccounts.find((a) => a['id'] === id);
   if (!acc) {
@@ -3098,6 +3481,11 @@ app.put('/api/accounts/:id/renewals/:renewalId', async (req, res) => {
 });
 
 app.delete('/api/accounts/:id/renewals/:renewalId', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id, renewalId } = req.params;
   const acc = state.providerAccounts.find((a) => a['id'] === id);
   if (!acc) {
@@ -3122,6 +3510,11 @@ app.get('/api/budget', (_req, res) => {
 });
 
 app.post('/api/budget/deposits', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const body = req.body || {};
   const amountUsd = Number(body.amountUsd) || 0;
   const spentUah = Number(body.spentUah) || 0;
@@ -3142,6 +3535,11 @@ app.post('/api/budget/deposits', async (req, res) => {
 });
 
 app.put('/api/budget/deposits/:id', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
   const idx = state.providerDeposits.findIndex((d) => d['id'] === id);
   if (idx < 0) {
@@ -3156,6 +3554,11 @@ app.put('/api/budget/deposits/:id', async (req, res) => {
 });
 
 app.delete('/api/budget/deposits/:id', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
   state.providerDeposits = state.providerDeposits.filter((d) => d['id'] !== id);
   await deleteProviderDepositFromCloudSql(id);
@@ -3164,6 +3567,11 @@ app.delete('/api/budget/deposits/:id', async (req, res) => {
 });
 
 app.post('/api/budget/ledger', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const body = req.body || {};
   const entry: Record<string, unknown> = {
     id: body.id || 'led_' + Date.now(),
@@ -3189,6 +3597,11 @@ app.post('/api/budget/ledger', async (req, res) => {
 });
 
 app.put('/api/budget/ledger/:id', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
   const idx = state.customLedgerEntries.findIndex((e) => e['id'] === id);
   if (idx >= 0) {
@@ -3249,6 +3662,11 @@ app.put('/api/budget/ledger/:id', async (req, res) => {
 });
 
 app.delete('/api/budget/ledger/:id', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
   if (id.startsWith('led_')) {
     state.customLedgerEntries = state.customLedgerEntries.filter((e) => e['id'] !== id);
@@ -3281,6 +3699,11 @@ app.delete('/api/budget/ledger/:id', async (req, res) => {
 });
 
 app.post('/api/budget/provider-balance/adjust', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { amountUsd, targetBalanceUsd, note, date } = req.body || {};
   let delta = Number(amountUsd) || 0;
   if (targetBalanceUsd !== undefined && targetBalanceUsd !== null) {
@@ -3301,6 +3724,11 @@ app.post('/api/budget/provider-balance/adjust', async (req, res) => {
 });
 
 app.delete('/api/budget/provider-balance/adjust/:id', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
   state.providerBalanceAdjustments = state.providerBalanceAdjustments.filter((a) => a['id'] !== id);
   await deleteProviderBalanceAdjustmentFromCloudSql(id);
@@ -3312,12 +3740,39 @@ app.delete('/api/budget/provider-balance/adjust/:id', async (req, res) => {
 // UTILITY (ELECTRICITY, WATER, DTEK SCHEDULE) API
 // ============================================================================
 
-app.get('/api/utility/data', (req, res) => {
+app.get('/api/utility/data', async (req, res) => {
   const { authenticated, user } = resolveRequestUser(req);
   if (!authenticated || !user) {
     res.json({ accounts: [], readings: [] });
     return;
   }
+
+  try {
+    const activeMode = await loadPersistedDbMode();
+    const standbyMode: DatabaseMode = activeMode === 'cloudsql' ? 'external' : 'cloudsql';
+    const isStandbyReady =
+      standbyMode === 'cloudsql' ? isCloudSqlEnvConfigured() : isExternalDbConfigured();
+    const [activeUtil, standbyUtil] = await Promise.all([
+      loadUtilityOnlyFromCloudSql(activeMode),
+      isStandbyReady ? loadUtilityOnlyFromCloudSql(standbyMode) : Promise.resolve(null),
+    ]);
+    if (activeUtil || standbyUtil) {
+      const mergedAccounts = mergeRecordsById(
+        activeUtil?.utilityAccounts || [],
+        standbyUtil?.utilityAccounts || []
+      );
+      const mergedReadings = mergeRecordsById(
+        activeUtil?.utilityReadings || [],
+        standbyUtil?.utilityReadings || []
+      );
+      cleanUtilityAccountsHiddenTabs(mergedAccounts);
+      state.utilityAccounts = mergedAccounts;
+      state.utilityReadings = mergedReadings;
+    }
+  } catch (err) {
+    console.warn('[Utility] Refresh warning:', err instanceof Error ? err.message : String(err));
+  }
+
   const userIdStr = String(user['id'] || '');
   const assignedIds = Array.isArray(user['assignedUtilityAccountIds'])
     ? (user['assignedUtilityAccountIds'] as string[])
@@ -3333,23 +3788,33 @@ app.get('/api/utility/data', (req, res) => {
   });
 
   const visibleAccIds = new Set(visibleAccounts.map((a) => String(a['id'])));
-  const visibleReadings = state.utilityReadings.filter((r) => visibleAccIds.has(String(r['accountId'])));
+  const visibleReadings = state.utilityReadings.filter((r) =>
+    visibleAccIds.has(String(r['accountId']))
+  );
 
   res.json({
-    accounts: visibleAccounts,
+    accounts: visibleAccounts.map((a) => sanitizeUtilityAccountForClient(a)),
     readings: visibleReadings,
   });
 });
 
 app.post('/api/utility/accounts', async (req, res) => {
-  const { authenticated, user } = resolveRequestUser(req);
+  const { authenticated, user, realAdmin } = resolveRequestUser(req);
   if (!authenticated) {
     res.status(401).json({ error: 'Необхідна авторизація в Google акаунті' });
+    return;
+  }
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
     return;
   }
   const body = req.body || {};
   const id = body.id || 'uacc_' + Date.now();
   const existingIdx = state.utilityAccounts.findIndex((a) => a['id'] === id);
+  if (existingIdx >= 0 && !userCanAccessUtilityAccount(user, realAdmin, state.utilityAccounts[existingIdx])) {
+    res.status(403).json({ error: 'У вас немає доступу до редагування цього будинку' });
+    return;
+  }
   const userIdStr = String(user['id'] || '');
   const isNewHouse = existingIdx < 0;
 
@@ -3398,11 +3863,17 @@ app.post('/api/utility/accounts', async (req, res) => {
 
   await saveUtilityAccountToCloudSql(account);
   bumpVersion();
-  res.json({ success: true, account });
+  res.json({ success: true, account: sanitizeUtilityAccountForClient(account) });
 });
 
 app.delete('/api/utility/accounts/:id', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
   const { id } = req.params;
+  const target = state.utilityAccounts.find((a) => a['id'] === id);
+  if (target && (!userCanAccessUtilityAccount(user, realAdmin, target) || !userCanEditAccountOrData(user, realAdmin))) {
+    res.status(403).json({ error: 'Недостатньо прав для видалення цього будинку' });
+    return;
+  }
   state.utilityAccounts = state.utilityAccounts.filter((a) => a['id'] !== id);
   state.utilityReadings = state.utilityReadings.filter((r) => r['accountId'] !== id);
   await deleteUtilityAccountFromCloudSql(id);
@@ -3414,7 +3885,11 @@ const handleSaveAccountDevices = async (req: express.Request, res: express.Respo
   try {
     const { id } = req.params;
     const body = req.body || {};
-    const { user } = resolveRequestUser(req);
+    const { user, realAdmin } = resolveRequestUser(req);
+    if (!userCanEditAccountOrData(user, realAdmin)) {
+      res.status(403).json({ success: false, error: 'Ваш акаунт має права лише для перегляду' });
+      return;
+    }
     const reqUserId = String(body.userId || user?.['id'] || '');
 
     const rawIncomingDevices = Array.isArray(body.devices) ? body.devices : [];
@@ -3428,6 +3903,10 @@ const handleSaveAccountDevices = async (req: express.Request, res: express.Respo
     if (!acc) {
       await hydrateFromDatabase();
       acc = state.utilityAccounts.find((a) => a['id'] === id);
+    }
+    if (acc && !userCanAccessUtilityAccount(user, realAdmin, acc)) {
+      res.status(403).json({ success: false, error: 'У вас немає доступу до цього будинку' });
+      return;
     }
     if (!acc) {
       const nowIso = new Date().toISOString();
@@ -3460,7 +3939,7 @@ const handleSaveAccountDevices = async (req: express.Request, res: express.Respo
     }
     await saveUtilityAccountToCloudSql(acc);
     bumpVersion();
-    res.status(200).json({ success: true, account: acc, devices: acc['devices'] });
+    res.status(200).json({ success: true, account: sanitizeUtilityAccountForClient(acc), devices: acc['devices'] });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Помилка збереження пристроїв електроенергії';
     res.status(500).json({ success: false, error: msg });
@@ -3744,6 +4223,7 @@ app.get('/api/utility/weather', async (req, res) => {
 });
 
 app.post('/api/utility/accounts/:id/cabinet-credentials', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
   const { id } = req.params;
   const body = req.body || {};
   const acc = state.utilityAccounts.find((a) => a['id'] === id);
@@ -3751,21 +4231,25 @@ app.post('/api/utility/accounts/:id/cabinet-credentials', async (req, res) => {
     res.status(404).json({ error: 'Акаунт не знайдено' });
     return;
   }
+  if (!userCanAccessUtilityAccount(user, realAdmin, acc) || !userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Недостатньо прав для зміни даних кабінету цього будинку' });
+    return;
+  }
   if (body.dtekLogin !== undefined) acc['dtekLogin'] = body.dtekLogin;
   if (body.clearDtekPassword) acc['dtekPasswordEnc'] = null;
-  else if (body.dtekPassword) acc['dtekPasswordEnc'] = 'enc:' + Buffer.from(String(body.dtekPassword)).toString('base64');
+  else if (body.dtekPassword) acc['dtekPasswordEnc'] = encryptStoredPassword(String(body.dtekPassword));
 
   if (body.ooekLogin !== undefined) acc['ooekLogin'] = body.ooekLogin;
   if (body.ooekAccountNumber !== undefined) acc['ooekAccountNumber'] = body.ooekAccountNumber;
   if (body.clearOoekPassword) acc['ooekPasswordEnc'] = null;
-  else if (body.ooekPassword) acc['ooekPasswordEnc'] = 'enc:' + Buffer.from(String(body.ooekPassword)).toString('base64');
+  else if (body.ooekPassword) acc['ooekPasswordEnc'] = encryptStoredPassword(String(body.ooekPassword));
 
   acc['hasDtekPassword'] = Boolean(acc['dtekPasswordEnc']);
   acc['hasOoekPassword'] = Boolean(acc['ooekPasswordEnc']);
   acc['updatedAt'] = new Date().toISOString();
   await saveUtilityAccountToCloudSql(acc);
   bumpVersion();
-  res.json({ success: true, account: acc });
+  res.json({ success: true, account: sanitizeUtilityAccountForClient(acc) });
 });
 
 // ============================================================================
@@ -3801,6 +4285,20 @@ function extractSessionCookie(headers: Headers): string | null {
 
 function decryptStoredPassword(encVal: unknown): string {
   if (!encVal || typeof encVal !== 'string') return '';
+  if (encVal.startsWith('enc2:')) {
+    try {
+      const parts = encVal.split(':');
+      if (parts.length !== 4) return '';
+      const iv = Buffer.from(parts[1], 'base64url');
+      const authTag = Buffer.from(parts[2], 'base64url');
+      const encrypted = Buffer.from(parts[3], 'base64url');
+      const decipher = createDecipheriv('aes-256-gcm', getCabinetEncryptionKey(), iv);
+      decipher.setAuthTag(authTag);
+      return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
+    } catch {
+      return '';
+    }
+  }
   if (encVal.startsWith('enc:')) {
     try {
       return Buffer.from(encVal.slice(4), 'base64').toString('utf8');
@@ -3900,11 +4398,16 @@ function parseOoekAccountsHtml(html: string): OoekParsedAccountItem[] {
 }
 
 app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
   const { id } = req.params;
   const body = req.body || {};
   const acc = state.utilityAccounts.find((a) => a['id'] === id);
   if (!acc) {
     res.status(404).json({ error: 'Акаунт не знайдено' });
+    return;
+  }
+  if (!userCanAccessUtilityAccount(user, realAdmin, acc) || !userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Недостатньо прав для синхронізації цього будинку' });
     return;
   }
 
@@ -3916,7 +4419,7 @@ app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
     acc['ooekAccountNumber'] = body.ooekAccountNumber.trim();
   }
   if (typeof body.ooekPassword === 'string' && body.ooekPassword) {
-    acc['ooekPasswordEnc'] = 'enc:' + Buffer.from(String(body.ooekPassword)).toString('base64');
+    acc['ooekPasswordEnc'] = encryptStoredPassword(String(body.ooekPassword));
     acc['hasOoekPassword'] = true;
   }
 
@@ -3931,7 +4434,7 @@ app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
       success: false,
       error: 'Особовий рахунок не вказано у налаштуваннях будинку. Будь ласка, заповніть особовий рахунок для синхронізації з ТОВ «ООЕК».',
       statusMessage: 'Відсутній особовий рахунок',
-      account: acc,
+      account: sanitizeUtilityAccountForClient(acc),
     });
     return;
   }
@@ -3941,16 +4444,14 @@ app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
       success: false,
       error: 'Вкажіть логін та пароль від особистого кабінету ТОВ «ООЕК» (personal.ooek.od.ua)',
       statusMessage: 'Відсутній логін або пароль ООЕК',
-      account: acc,
+      account: sanitizeUtilityAccountForClient(acc),
     });
     return;
   }
 
-  const DEFAULT_AUTH_TOKEN =
-    'fsPdpgFyhKjBHOPx/bRYXYlM+OP4f2KB4Xp6JaQapQjskeBsa4+rleRKNKrmHpGqwNwDDF1PWe4+zIjFtZOFoA==';
-  const FIXED_X_CSRF_TOKEN =
-    'sANQe6CsdqgU+k6h9clzDUXBtTR4Om/zUBRrFpuSYagPXt5FlN3q1QhH63PqrDq2gzLQLdvSLAuushPGv+Erkw==';
-  const INITIAL_SESSION_COOKIE = 'standart_9776_session=bd22590df582a310cb856d5f49e18a9a';
+  const DEFAULT_AUTH_TOKEN = process.env['OOEK_FALLBACK_AUTH_TOKEN'] || '';
+  const FIXED_X_CSRF_TOKEN = process.env['OOEK_FALLBACK_CSRF_TOKEN'] || '';
+  const INITIAL_SESSION_COOKIE = process.env['OOEK_FALLBACK_SESSION_COOKIE'] || '';
   const USER_AGENT =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:159.0) Gecko/20100101 Firefox/159.0';
 
@@ -3986,7 +4487,7 @@ app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
         csrfMetaToken = metaMatch[1];
       }
     } catch {
-      // Fallback to default token and cookie if initial GET fails
+      // Fallback to optional .env token and cookie if initial GET fails
     }
 
     // 2. POST credentials to https://personal.ooek.od.ua/home/login (rate-limited <= 1 req/sec)
@@ -3998,8 +4499,8 @@ app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
     formBody.set('username', username);
     formBody.set('password', password);
     formBody.set('pwa_mode', 'browser');
-    formBody.set('pwa_client_id', '8b4f451a-32d5-446c-a470-183a97605ddc');
-    formBody.set('pwa_session_id', '6c3eab65-02e9-44a7-8f19-10234e7897a9');
+    formBody.set('pwa_client_id', randomUUID());
+    formBody.set('pwa_session_id', randomUUID());
 
     const loginResponse = await fetch('https://personal.ooek.od.ua/home/login', {
       method: 'POST',
@@ -4123,7 +4624,7 @@ app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
 
       res.json({
         success: true,
-        account: acc,
+        account: sanitizeUtilityAccountForClient(acc),
         amountToPayUah: amount,
         billUpdatedAt: matchedItem.billUpdatedAt,
         statusMessage: acc['ooekCabinetStatus'],
@@ -4140,7 +4641,7 @@ app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
 
       res.json({
         success: false,
-        account: acc,
+        account: sanitizeUtilityAccountForClient(acc),
         statusMessage: String(acc['ooekCabinetStatus']),
         error: String(acc['ooekCabinetStatus']),
       });
@@ -4154,7 +4655,7 @@ app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
 
     res.status(400).json({
       success: false,
-      account: acc,
+      account: sanitizeUtilityAccountForClient(acc),
       statusMessage: String(acc['ooekCabinetStatus']),
       error: String(acc['ooekCabinetStatus']),
     });
@@ -4164,7 +4665,7 @@ app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
     await saveUtilityAccountToCloudSql(acc);
     res.status(500).json({
       success: false,
-      account: acc,
+      account: sanitizeUtilityAccountForClient(acc),
       statusMessage: String(acc['ooekCabinetStatus']),
       error: String(acc['ooekCabinetStatus']),
     });
@@ -4172,10 +4673,15 @@ app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
 });
 
 app.post('/api/utility/accounts/:id/dtek-cabinet-sync', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
   const { id } = req.params;
   const acc = state.utilityAccounts.find((a) => a['id'] === id);
   if (!acc) {
     res.status(404).json({ error: 'Акаунт не знайдено' });
+    return;
+  }
+  if (!userCanAccessUtilityAccount(user, realAdmin, acc) || !userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Недостатньо прав для синхронізації цього будинку' });
     return;
   }
   acc['dtekCabinetLastSync'] = new Date().toISOString();
@@ -4184,17 +4690,22 @@ app.post('/api/utility/accounts/:id/dtek-cabinet-sync', async (req, res) => {
   bumpVersion();
   res.json({
     success: true,
-    account: acc,
+    account: sanitizeUtilityAccountForClient(acc),
     message: 'Кабінет ДТЕК синхронізовано',
   });
 });
 
 app.post('/api/utility/accounts/:id/dtek-cabinet-submit', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
   const { id } = req.params;
   const { readingT1, readingT2, date } = req.body || {};
   const acc = state.utilityAccounts.find((a) => a['id'] === id);
   if (!acc) {
     res.status(404).json({ error: 'Акаунт не знайдено' });
+    return;
+  }
+  if (!userCanAccessUtilityAccount(user, realAdmin, acc) || !userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Недостатньо прав для передачі показів цього будинку' });
     return;
   }
   const reading: Record<string, unknown> = {
@@ -4213,7 +4724,7 @@ app.post('/api/utility/accounts/:id/dtek-cabinet-submit', async (req, res) => {
   state.utilityReadings.unshift(reading);
   await saveUtilityReadingToCloudSql(reading);
   bumpVersion();
-  res.json({ success: true, reading, account: acc });
+  res.json({ success: true, reading, account: sanitizeUtilityAccountForClient(acc) });
 });
 
 function formatDtekMeterAccountNumber(rawNumber: string): string {
@@ -4227,10 +4738,47 @@ function formatDtekMeterAccountNumber(rawNumber: string): string {
   return clean;
 }
 
-const DTEK_METER_DEFAULT_CSRF =
-  'f2r-lWWrAjPjcHqBCccq_Nl1u1TbZkPItrojTIZtIFRNU7fcN_Q6f6Y6O7N-qnOQuCDQHY8AAKbM5U0Y_zpGZQ==';
-const DTEK_METER_DEFAULT_COOKIES =
-  '_language=4feef5ffdc846bbf9c35c97292b7b3e6c48117a536a6462b530e0984a39d6bd4a%3A2%3A%7Bi%3A0%3Bs%3A9%3A%22_language%22%3Bi%3A1%3Bs%3A2%3A%22uk%22%3B%7D; visid_incap_2398477=jcFO++QVRFyc30m/uifUBlYX62oAAAAAQUIPAAAAAACJlnvVMplgOe4l+5MR0hIW; visid_incap_3332081=ZQRDHfbUSlmnEQzkWk7PVwJp7GoAAAAAQUIPAAAAAAAUTCBAH/0siRUU11sm4dxo; visid_incap_2908050=IK4PNGxURGaDJZGSZJug0JBp7GoAAAAAQUIPAAAAAACBcrzWcwiLO/cK7e+N27AK; _csrf-dtek-oem=14943da4f286058abdee133e16bf46d50548dd78fe24e0ef40b2b513173742f5a%3A2%3A%7Bi%3A0%3Bs%3A14%3A%22_csrf-dtek-oem%22%3Bi%3A1%3Bs%3A32%3A%2229IIR_8LEJA2wmYlaUkITfCnz_nTyWf1%22%3B%7D; incap_ses_323_2398477=WqE/IzIyGgk6EIoXp4d7BOOl9WoAAAAAQVgtB9VUOKgk65Ojh9x1gA==; incap_ses_323_3332081=QyJfWz0tV04JnJnDpId7BP4j82oAAAAAS4tY/4psS2IoSL+treO4GA==; incap_ses_323_2908050=9F99Q/jRNFRxuJnDpId7BBUk82oAAAAAY1Cv6L8zY8eLdQzfweiU5w==; dtek-oem=fcjnd2vrsljmiv4bs475fl3eco';
+const DTEK_METER_DEFAULT_CSRF = process.env['DTEK_METER_CSRF_TOKEN'] || '';
+const DTEK_METER_DEFAULT_COOKIES = process.env['DTEK_METER_COOKIES'] || '';
+
+async function fetchFreshDtekMeterSession(): Promise<{ csrfToken: string; cookies: string }> {
+  let csrfToken = DTEK_METER_DEFAULT_CSRF;
+  let cookies = DTEK_METER_DEFAULT_COOKIES;
+  try {
+    const pageResp = await fetch('https://www.dtek-oem.com.ua/ua/meter', {
+      method: 'GET',
+      headers: {
+        'User-Agent': DTEK_USER_AGENT,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+    const setCookies =
+      typeof (pageResp.headers as unknown as { getSetCookie?: () => string[] }).getSetCookie === 'function'
+        ? (pageResp.headers as unknown as { getSetCookie: () => string[] }).getSetCookie()
+        : pageResp.headers.get('set-cookie')
+          ? [pageResp.headers.get('set-cookie')!]
+          : [];
+    const extractedCookies = setCookies
+      .map((c) => c.split(';')[0]?.trim())
+      .filter(Boolean)
+      .join('; ');
+    if (extractedCookies) {
+      cookies = extractedCookies;
+    }
+    const html = await pageResp.text();
+    const csrfMatch =
+      html.match(/<meta[^>]*name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i) ||
+      html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']csrf-token["']/i);
+    if (csrfMatch?.[1]) {
+      csrfToken = csrfMatch[1];
+    }
+  } catch {
+    // Fallback to .env values if available
+  }
+  return { csrfToken, cookies };
+}
 
 app.post('/api/utility/dtek-meter-check', async (req, res) => {
   try {
@@ -4256,8 +4804,9 @@ app.post('/api/utility/dtek-meter-check', async (req, res) => {
 
     const formattedNumber = formatDtekMeterAccountNumber(rawNumber);
 
-    const cookies = DTEK_METER_DEFAULT_COOKIES;
-    const csrfToken = DTEK_METER_DEFAULT_CSRF;
+    const session = await fetchFreshDtekMeterSession();
+    const cookies = session.cookies || DTEK_METER_DEFAULT_COOKIES;
+    const csrfToken = session.csrfToken || DTEK_METER_DEFAULT_CSRF;
 
     const postBody = new URLSearchParams();
     postBody.set('method', 'checkAddress');
@@ -4270,11 +4819,11 @@ app.post('/api/utility/dtek-meter-check', async (req, res) => {
         Accept: 'application/json, text/javascript, */*; q=0.01',
         'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
         Referer: 'https://www.dtek-oem.com.ua/ua/meter',
-        'X-CSRF-Token': csrfToken,
+        ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
         'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
         'X-Requested-With': 'XMLHttpRequest',
         Origin: 'https://www.dtek-oem.com.ua',
-        Cookie: cookies,
+        ...(cookies ? { Cookie: cookies } : {}),
       },
       body: postBody.toString(),
       signal: AbortSignal.timeout(12000),
@@ -4321,12 +4870,23 @@ app.post('/api/utility/dtek-meter-check', async (req, res) => {
 });
 
 app.post('/api/utility/readings', async (req, res) => {
-  const { authenticated, user } = resolveRequestUser(req);
+  const { authenticated, user, realAdmin } = resolveRequestUser(req);
   if (!authenticated) {
     res.status(401).json({ error: 'Необхідна авторизація в Google акаунті' });
     return;
   }
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const body = req.body || {};
+  if (body.accountId) {
+    const targetAcc = state.utilityAccounts.find((a) => a['id'] === body.accountId);
+    if (targetAcc && !userCanAccessUtilityAccount(user, realAdmin, targetAcc)) {
+      res.status(403).json({ error: 'У вас немає доступу до цього будинку' });
+      return;
+    }
+  }
   const userIdStr = String(user['id'] || '');
   const reading: Record<string, unknown> = {
     ...body,
@@ -4341,10 +4901,20 @@ app.post('/api/utility/readings', async (req, res) => {
 });
 
 app.put('/api/utility/readings/:id', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
   const idx = state.utilityReadings.findIndex((r) => r['id'] === id);
   if (idx < 0) {
     res.status(404).json({ error: 'Запис не знайдено' });
+    return;
+  }
+  const targetAcc = state.utilityAccounts.find((a) => a['id'] === state.utilityReadings[idx]['accountId']);
+  if (targetAcc && !userCanAccessUtilityAccount(user, realAdmin, targetAcc)) {
+    res.status(403).json({ error: 'У вас немає доступу до цього будинку' });
     return;
   }
   const reading: Record<string, unknown> = {
@@ -4359,7 +4929,20 @@ app.put('/api/utility/readings/:id', async (req, res) => {
 });
 
 app.delete('/api/utility/readings/:id', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
+  const existing = state.utilityReadings.find((r) => r['id'] === id);
+  if (existing) {
+    const targetAcc = state.utilityAccounts.find((a) => a['id'] === existing['accountId']);
+    if (targetAcc && !userCanAccessUtilityAccount(user, realAdmin, targetAcc)) {
+      res.status(403).json({ error: 'У вас немає доступу до цього будинку' });
+      return;
+    }
+  }
   state.utilityReadings = state.utilityReadings.filter((r) => r['id'] !== id);
   await deleteUtilityReadingFromCloudSql(id);
   bumpVersion();
@@ -4367,11 +4950,21 @@ app.delete('/api/utility/readings/:id', async (req, res) => {
 });
 
 app.post('/api/utility/readings/:id/pay', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  if (!userCanEditAccountOrData(user, realAdmin)) {
+    res.status(403).json({ error: 'Ваш акаунт має права лише для перегляду' });
+    return;
+  }
   const { id } = req.params;
   const { isPaid, paidAmount, paidDate } = req.body || {};
   const idx = state.utilityReadings.findIndex((r) => r['id'] === id);
   if (idx < 0) {
     res.status(404).json({ error: 'Запис не знайдено' });
+    return;
+  }
+  const targetAcc = state.utilityAccounts.find((a) => a['id'] === state.utilityReadings[idx]['accountId']);
+  if (targetAcc && !userCanAccessUtilityAccount(user, realAdmin, targetAcc)) {
+    res.status(403).json({ error: 'У вас немає доступу до цього будинку' });
     return;
   }
   const reading: Record<string, unknown> = {
@@ -4682,6 +5275,7 @@ function buildAllQueuesSchedulesFromFactData(
 async function syncDtekScheduleWithDatabase(options?: {
   city?: string;
   street?: string;
+  forceRefresh?: boolean;
 }): Promise<{
   dbCache: DtekScheduleDbCache;
   didFetchLiveFromDtek: boolean;
@@ -4693,10 +5287,14 @@ async function syncDtekScheduleWithDatabase(options?: {
     dbCache.fact?.data && Object.keys(dbCache.fact.data).length > 0
   );
   const elapsedSinceLastFetchMs = dbCache.lastFetchedAtMs > 0 ? nowMs - dbCache.lastFetchedAtMs : Infinity;
+  const minForceCooldownMs = 15_000;
+  const shouldSkipByInterval = options?.forceRefresh
+    ? hasStoredSchedule && elapsedSinceLastFetchMs < minForceCooldownMs
+    : hasStoredSchedule && elapsedSinceLastFetchMs < getDtekSyncIntervalMs();
 
-  // Enforce configured interval: if we already have schedule data in DB and < interval have passed,
+  // Enforce configured interval (or 15s cooldown on manual refresh):
   // serve directly from the database without querying DTEK.
-  if (hasStoredSchedule && elapsedSinceLastFetchMs < getDtekSyncIntervalMs()) {
+  if (shouldSkipByInterval) {
     return {
       dbCache,
       didFetchLiveFromDtek: false,
@@ -4977,10 +5575,11 @@ app.get('/api/utility/dtek-shutdowns', async (req, res) => {
     fullKyivDateTime,
   } = getKyivTimeParts(now);
 
-  // Sync with DTEK only if DB cache is empty or >= 20 minutes have passed since lastFetchedAtMs
+  // Sync with DTEK if DB cache is empty, configured interval elapsed, or manual refresh requested
   const { dbCache, didFetchLiveFromDtek } = await syncDtekScheduleWithDatabase({
     city,
     street,
+    forceRefresh: requestedManualRefresh,
   });
 
   const addrCacheKey = `${city.toLowerCase()}|${street.toLowerCase()}`;
@@ -5151,6 +5750,7 @@ app.get('/api/utility/dtek-shutdowns', async (req, res) => {
     isPowerAvailableNow,
     currentKyivHour,
     kyivTime: kyivTimeStr,
+    recentScheduleChanges: getScheduleChangesLogList().slice(0, 15),
     raw: addrEntry?.housesMap ? { data: addrEntry.housesMap, updateTimestamp } : null,
   });
 });
@@ -5256,10 +5856,39 @@ function computeHourlySignature(
     .join(',');
 }
 
+interface ScheduleChangeLogEntry {
+  id: string;
+  detectedAt: string;
+  queueKey: string;
+  queueTitle: string;
+  changeType: 'today_changed' | 'tomorrow_appeared' | 'tomorrow_changed' | 'schedule_updated';
+  title: string;
+  body: string;
+  scheduleDate: string;
+  oldIntervals: string[];
+  newIntervals: string[];
+}
+
+function getScheduleChangesLogList(): ScheduleChangeLogEntry[] {
+  const sysVals = getSystemValuesMap();
+  if (!Array.isArray(sysVals['dtekScheduleChangesLog'])) {
+    sysVals['dtekScheduleChangesLog'] = [];
+  }
+  return sysVals['dtekScheduleChangesLog'] as ScheduleChangeLogEntry[];
+}
+
+function appendScheduleChangeLog(entry: ScheduleChangeLogEntry): void {
+  const list = getScheduleChangesLogList();
+  list.unshift(entry);
+  if (list.length > 40) {
+    list.length = 40;
+  }
+}
+
 async function sendWebPushToSubscription(
   sub: StoredPushSubscription,
   payload: Record<string, unknown>
-): Promise<boolean> {
+): Promise<{ ok: boolean; statusCode?: number; error?: string }> {
   ensureVapidKeys();
   try {
     await webpush.sendNotification(
@@ -5271,9 +5900,11 @@ async function sendWebPushToSubscription(
       { TTL: 86400, urgency: 'high' }
     );
     sub.lastNotifiedAt = new Date().toISOString();
-    return true;
+    return { ok: true };
   } catch (err: unknown) {
-    const statusCode = (err as { statusCode?: number })?.statusCode;
+    const errObj = err as { statusCode?: number; message?: string; body?: string };
+    const statusCode = errObj?.statusCode;
+    const errorMsg = errObj?.body || errObj?.message || 'Push send error';
     if (statusCode === 404 || statusCode === 410) {
       // Remove expired subscription
       const sysVals = getSystemValuesMap();
@@ -5282,7 +5913,7 @@ async function sendWebPushToSubscription(
       );
       void persistSystemValues();
     }
-    return false;
+    return { ok: false, statusCode, error: errorMsg };
   }
 }
 
@@ -5321,11 +5952,26 @@ async function evaluateDtekScheduleChangesAndPush(
 
     const prev = fingerprints[qKey];
 
-    if (prev && prev.scheduleDate === q.scheduleDate) {
-      const todayChanged = prev.todaySignature !== todaySig;
-      const tomorrowChanged = Boolean(tomSig && prev.tomorrowSignature && prev.tomorrowSignature !== tomSig);
+    if (prev) {
+      const sameDayTodayChanged = prev.scheduleDate === q.scheduleDate && prev.todaySignature !== todaySig;
+      // Also detect if yesterday's forecast for today changed after midnight rollover
+      const rolloverChanged =
+        prev.scheduleDate !== q.scheduleDate &&
+        prev.tomorrowDate === q.scheduleDate &&
+        Boolean(prev.tomorrowSignature) &&
+        prev.tomorrowSignature !== todaySig;
+      const todayChanged = sameDayTodayChanged || rolloverChanged;
+      const tomorrowChanged = Boolean(
+        tomSig &&
+          prev.tomorrowDate === tomSchedule?.scheduleDate &&
+          prev.tomorrowSignature &&
+          prev.tomorrowSignature !== tomSig
+      );
       const tomorrowAppeared = Boolean(
-        tomSig && !prev.tomorrowSignature && tomSchedule && tomSchedule.totalOutageHours > 0
+        tomSig &&
+          (!prev.tomorrowSignature || prev.tomorrowDate !== tomSchedule?.scheduleDate) &&
+          tomSchedule &&
+          tomSchedule.totalOutageHours > 0
       );
 
       if (todayChanged || tomorrowChanged || tomorrowAppeared) {
@@ -5333,7 +5979,9 @@ async function evaluateDtekScheduleChangesAndPush(
 
         let title = `⚡ Зміна графіку ДТЕК (${q.queueTitle})`;
         let body = '';
+        let changeType: ScheduleChangeLogEntry['changeType'] = 'today_changed';
         if (todayChanged) {
+          changeType = 'today_changed';
           const newIntervals =
             q.outageIntervals.length > 0 ? q.outageIntervals.join(', ') : 'Без відключень';
           const oldIntervals =
@@ -5342,12 +5990,28 @@ async function evaluateDtekScheduleChangesAndPush(
               : 'Без відключень';
           body = `Графік на сьогодні (${q.scheduleDate}) змінився! Нові відключення: ${newIntervals} (Світло: ${q.totalPowerHours} год, Відкл.: ${q.totalOutageHours} год). Було: ${oldIntervals}.`;
         } else if (tomorrowAppeared && tomSchedule) {
+          changeType = 'tomorrow_appeared';
           title = `📅 Графік ДТЕК на завтра (${q.queueTitle})`;
           body = `З'явився графік на завтра (${tomSchedule.scheduleDate}): без світла ${tomSchedule.totalOutageHours} год, зі світлом ${tomSchedule.totalPowerHours} год.`;
         } else if (tomorrowChanged && tomSchedule) {
+          changeType = 'tomorrow_changed';
           title = `⚡ Оновився графік на завтра (${q.queueTitle})`;
           body = `Змінився графік на завтра (${tomSchedule.scheduleDate}): без світла ${tomSchedule.totalOutageHours} год (було ${prev.tomorrowOutageHours ?? 0} год).`;
         }
+
+        const changeId = `chg_${qKey}_${Date.now()}`;
+        appendScheduleChangeLog({
+          id: changeId,
+          detectedAt: new Date().toISOString(),
+          queueKey: qKey,
+          queueTitle: q.queueTitle,
+          changeType,
+          title,
+          body,
+          scheduleDate: q.scheduleDate || todayDateStr,
+          oldIntervals: prev.todayOutageIntervals || [],
+          newIntervals: q.outageIntervals || [],
+        });
 
         const targetSubs = subs.filter(
           (s) =>
@@ -5358,15 +6022,17 @@ async function evaluateDtekScheduleChangesAndPush(
         );
 
         for (const sub of targetSubs) {
-          const sent = await sendWebPushToSubscription(sub, {
+          const res = await sendWebPushToSubscription(sub, {
             title,
             body,
             tag: `dtek-change-${qKey}-${Date.now()}`,
             url: '/?tab=outage_schedule',
             queueGroup: qKey,
+            changeId,
           });
-          if (sent) notificationsSent++;
+          if (res.ok) notificationsSent++;
         }
+        fingerprintsUpdated = true;
       }
     }
 
@@ -5394,6 +6060,21 @@ async function evaluateDtekScheduleChangesAndPush(
   return { changedQueues, notificationsSent };
 }
 
+app.get('/api/push/changes', (req, res) => {
+  const queueFilter = String(req.query['queue'] || '').trim();
+  const subs = getPushSubscriptionsList();
+  let changes = getScheduleChangesLogList();
+  if (queueFilter && queueFilter !== 'ALL') {
+    const norm = queueFilter.startsWith('GPV') ? queueFilter : `GPV${queueFilter}`;
+    changes = changes.filter((c) => c.queueKey === norm || c.queueKey === queueFilter);
+  }
+  res.json({
+    changes: changes.slice(0, 20),
+    serverTimeIso: new Date().toISOString(),
+    subscriptionsCount: subs.length,
+  });
+});
+
 app.get('/api/push/vapid-public-key', (req, res) => {
   const { publicKey } = ensureVapidKeys();
   const subs = getPushSubscriptionsList();
@@ -5417,9 +6098,13 @@ app.post('/api/push/subscribe', async (req, res) => {
   ensureVapidKeys();
   const { user } = resolveRequestUser(req);
   const subs = getPushSubscriptionsList();
-  const normQueue = String(queueGroup || 'GPV4.1').startsWith('GPV')
-    ? String(queueGroup || 'GPV4.1')
-    : `GPV${queueGroup || '4.1'}`;
+  const rawQueue = String(queueGroup || 'GPV4.1').trim();
+  const normQueue =
+    rawQueue === 'ALL'
+      ? 'ALL'
+      : rawQueue.startsWith('GPV')
+        ? rawQueue
+        : `GPV${rawQueue}`;
 
   const existingIdx = subs.findIndex((s) => s.endpoint === subscription.endpoint);
   const record: StoredPushSubscription = {
@@ -5462,7 +6147,7 @@ app.post('/api/push/unsubscribe', async (req, res) => {
   res.json({ success: true, totalSubscriptions: (sysVals['pushSubscriptions'] as unknown[]).length });
 });
 
-app.post('/api/push/test-delayed', (req, res) => {
+app.post('/api/push/test-delayed', async (req, res) => {
   const { endpoint, delaySeconds = 5, queueGroup, simulateScheduleDiff = false } = req.body || {};
   const subs = getPushSubscriptionsList();
   const targetSubs = endpoint
@@ -5472,15 +6157,19 @@ app.post('/api/push/test-delayed', (req, res) => {
   if (targetSubs.length === 0) {
     res.status(400).json({
       success: false,
-      error: 'Немає активної підписки Web Push. Спочатку натисніть «Увімкнути фонові сповіщення».',
+      error: 'Немає активної підписки Web Push на сервері.',
     });
     return;
   }
 
-  const delayMs = Math.min(Math.max(Number(delaySeconds) || 5, 1), 60) * 1000;
+  const parsedDelay = Number(delaySeconds);
   const fingerprints = getScheduleFingerprintsMap();
 
-  setTimeout(async () => {
+  const sendToAllTargets = async () => {
+    let deliveredCount = 0;
+    let failedCount = 0;
+    const errors: string[] = [];
+
     for (const sub of targetSubs) {
       const qKey = String(queueGroup || sub.queueGroup || 'GPV4.1');
       const fp = fingerprints[qKey];
@@ -5490,19 +6179,44 @@ app.post('/api/push/test-delayed', (req, res) => {
           : '10:00–14:00, 19:00–22:00';
       const title = simulateScheduleDiff
         ? `⚡ Зміна графіку ДТЕК (${qKey.replace('GPV', 'Черга ')})`
-        : `🔔 Перевірка Web Push (${qKey.replace('GPV', 'Черга ')})`;
+        : `🔔 Перевірка сповіщень (${qKey.replace('GPV', 'Черга ')})`;
       const body = simulateScheduleDiff
-        ? `Увага! Змінився сам графік відключень (не лише час перевірки). Нові слоти без світла: ${intervalsText}. Натисніть «Відкрити», щоб переглянути.`
-        : `Фонові сповіщення HomeHub працюють! Відстежується реальна зміна графіку ${qKey.replace('GPV', 'Черга ')} (поточні слоти: ${intervalsText}).`;
+        ? `Змінився графік відключень: ${intervalsText}. Натисніть, щоб відкрити актуальний розклад.`
+        : `Системні сповіщення HomeHub працюють! Поточні слоти: ${intervalsText}.`;
 
-      await sendWebPushToSubscription(sub, {
+      const result = await sendWebPushToSubscription(sub, {
         title,
         body,
         tag: `dtek-test-${Date.now()}`,
         url: '/?tab=outage_schedule',
         queueGroup: qKey,
       });
+      if (result.ok) {
+        deliveredCount++;
+      } else {
+        failedCount++;
+        if (result.error) errors.push(result.error);
+      }
     }
+    return { deliveredCount, failedCount, errors };
+  };
+
+  if (isNaN(parsedDelay) || parsedDelay <= 1) {
+    const stats = await sendToAllTargets();
+    res.json({
+      success: stats.deliveredCount > 0,
+      scheduledInSeconds: 0,
+      recipientsCount: targetSubs.length,
+      deliveredCount: stats.deliveredCount,
+      failedCount: stats.failedCount,
+      errors: stats.errors,
+    });
+    return;
+  }
+
+  const delayMs = Math.min(Math.max(parsedDelay, 2), 60) * 1000;
+  setTimeout(() => {
+    void sendToAllTargets();
   }, delayMs);
 
   res.json({
@@ -5553,6 +6267,12 @@ setTimeout(() => {
 
 app.post('/api/utility/recognize-meter', async (req, res) => {
   try {
+    const { user } = resolveRequestUser(req);
+    const rateKey = `gemini:${String(user?.['id'] || req.ip || 'anon')}`;
+    if (!checkRateLimit(rateKey, 15, 60_000)) {
+      res.status(429).json({ success: false, error: 'Забагато запитів розпізнавання. Зачекайте 1 хвилину.' });
+      return;
+    }
     const apiKey = process.env['GEMINI_API_KEY'];
     if (!apiKey) {
       res.status(400).json({ success: false, error: 'GEMINI_API_KEY не налаштовано на сервері' });
@@ -5607,6 +6327,12 @@ app.post('/api/utility/recognize-meter', async (req, res) => {
 
 app.post('/api/utility/analyze-device-screenshot', async (req, res) => {
   try {
+    const { user } = resolveRequestUser(req);
+    const rateKey = `gemini:${String(user?.['id'] || req.ip || 'anon')}`;
+    if (!checkRateLimit(rateKey, 15, 60_000)) {
+      res.status(429).json({ success: false, error: 'Забагато запитів аналізу. Зачекайте 1 хвилину.' });
+      return;
+    }
     const apiKey = process.env['GEMINI_API_KEY'];
     if (!apiKey) {
       res.status(400).json({ success: false, error: 'GEMINI_API_KEY не налаштовано' });

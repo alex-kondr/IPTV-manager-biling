@@ -200,6 +200,7 @@ import { IptvData } from '../../services/iptv-data';
                 <input
                   id="client-price-input"
                   type="number"
+                  inputmode="decimal"
                   min="0"
                   step="10"
                   formControlName="monthlyPrice"
@@ -243,6 +244,7 @@ import { IptvData } from '../../services/iptv-data';
                 <input
                   id="client-balance-input"
                   type="number"
+                  inputmode="decimal"
                   min="0"
                   formControlName="balance"
                   class="w-full pl-9 pr-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm text-slate-900 focus:outline-none focus:border-emerald-600"
@@ -324,6 +326,7 @@ import { IptvData } from '../../services/iptv-data';
                   <input
                     id="client-group-balance-input"
                     type="number"
+                    inputmode="decimal"
                     formControlName="groupBalance"
                     placeholder="0"
                     class="w-full pl-8 pr-3 py-2 bg-white border border-indigo-200 rounded-xl text-xs sm:text-sm font-bold text-indigo-950 focus:outline-none focus:border-indigo-600"
@@ -458,33 +461,18 @@ import { IptvData } from '../../services/iptv-data';
             </div>
           </div>
 
-          <!-- Device info & notes -->
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-            <div>
-              <label for="client-device-input" class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                Пристрій / Модель
-              </label>
-              <input
-                id="client-device-input"
-                type="text"
-                formControlName="deviceInfo"
-                placeholder="Samsung Smart TV, X96"
-                class="w-full px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm text-slate-900 focus:outline-none focus:border-emerald-600"
-              />
-            </div>
-
-            <div>
-              <label for="client-telegram-input" class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                Акаунт Viber (нік або номер)
-              </label>
-              <input
-                id="client-telegram-input"
-                type="text"
-                formControlName="telegramUsername"
-                placeholder="напр. @username або телефон"
-                class="w-full px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm text-slate-900 focus:outline-none focus:border-emerald-600"
-              />
-            </div>
+          <!-- Device info -->
+          <div>
+            <label for="client-device-input" class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
+              Пристрій / Модель
+            </label>
+            <input
+              id="client-device-input"
+              type="text"
+              formControlName="deviceInfo"
+              placeholder="Samsung Smart TV, X96"
+              class="w-full px-3.5 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm text-slate-900 focus:outline-none focus:border-emerald-600"
+            />
           </div>
 
           </div>
@@ -547,7 +535,6 @@ export class ClientModal implements OnInit {
     groupName: new FormControl<string>(''),
     groupBalance: new FormControl<number>(0),
     providerAccountId: new FormControl<string>(''),
-    telegramUsername: new FormControl(''),
     notes: new FormControl(''),
   });
 
@@ -599,7 +586,6 @@ export class ClientModal implements OnInit {
         groupName: existing.groupName || '',
         groupBalance: existing.groupBalance !== undefined ? existing.groupBalance : (existing.balance || 0),
         providerAccountId: existing.providerAccountId || '',
-        telegramUsername: existing.telegramUsername || existing.viberId || '',
         notes: existing.notes || '',
       });
     } else {
@@ -619,7 +605,6 @@ export class ClientModal implements OnInit {
         groupName: presetGroup?.groupName || '',
         groupBalance: presetGroup?.groupBalance || 0,
         providerAccountId: '',
-        telegramUsername: '',
       });
     }
   }
@@ -679,7 +664,6 @@ export class ClientModal implements OnInit {
     try {
       const plan = this.selectedPlan();
       const cost = plan === '2usd' ? 2 : 1;
-      const tgUser = val.telegramUsername ? val.telegramUsername.trim() : '';
       const trimmedGroupName = val.groupName ? val.groupName.trim() : '';
       const grpBalance = Number(val.groupBalance) || 0;
 
@@ -699,8 +683,6 @@ export class ClientModal implements OnInit {
           groupName: trimmedGroupName || undefined,
           groupBalance: trimmedGroupName ? grpBalance : 0,
           providerAccountId: val.providerAccountId || undefined,
-          telegramUsername: tgUser,
-          viberId: tgUser,
           notes: val.notes || '',
         });
 
@@ -732,8 +714,6 @@ export class ClientModal implements OnInit {
           groupName: trimmedGroupName || undefined,
           groupBalance: trimmedGroupName ? grpBalance : 0,
           providerAccountId: val.providerAccountId || undefined,
-          telegramUsername: tgUser,
-          viberId: tgUser,
           notes: val.notes || '',
         });
 

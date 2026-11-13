@@ -649,8 +649,11 @@ import { getGoogleCalendarUrl, generateIcsFile } from '../../utils/calendar-even
 
       <!-- MODAL: RENEW PROVIDER ACCOUNT (+MONTHS) -->
       @if (renewModalAccount()) {
-        <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-3 sm:p-4 flex items-center justify-center">
-          <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden my-auto border border-slate-200 flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)]">
+        <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+          <div class="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden sm:my-auto border border-slate-200 flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] pb-safe">
+            <div class="sm:hidden flex justify-center pt-2 pb-1 bg-slate-900 shrink-0">
+              <span class="w-10 h-1 rounded-full bg-white/30"></span>
+            </div>
             <!-- Modal Header (pinned at top) -->
             <div class="flex items-center justify-between px-5 sm:px-6 py-4 bg-slate-900 text-white shrink-0">
               <div class="flex items-center gap-2.5">
@@ -776,6 +779,7 @@ import { getGoogleCalendarUrl, generateIcsFile } from '../../utils/calendar-even
                   <input
                     id="renew-months-input"
                     type="number"
+                    inputmode="numeric"
                     min="1"
                     max="60"
                     formControlName="months"
@@ -842,8 +846,11 @@ import { getGoogleCalendarUrl, generateIcsFile } from '../../utils/calendar-even
 
       <!-- MODAL: ADD / EDIT ACCOUNT -->
       @if (isAccountModalOpen()) {
-        <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-3 sm:p-4 flex items-center justify-center">
-          <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden my-auto border border-slate-200 flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)]">
+        <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+          <div class="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden sm:my-auto border border-slate-200 flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] pb-safe">
+            <div class="sm:hidden flex justify-center pt-2 pb-1 bg-slate-900 shrink-0">
+              <span class="w-10 h-1 rounded-full bg-white/30"></span>
+            </div>
             <!-- Modal Header (pinned at top) -->
             <div class="flex items-center justify-between px-5 sm:px-6 py-4 bg-slate-900 text-white shrink-0">
               <div class="flex items-center gap-2.5">
@@ -938,6 +945,7 @@ import { getGoogleCalendarUrl, generateIcsFile } from '../../utils/calendar-even
                       <input
                         id="acc-months-input"
                         type="number"
+                        inputmode="numeric"
                         min="1"
                         max="60"
                         formControlName="monthsCount"
@@ -1058,8 +1066,11 @@ import { getGoogleCalendarUrl, generateIcsFile } from '../../utils/calendar-even
 
       <!-- MODAL: ASSIGN CLIENT TO ACCOUNT -->
       @if (targetAccountForAssign()) {
-        <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-3 sm:p-4 flex items-center justify-center">
-          <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden my-auto border border-slate-200 flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)]">
+        <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+          <div class="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-md overflow-hidden sm:my-auto border border-slate-200 flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] pb-safe">
+            <div class="sm:hidden flex justify-center pt-2 pb-1 bg-slate-900 shrink-0">
+              <span class="w-10 h-1 rounded-full bg-white/30"></span>
+            </div>
             <!-- Header (pinned at top) -->
             <div class="flex items-center justify-between px-5 sm:px-6 py-4 bg-slate-900 text-white shrink-0">
               <div class="flex items-center gap-2.5">
@@ -1493,7 +1504,14 @@ export class AccountsView {
   }
 
   async deleteAccountConfirm(acc: ProviderAccountDetailed): Promise<void> {
-    const ok = confirm(`Ви дійсно бажаєте видалити акаунт "${acc.name}"? Клієнти будуть відкріплені.`);
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Видалити акаунт?',
+      message: `Ви дійсно бажаєте видалити акаунт "${acc.name}"? Клієнти будуть відкріплені.`,
+      confirmText: 'Видалити',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'delete',
+    });
     if (ok) {
       await this.dataService.deleteAccount(acc.id);
     }
@@ -1501,7 +1519,11 @@ export class AccountsView {
 
   openAssignClientDialog(acc: ProviderAccountDetailed): void {
     if ((acc.assignedClientIds?.length || 0) >= 2) {
-      alert('Цей акаунт вже має максимальну кількість підключень (2 користувачі).');
+      void this.dataService.showAlertMessage(
+        'Ліміт підключень',
+        'Цей акаунт вже має максимальну кількість підключень (2 користувачі).',
+        'warning'
+      );
       return;
     }
     this.clientSearchControl.setValue('');
@@ -1518,7 +1540,14 @@ export class AccountsView {
   }
 
   async unassignClient(accountId: string, clientId: string, clientName: string): Promise<void> {
-    const ok = confirm(`Відкріпити абонента ${clientName} від цього акаунту?`);
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Відкріпити абонента?',
+      message: `Відкріпити абонента ${clientName} від цього акаунту?`,
+      confirmText: 'Відкріпити',
+      cancelText: 'Скасувати',
+      tone: 'warning',
+      icon: 'link_off',
+    });
     if (ok) {
       await this.dataService.assignClientToAccount(accountId, clientId, 'unassign');
     }

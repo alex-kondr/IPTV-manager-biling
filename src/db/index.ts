@@ -24,12 +24,30 @@ export const getExternalDatabaseUrl = (): string | undefined => {
   }
   const dbUrl = process.env['DATABASE_URL'];
   if (dbUrl && !dbUrl.includes('username:password') && !dbUrl.includes('hostname:port') && !dbUrl.includes('YOUR_')) {
-    if (dbUrl.includes('internet-shop-4-alex-kondr.e.aivencloud.com')) {
-      return dbUrl.replace(/\/defaultdb(\?|$)/, '/iptv$1');
-    }
     return dbUrl;
   }
   return undefined;
+};
+
+const getPostgresSslConfig = (dbUrl?: string) => {
+  const caCert = process.env['DB_SSL_CA']?.trim();
+  const envReject = process.env['DB_SSL_REJECT_UNAUTHORIZED']?.trim().toLowerCase();
+  if (caCert) {
+    return {
+      rejectUnauthorized: envReject !== 'false',
+      ca: caCert.replace(/\\n/g, '\n'),
+    };
+  }
+  if (envReject === 'true') {
+    return { rejectUnauthorized: true };
+  }
+  if (envReject === 'false') {
+    return { rejectUnauthorized: false };
+  }
+  // Respect explicit verify-ca / verify-full in URL; otherwise allow managed DBs (e.g. Aiven sslmode=require)
+  // that terminate TLS with a cluster self-signed CA when DB_SSL_CA is not configured.
+  const strictUrlMode = Boolean(dbUrl && /[?&]sslmode=(verify-ca|verify-full)/i.test(dbUrl));
+  return { rejectUnauthorized: strictUrlMode };
 };
 
 export const isCloudSqlEnvConfigured = (): boolean => {
@@ -79,7 +97,7 @@ export const getExternalPool = (): pg.Pool => {
     const cleanUrl = dbUrl.replace(/[?&]sslmode=[^&]+/g, '').replace(/\?$/, '');
     global._externalPool = new Pool({
       connectionString: cleanUrl,
-      ssl: { rejectUnauthorized: false },
+      ssl: getPostgresSslConfig(dbUrl),
       max: 10,
       connectionTimeoutMillis: 8000,
     });
@@ -101,7 +119,7 @@ export const getCloudSqlPool = (): pg.Pool => {
       user: process.env['SQL_USER'] || 'postgres',
       password: process.env['SQL_PASSWORD'] || '',
       database: process.env['SQL_DB_NAME'] || 'postgres',
-      ssl: isSsl ? { rejectUnauthorized: false } : false,
+      ssl: isSsl ? getPostgresSslConfig() : false,
       max: 10,
       connectionTimeoutMillis: 8000,
     });

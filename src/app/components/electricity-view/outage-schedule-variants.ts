@@ -283,6 +283,126 @@ export interface OutageRadarWedge {
             </div>
           </div>
 
+          <!-- ANDROID SYSTEM NOTIFICATION DRAWER CONTROLS & HISTORY FEED -->
+          <div class="p-3.5 sm:p-4 rounded-2xl bg-slate-900 text-white border border-slate-800 space-y-3 shadow-xs">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div class="flex items-start gap-2.5 min-w-0">
+                <div
+                  class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border"
+                  [class.bg-emerald-500/20]="notificationPermission() === 'granted'"
+                  [class.text-emerald-300]="notificationPermission() === 'granted'"
+                  [class.border-emerald-400/30]="notificationPermission() === 'granted'"
+                  [class.bg-amber-500/20]="notificationPermission() !== 'granted'"
+                  [class.text-amber-300]="notificationPermission() !== 'granted'"
+                  [class.border-amber-400/30]="notificationPermission() !== 'granted'"
+                >
+                  <mat-icon class="text-lg leading-none">notifications</mat-icon>
+                </div>
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-xs sm:text-sm font-extrabold text-white">Сповіщення у шторці Android</span>
+                    <span
+                      class="px-2 py-0.5 rounded-md text-3xs font-bold uppercase tracking-wide"
+                      [class.bg-emerald-500/20]="notificationPermission() === 'granted'"
+                      [class.text-emerald-300]="notificationPermission() === 'granted'"
+                      [class.bg-rose-500/20]="notificationPermission() === 'denied'"
+                      [class.text-rose-300]="notificationPermission() === 'denied'"
+                      [class.bg-amber-500/20]="notificationPermission() === 'default'"
+                      [class.text-amber-200]="notificationPermission() === 'default'"
+                    >
+                      {{
+                        notificationPermission() === 'granted'
+                          ? 'Дозвіл надано'
+                          : notificationPermission() === 'denied'
+                            ? 'Заблоковано в налаштуваннях Chrome'
+                            : 'Потрібен дозвіл'
+                      }}
+                    </span>
+                    @if (status.queueGroup) {
+                      <span class="px-2 py-0.5 rounded-md bg-white/10 text-slate-200 text-3xs font-mono font-bold">
+                        Черга {{ status.queueGroup }}
+                      </span>
+                    }
+                  </div>
+                  <p class="text-2xs text-slate-300 mt-0.5">
+                    Спливаючі системні повідомлення з вібрацією при зміні графіку ДТЕК ОЕМ та фоновій синхронізації.
+                  </p>
+                </div>
+              </div>
+
+              <div class="flex items-center gap-2 flex-wrap shrink-0">
+                @if (!isPushSubscribed() || notificationPermission() !== 'granted') {
+                  <button
+                    type="button"
+                    (click)="enableSchedulePushNotifications()"
+                    [disabled]="isPushLoading()"
+                    class="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-2xs sm:text-xs inline-flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    <mat-icon class="text-sm leading-none">notifications_active</mat-icon>
+                    <span>Увімкнути сповіщення у шторці Android</span>
+                  </button>
+                } @else {
+                  <button
+                    type="button"
+                    (click)="disableSchedulePushNotifications()"
+                    [disabled]="isPushLoading()"
+                    class="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-2xs sm:text-xs inline-flex items-center gap-1.5 transition-all cursor-pointer border border-white/15 disabled:opacity-50"
+                  >
+                    <mat-icon class="text-sm leading-none">notifications_off</mat-icon>
+                    <span>Вимкнути</span>
+                  </button>
+                }
+
+                <button
+                  type="button"
+                  (click)="testAndroidNotificationNow()"
+                  class="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-2xs sm:text-xs inline-flex items-center gap-1.5 transition-all cursor-pointer"
+                  title="Показати миттєве системне сповіщення у шторці Android"
+                >
+                  <mat-icon class="text-sm leading-none">notification_important</mat-icon>
+                  <span>Тест у шторці зараз</span>
+                </button>
+
+                <button
+                  type="button"
+                  (click)="testSchedulePushNotifications()"
+                  [disabled]="pushCountdownSeconds() > 0"
+                  class="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-2xs sm:text-xs inline-flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-60"
+                  title="Запустити 5-секундний таймер — згорніть браузер і перевірте шторку Android"
+                >
+                  <mat-icon class="text-sm leading-none">timer</mat-icon>
+                  <span>
+                    {{
+                      pushCountdownSeconds() > 0
+                        ? 'Згорніть браузер: ' + pushCountdownSeconds() + ' с...'
+                        : 'Тест зі згортанням (5 сек)'
+                    }}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            @if (recentScheduleChanges().length > 0) {
+              <div class="pt-2.5 border-t border-white/10 space-y-1.5">
+                <div class="text-3xs font-bold uppercase tracking-wider text-amber-300 flex items-center gap-1.5">
+                  <mat-icon class="text-xs leading-none">history</mat-icon>
+                  <span>Останні зміни графіку</span>
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                  @for (chg of recentScheduleChanges().slice(0, 4); track chg.id) {
+                    <div class="px-2.5 py-1.5 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between gap-2 text-2xs">
+                      <div class="min-w-0">
+                        <span class="font-bold text-amber-300">{{ chg.queueKey.replace('GPV', 'Черга ') }}</span>
+                        <span class="text-slate-300 ml-1.5 truncate">{{ chg.summary }}</span>
+                      </div>
+                      <span class="text-3xs font-mono text-slate-400 shrink-0">{{ chg.detectedAtKyiv || chg.detectedAt }}</span>
+                    </div>
+                  }
+                </div>
+              </div>
+            }
+          </div>
+
           @switch (activeOutageVariant()) {
             <!-- ========================================================== -->
             <!-- VARIANT 2: LINEAR RIBBON TIMELINE (48 HALF-HOUR SEGMENTS)  -->
@@ -1944,13 +2064,16 @@ export interface OutageRadarWedge {
       <!-- ================================================================ -->
       @if (shareModalOpen()) {
         <div
-          class="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5"
+          class="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-5"
           (click)="closeShareModal()"
         >
           <div
-            class="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-4xl w-full overflow-hidden flex flex-col max-h-[92vh]"
+            class="bg-white rounded-t-3xl sm:rounded-2xl border border-slate-200 shadow-xl max-w-4xl w-full overflow-hidden flex flex-col max-h-[92dvh] pb-safe"
             (click)="$event.stopPropagation()"
           >
+            <div class="sm:hidden flex justify-center pt-2 pb-1 bg-slate-900 shrink-0">
+              <span class="w-10 h-1 rounded-full bg-white/30"></span>
+            </div>
             <!-- Modal Header -->
             <div class="px-4 sm:px-6 py-3.5 bg-slate-900 text-white flex items-center justify-between gap-3">
               <div class="flex items-center gap-2.5">
@@ -1962,7 +2085,7 @@ export interface OutageRadarWedge {
                     Поділитися графіком відключень ({{ activeOutageVariantMeta().shortName }})
                   </h3>
                   <p class="text-2xs text-slate-300">
-                    Поточний вигляд: {{ activeOutageVariantMeta().name }} — готово до надсилання у Telegram, Viber або інший месенджер
+                    Поточний вигляд: {{ activeOutageVariantMeta().name }} — готово до надсилання у Viber або інший месенджер
                   </p>
                 </div>
               </div>
@@ -2103,11 +2226,13 @@ export class OutageScheduleVariantsComponent {
   readonly activeOutageVariant = this.dataService.outageScheduleViewVariant;
   readonly dtekSyncIntervalMinutes = this.dataService.dtekSyncIntervalMinutes;
 
-  // Background Web Push Notification state for Schedule Changes
+  // Background Web Push & Android Notification Drawer state for Schedule Changes
   readonly isPushSubscribed = this.dataService.isPushSubscribed;
   readonly isPushLoading = this.dataService.isPushLoading;
   readonly pushStatusMessage = this.dataService.pushStatusMessage;
   readonly pushCountdownSeconds = this.dataService.pushCountdownSeconds;
+  readonly notificationPermission = this.dataService.notificationPermission;
+  readonly recentScheduleChanges = this.dataService.recentScheduleChanges;
 
   enableSchedulePushNotifications(): void {
     void this.dataService.enableWebPushNotifications();
@@ -2115,6 +2240,10 @@ export class OutageScheduleVariantsComponent {
 
   disableSchedulePushNotifications(): void {
     void this.dataService.disableWebPushNotifications();
+  }
+
+  testAndroidNotificationNow(): void {
+    void this.dataService.testAndroidSystemNotificationNow();
   }
 
   testSchedulePushNotifications(): void {

@@ -26,12 +26,15 @@ import { IptvData } from '../../services/iptv-data';
   template: `
     <div
       id="payment-modal-overlay"
-      class="fixed inset-0 z-[100] overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-3 sm:p-4 flex items-center justify-center"
+      class="fixed inset-0 z-[100] overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center"
     >
       <div
         id="payment-modal-container"
-        class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden my-auto border border-slate-200 flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)]"
+        class="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden sm:my-auto border border-slate-200 flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] pb-safe"
       >
+        <div class="sm:hidden flex justify-center pt-2 pb-1 bg-emerald-700 shrink-0">
+          <span class="w-10 h-1 rounded-full bg-white/35"></span>
+        </div>
         @if (!showViberProposal()) {
           <!-- Header (pinned at top) -->
           <div class="flex items-center justify-between px-5 sm:px-6 py-4 bg-emerald-700 text-white shrink-0">
@@ -173,6 +176,7 @@ import { IptvData } from '../../services/iptv-data';
                     <input
                       id="payment-amount-input"
                       type="number"
+                      inputmode="decimal"
                       min="1"
                       step="5"
                       formControlName="amount"
@@ -388,7 +392,7 @@ export class PaymentModal implements OnInit {
         clientId: this.client().id,
         amount: Number(val.amount),
         note: val.note || '',
-        sendViberReceipt: false, // Disables automatic Telegram bot receipts, Viber is offered in prompt UI instead
+        sendViberReceipt: false,
       });
 
       // Prepare Viber notification text using customized template
@@ -433,7 +437,7 @@ export class PaymentModal implements OnInit {
 
     const text = this.viberMessageText();
     const viberUrl = `viber://chat?number=${formattedPhone}&draft=${encodeURIComponent(text)}`;
-    window.open(viberUrl, '_blank');
+    window.location.href = viberUrl;
     this.modalClose.emit();
   }
 

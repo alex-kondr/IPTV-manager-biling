@@ -16,6 +16,33 @@
   scrollbar-width: none;
 }
 
+/* Android & Mobile Touch Ergonomics */
+html,
+body {
+  overscroll-behavior-y: contain;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+a,
+[role="button"],
+select,
+label {
+  touch-action: manipulation;
+}
+
+.pb-safe {
+  padding-bottom: max(0.375rem, env(safe-area-inset-bottom, 0px));
+}
+
+@media (max-width: 640px) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
 /* ==========================================================================
    GLOBAL DARK THEME TRANSFORMATION & CONTRAST PAIRING
    ========================================================================== */

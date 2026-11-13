@@ -54,10 +54,7 @@ import {
 } from '../models/utility.model';
 
 const DEFAULT_SETTINGS: AppSettings = {
-  telegramBotToken: '',
-  telegramBotUsername: 'iptv_billing_bot',
-  telegramSenderName: 'IPTV Підтримка',
-  cardRequisites: '4441 1144 2233 5566 (Монобанк, Іван П.)',
+  cardRequisites: '',
   reminderDaysBefore: 7,
   defaultMonthlyPrice: 100,
   autoReminderEnabled: true,
@@ -70,6 +67,27 @@ const DEFAULT_SETTINGS: AppSettings = {
     'Доброго дня, {name}! Вашу IPTV підписку (логін: {login}) успішно продовжено до {active_until}. Сума оплати: {amount} грн. Дата: {current_date}. Приємного перегляду!',
   utilityTariffsSettings: DEFAULT_UTILITY_TARIFFS,
 };
+
+export interface ConfirmDialogConfig {
+  title: string;
+  message: string;
+  confirmText?: string;
+  cancelText?: string;
+  isDanger?: boolean;
+  isAlertOnly?: boolean;
+  tone?: 'danger' | 'warning' | 'info' | 'primary';
+  icon?: string;
+}
+
+export interface ScheduleChangeLogEntry {
+  id: string;
+  queueKey: string;
+  detectedAt: string;
+  detectedAtKyiv?: string;
+  previousIntervals: string[];
+  newIntervals: string[];
+  summary: string;
+}
 
 export function normalizeUtilityTariffs(raw?: Partial<UtilityTariffsSettings>): UtilityTariffsSettings {
   if (!raw) return DEFAULT_UTILITY_TARIFFS;
@@ -214,7 +232,7 @@ export interface BroadcastResult {
     clientId: string;
     clientName: string;
     phone: string;
-    method: 'viber_api' | 'manual';
+    method: 'manual';
     success: boolean;
     error?: string;
   }[];
@@ -464,6 +482,10 @@ export class IptvData {
   readonly autoSyncActive = signal<boolean>(true);
   readonly lastAutoSyncTime = signal<string>(new Date().toISOString());
 
+  // Global Material Confirm / Alert Dialog (replaces window.confirm & window.alert for Android)
+  readonly confirmDialog = signal<ConfirmDialogConfig | null>(null);
+  private confirmDialogResolver: ((accepted: boolean) => void) | null = null;
+
   // User Authentication & Role Management Signals
   readonly currentUser = signal<AppUser | null>(null);
   readonly realAdminUser = signal<AppUser | null>(null);
@@ -564,7 +586,6 @@ export class IptvData {
       outage_sync_interval: 'system',
       billing: 'system',
       viber: 'system',
-      telegram: 'system',
       database: 'system',
       backup: 'system',
     },
@@ -998,12 +1019,19 @@ export class IptvData {
       }
     }
 
-    // Current month revenue
+    // Current month revenue (payments + custom income ledger entries)
+    const ledgerList = this.ledger();
     let currentMonthRevenue = 0;
     let paymentsThisMonthCount = 0;
     for (const p of paymentsList) {
       if (p.date && p.date.startsWith(currentMonthKey)) {
         currentMonthRevenue += Number(p.amount) || 0;
+        paymentsThisMonthCount++;
+      }
+    }
+    for (const item of ledgerList) {
+      if (item.isCustom && item.type === 'income' && (Number(item.amountUah) || 0) > 0 && item.date && item.date.startsWith(currentMonthKey)) {
+        currentMonthRevenue += Number(item.amountUah) || 0;
         paymentsThisMonthCount++;
       }
     }
@@ -1024,6 +1052,7 @@ export class IptvData {
   // Current Year Revenue Dynamics & Statistics (Months 1-12)
   readonly currentYearIncomeStats = computed<YearlyMonthIncomeStat[]>(() => {
     const paymentsList = this.payments();
+    const ledgerList = this.ledger();
     const now = new Date();
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth() + 1; // 1 to 12
@@ -1059,6 +1088,12 @@ export class IptvData {
       for (const p of paymentsList) {
         if (p.date && p.date.startsWith(monthKey)) {
           totalIncome += Number(p.amount) || 0;
+          paymentsCount++;
+        }
+      }
+      for (const item of ledgerList) {
+        if (item.isCustom && item.type === 'income' && (Number(item.amountUah) || 0) > 0 && item.date && item.date.startsWith(monthKey)) {
+          totalIncome += Number(item.amountUah) || 0;
           paymentsCount++;
         }
       }
@@ -1540,6 +1575,7 @@ export class IptvData {
   async loginWithGoogle(payload: {
     idToken?: string;
     credential?: string;
+    accessToken?: string;
     email?: string;
     name?: string;
     picture?: string;
@@ -2197,7 +2233,7 @@ export class IptvData {
   }
 
   // ============================================================================
-  // WEB PUSH NOTIFICATIONS (VAPID) FOR DTEK SCHEDULE CHANGES
+  // WEB PUSH & ANDROID SYSTEM NOTIFICATION DRAWER FOR DTEK SCHEDULE CHANGES
   // ============================================================================
   readonly isPushSupported = signal<boolean>(false);
   readonly isPushSubscribed = signal<boolean>(false);
@@ -2205,7 +2241,14 @@ export class IptvData {
   readonly pushStatusMessage = signal<string>('');
   readonly pushMonitoredQueue = signal<string>('GPV4.1');
   readonly pushCountdownSeconds = signal<number>(0);
+  readonly notificationPermission = signal<NotificationPermission>(
+    typeof Notification !== 'undefined' ? Notification.permission : 'default'
+  );
+  readonly recentScheduleChanges = signal<ScheduleChangeLogEntry[]>([]);
   private currentPushEndpoint: string | null = null;
+  private lastDtekScheduleSignature: string | null = null;
+  private lastSeenRemoteChangeId: string | null = null;
+  private schedulePollIntervalId: ReturnType<typeof setInterval> | null = null;
 
   private urlBase64ToUint8Array(base64String: string): Uint8Array {
     const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -2219,59 +2262,162 @@ export class IptvData {
   }
 
   async initWebPushState(): Promise<void> {
-    if (typeof window === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+    if (typeof window === 'undefined') {
       this.isPushSupported.set(false);
       return;
     }
-    this.isPushSupported.set(true);
+    if ('Notification' in window) {
+      this.notificationPermission.set(Notification.permission);
+    }
+    const hasNotificationApi = 'Notification' in window || ('serviceWorker' in navigator && 'PushManager' in window);
+    this.isPushSupported.set(hasNotificationApi);
+
+    if (!('serviceWorker' in navigator)) {
+      return;
+    }
     try {
       const reg = await navigator.serviceWorker.register('/sw.js');
-      const sub = await reg.pushManager.getSubscription();
-      if (sub) {
-        this.currentPushEndpoint = sub.endpoint;
-        this.isPushSubscribed.set(true);
-        const q = this.dtekShutdownInfo()?.queueGroup || 'GPV4.1';
-        this.pushMonitoredQueue.set(q);
-      } else {
-        this.isPushSubscribed.set(false);
+      if ('PushManager' in window) {
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) {
+          this.currentPushEndpoint = sub.endpoint;
+          this.isPushSubscribed.set(true);
+          const q = this.dtekShutdownInfo()?.queueGroup || 'GPV4.1';
+          this.pushMonitoredQueue.set(q);
+        } else {
+          this.isPushSubscribed.set(false);
+        }
       }
+      await this.fetchRecentScheduleChanges(false);
+      this.startScheduleChangesPolling();
     } catch {
       // ignore
     }
   }
 
+  private startScheduleChangesPolling(): void {
+    if (typeof window === 'undefined' || this.schedulePollIntervalId !== null) return;
+    this.schedulePollIntervalId = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        void this.fetchRecentScheduleChanges(true);
+      }
+    }, 60_000);
+  }
+
+  async fetchRecentScheduleChanges(notifyOnNew = true): Promise<ScheduleChangeLogEntry[]> {
+    if (typeof window === 'undefined') return [];
+    try {
+      const queue = this.dtekShutdownInfo()?.queueGroup || this.pushMonitoredQueue() || '';
+      const qs = queue && queue !== 'ALL' ? `?queue=${encodeURIComponent(queue)}` : '';
+      const res = await firstValueFrom(
+        this.http.get<{ changes: ScheduleChangeLogEntry[] }>(`/api/push/changes${qs}`)
+      );
+      const list = Array.isArray(res?.changes) ? res.changes : [];
+      this.recentScheduleChanges.set(list);
+      if (list.length > 0) {
+        const latest = list[0];
+        if (notifyOnNew && this.lastSeenRemoteChangeId && this.lastSeenRemoteChangeId !== latest.id) {
+          if (this.notificationPermission() === 'granted') {
+            await this.showAndroidSystemNotification({
+              title: `⚡ Зміна графіку ДТЕК (${latest.queueKey.replace('GPV', 'Черга ')})`,
+              body: latest.summary || `Нові слоти відключень: ${latest.newIntervals.join(', ') || 'Без відключень'}`,
+              tag: `dtek-change-${latest.queueKey}`,
+              queueGroup: latest.queueKey,
+            });
+          }
+        }
+        this.lastSeenRemoteChangeId = latest.id;
+      }
+      return list;
+    } catch {
+      return this.recentScheduleChanges();
+    }
+  }
+
+  async showAndroidSystemNotification(options: {
+    title: string;
+    body: string;
+    tag?: string;
+    url?: string;
+    queueGroup?: string;
+  }): Promise<boolean> {
+    if (typeof window === 'undefined') return false;
+    if ('Notification' in window) {
+      if (Notification.permission === 'default') {
+        const perm = await Notification.requestPermission();
+        this.notificationPermission.set(perm);
+      } else {
+        this.notificationPermission.set(Notification.permission);
+      }
+      if (Notification.permission !== 'granted') {
+        return false;
+      }
+    }
+
+    const title = options.title || '⚡ HomeHub — Графік ДТЕК';
+    const tag = options.tag || `dtek-drawer-${Date.now()}`;
+    const url = options.url || '/?tab=outage_schedule';
+
+    if ('serviceWorker' in navigator) {
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        if (reg && typeof reg.showNotification === 'function') {
+          await reg.showNotification(title, {
+            body: options.body,
+            icon: '/icons/icon-192.png',
+            badge: '/icons/icon-192.png',
+            tag,
+            renotify: true,
+            requireInteraction: true,
+            vibrate: [200, 100, 200, 100, 300],
+            data: { url, queueGroup: options.queueGroup || this.pushMonitoredQueue() },
+            actions: [
+              { action: 'open', title: '📊 Відкрити графік' },
+              { action: 'snooze', title: '⏰ Нагадати за 15 хв' },
+            ],
+          } as NotificationOptions & { renotify?: boolean; vibrate?: number[]; actions?: { action: string; title: string }[] });
+          return true;
+        }
+        if (navigator.serviceWorker.controller) {
+          navigator.serviceWorker.controller.postMessage({
+            type: 'SHOW_NOTIFICATION',
+            title,
+            body: options.body,
+            tag,
+            url,
+            queueGroup: options.queueGroup || this.pushMonitoredQueue(),
+          });
+          return true;
+        }
+      } catch {
+        // Fallback to Notification constructor below
+      }
+    }
+
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification(title, {
+        body: options.body,
+        icon: '/icons/icon-192.png',
+        tag,
+      });
+      return true;
+    }
+    return false;
+  }
+
   async enableWebPushNotifications(customQueue?: string): Promise<boolean> {
-    if (typeof window === 'undefined' || !('serviceWorker' in navigator) || !('PushManager' in window)) {
-      this.triggerError('Ваш браузер не підтримує Web Push. На iPhone додайте додаток на Початковий екран (iOS 16.4+).');
+    if (typeof window === 'undefined' || !('Notification' in window)) {
+      this.triggerError('Ваш браузер не підтримує сповіщення.');
       return false;
     }
     this.isPushLoading.set(true);
     this.pushStatusMessage.set('');
     try {
       const permission = await Notification.requestPermission();
+      this.notificationPermission.set(permission);
       if (permission !== 'granted') {
-        this.triggerError('Дозвіл на сповіщення відхилено у налаштуваннях браузера');
+        this.triggerError('Дозвіл на сповіщення відхилено у налаштуваннях Android / браузера');
         return false;
-      }
-
-      const reg = await navigator.serviceWorker.register('/sw.js');
-      await navigator.serviceWorker.ready;
-
-      const vapidRes = await firstValueFrom(
-        this.http.get<{ publicKey: string }>('/api/push/vapid-public-key', this.getAuthHeaders())
-      );
-      if (!vapidRes?.publicKey) {
-        this.triggerError('Не вдалося отримати VAPID-ключ сервера');
-        return false;
-      }
-
-      let sub = await reg.pushManager.getSubscription();
-      if (!sub) {
-        const convertedKey = this.urlBase64ToUint8Array(vapidRes.publicKey);
-        sub = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: convertedKey.buffer as ArrayBuffer,
-        });
       }
 
       const dtek = this.dtekShutdownInfo();
@@ -2282,31 +2428,74 @@ export class IptvData {
         activeHouse?.dtekQueueGroup ||
         this.pushMonitoredQueue() ||
         'GPV4.1';
-
       this.pushMonitoredQueue.set(queueGroup);
-      this.currentPushEndpoint = sub.endpoint;
 
-      await firstValueFrom(
-        this.http.post(
-          '/api/push/subscribe',
-          {
-            subscription: sub.toJSON(),
-            queueGroup,
-            city: dtek?.city || activeHouse?.city,
-            street: dtek?.street || activeHouse?.street,
-            houseNum: dtek?.houseNum || activeHouse?.houseNum,
-            deviceLabel: navigator.userAgent.includes('Mobile') ? 'Смартфон' : 'Компʼютер / Браузер',
-          },
-          this.getAuthHeaders()
-        )
-      );
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        this.isPushSubscribed.set(true);
+        this.pushStatusMessage.set(`Локальні системні сповіщення у шторці увімкнено (${queueGroup.replace('GPV', 'Черга ')})`);
+        this.triggerSuccess('Системні сповіщення у шторці Android увімкнено!');
+        return true;
+      }
+
+      const reg = await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.ready;
+
+      // Register Periodic Background Sync (Android Chrome PWA)
+      try {
+        const regWithSync = reg as ServiceWorkerRegistration & {
+          periodicSync?: { register: (tag: string, opts: { minInterval: number }) => Promise<void> };
+        };
+        if (regWithSync.periodicSync && typeof regWithSync.periodicSync.register === 'function') {
+          await regWithSync.periodicSync.register('dtek-schedule-sync', { minInterval: 15 * 60 * 1000 });
+        }
+      } catch {
+        // Periodic sync optional
+      }
+
+      try {
+        const vapidRes = await firstValueFrom(
+          this.http.get<{ publicKey: string }>('/api/push/vapid-public-key', this.getAuthHeaders())
+        );
+        if (vapidRes?.publicKey) {
+          let sub = await reg.pushManager.getSubscription();
+          if (!sub) {
+            const convertedKey = this.urlBase64ToUint8Array(vapidRes.publicKey);
+            sub = await reg.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: convertedKey.buffer as ArrayBuffer,
+            });
+          }
+          this.currentPushEndpoint = sub.endpoint;
+          await firstValueFrom(
+            this.http.post(
+              '/api/push/subscribe',
+              {
+                subscription: sub.toJSON(),
+                queueGroup,
+                city: dtek?.city || activeHouse?.city,
+                street: dtek?.street || activeHouse?.street,
+                houseNum: dtek?.houseNum || activeHouse?.houseNum,
+                deviceLabel: navigator.userAgent.includes('Android')
+                  ? 'Android Смартфон'
+                  : navigator.userAgent.includes('Mobile')
+                    ? 'Смартфон'
+                    : 'Компʼютер / Браузер',
+              },
+              this.getAuthHeaders()
+            )
+          );
+        }
+      } catch {
+        // Continue with Android local ServiceWorker drawer notifications even if VAPID push blocked by iframe
+      }
 
       this.isPushSubscribed.set(true);
-      this.pushStatusMessage.set(`Підписано на зміни графіку (${queueGroup.replace('GPV', 'Черга ')})`);
-      this.triggerSuccess(`Фонові Web Push-сповіщення увімкнено для ${queueGroup.replace('GPV', 'Черги ')}!`);
+      this.pushStatusMessage.set(`Сповіщення у шторці Android активні (${queueGroup.replace('GPV', 'Черга ')})`);
+      this.triggerSuccess(`Сповіщення у шторці увімкнено для ${queueGroup.replace('GPV', 'Черги ')}!`);
+      this.startScheduleChangesPolling();
       return true;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Помилка підписки на Web Push';
+      const msg = err instanceof Error ? err.message : 'Помилка увімкнення сповіщень';
       this.triggerError(msg);
       return false;
     } finally {
@@ -2332,7 +2521,7 @@ export class IptvData {
       this.isPushSubscribed.set(false);
       this.currentPushEndpoint = null;
       this.pushStatusMessage.set('Фонові сповіщення вимкнено');
-      this.triggerSuccess('Фонові Web Push-сповіщення вимкнено');
+      this.triggerSuccess('Сповіщення вимкнено');
       return true;
     } catch {
       return false;
@@ -2341,14 +2530,93 @@ export class IptvData {
     }
   }
 
+  private extractOutageIntervals(hours?: DtekHourSchedule[]): string[] {
+    if (!Array.isArray(hours) || hours.length === 0) return [];
+    const intervals: string[] = [];
+    let currentStart: string | null = null;
+    for (const slot of hours) {
+      const hasFirst = Boolean(slot.firstHalfPower);
+      const hasSecond = Boolean(slot.secondHalfPower);
+      const from = slot.fromTime || `${String(Math.max(0, slot.hour - 1)).padStart(2, '0')}:00`;
+      const mid = `${from.slice(0, 2)}:30`;
+      const to = slot.toTime || `${String(slot.hour).padStart(2, '0')}:00`;
+
+      if (!hasFirst) {
+        if (!currentStart) currentStart = from;
+      } else if (currentStart) {
+        intervals.push(`${currentStart}–${from}`);
+        currentStart = null;
+      }
+
+      if (!hasSecond) {
+        if (!currentStart) currentStart = mid;
+      } else if (currentStart) {
+        intervals.push(`${currentStart}–${mid}`);
+        currentStart = null;
+      }
+      if (hasFirst && hasSecond && currentStart) {
+        intervals.push(`${currentStart}–${from}`);
+        currentStart = null;
+      }
+      if (slot.hour === 24 && currentStart) {
+        intervals.push(`${currentStart}–${to}`);
+        currentStart = null;
+      }
+    }
+    return intervals;
+  }
+
+  private resolveTodayIntervals(info: DtekShutdownInfo | null): string[] {
+    if (!info) return [];
+    const qNorm = (info.queueGroup || '').replace(/^GPV/i, '').trim();
+    const matched = qNorm
+      ? info.allQueuesSchedules?.find(
+          (q) => q.queueNumber === qNorm || q.queueKey === info.queueGroup
+        )
+      : undefined;
+    if (matched?.outageIntervals && matched.outageIntervals.length > 0) {
+      return matched.outageIntervals;
+    }
+    return this.extractOutageIntervals(info.hourlySchedule);
+  }
+
+  private resolveTomorrowIntervals(info: DtekShutdownInfo | null): string[] {
+    if (!info) return [];
+    return this.extractOutageIntervals(info.tomorrowSchedule?.hourlySchedule);
+  }
+
+  async testAndroidSystemNotificationNow(): Promise<boolean> {
+    const info = this.dtekShutdownInfo();
+    const queue = info?.queueGroup || this.pushMonitoredQueue() || 'GPV4.1';
+    const slots = this.resolveTodayIntervals(info).join(', ') || '10:00–14:00, 19:00–22:00';
+    const ok = await this.showAndroidSystemNotification({
+      title: `⚡ Зміна графіку ДТЕК (${queue.replace('GPV', 'Черга ')})`,
+      body: `Тест системної шторки Android! Поточні відключення: ${slots}.`,
+      tag: `dtek-now-${Date.now()}`,
+      queueGroup: queue,
+    });
+    if (ok) {
+      this.pushStatusMessage.set('Сповіщення надіслано у системну шторку пристрою!');
+      this.triggerSuccess('Сповіщення надіслано у шторку Android!');
+    } else {
+      this.triggerError('Надайте дозвіл на сповіщення у налаштуваннях браузера / Android.');
+    }
+    return ok;
+  }
+
   async triggerDelayedWebPushTest(delaySeconds = 5, simulateScheduleDiff = true): Promise<boolean> {
-    if (!this.isPushSubscribed()) {
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission !== 'granted') {
       const ok = await this.enableWebPushNotifications();
       if (!ok) return false;
     }
+
+    const info = this.dtekShutdownInfo();
+    const queueGroup = info?.queueGroup || this.pushMonitoredQueue() || 'GPV4.1';
+    const slots = this.resolveTodayIntervals(info).join(', ') || '10:00–14:00, 19:00–22:00';
+
     this.pushCountdownSeconds.set(delaySeconds);
     this.pushStatusMessage.set(
-      `Згорніть браузер або заблокуйте телефон! Сповіщення надійде через ${delaySeconds} сек...`
+      `Згорніть браузер! Сповіщення у шторці Android зʼявиться через ${delaySeconds} сек...`
     );
 
     const timer = setInterval(() => {
@@ -2356,33 +2624,40 @@ export class IptvData {
       if (cur <= 1) {
         clearInterval(timer);
         this.pushCountdownSeconds.set(0);
-        this.pushStatusMessage.set('Push-пакет про зміну графіку відправлено на пристрій!');
+        this.pushStatusMessage.set('Сповіщення про зміну графіку відправлено у шторку!');
+        void this.showAndroidSystemNotification({
+          title: simulateScheduleDiff
+            ? `⚡ Зміна графіку ДТЕК (${queueGroup.replace('GPV', 'Черга ')})`
+            : `🔔 Перевірка HomeHub (${queueGroup.replace('GPV', 'Черга ')})`,
+          body: `Системне сповіщення Android працює! Слоти сьогодні: ${slots}.`,
+          tag: `dtek-delayed-${Date.now()}`,
+          queueGroup,
+        });
       } else {
         this.pushCountdownSeconds.set(cur - 1);
       }
     }, 1000);
 
-    try {
-      await firstValueFrom(
-        this.http.post(
-          '/api/push/test-delayed',
-          {
-            endpoint: this.currentPushEndpoint,
-            delaySeconds,
-            queueGroup: this.dtekShutdownInfo()?.queueGroup || this.pushMonitoredQueue() || 'GPV4.1',
-            simulateScheduleDiff,
-          },
-          this.getAuthHeaders()
-        )
-      );
-      return true;
-    } catch (err: unknown) {
-      clearInterval(timer);
-      this.pushCountdownSeconds.set(0);
-      const httpErr = err as { error?: { error?: string }; message?: string };
-      this.triggerError(httpErr?.error?.error || httpErr?.message || 'Помилка відправки тестового Push');
-      return false;
+    // Also try server Web Push in parallel if endpoint registered
+    if (this.currentPushEndpoint) {
+      try {
+        await firstValueFrom(
+          this.http.post(
+            '/api/push/test-delayed',
+            {
+              endpoint: this.currentPushEndpoint,
+              delaySeconds,
+              queueGroup,
+              simulateScheduleDiff,
+            },
+            this.getAuthHeaders()
+          )
+        );
+      } catch {
+        // Local Android drawer notification timer handles delivery seamlessly
+      }
     }
+    return true;
   }
 
   async refreshAllData(silent = false): Promise<void> {
@@ -2402,10 +2677,11 @@ export class IptvData {
           this.fetchPayments(),
         ]);
         await Promise.all([
-          this.fetchAccounts(this.accounts().length === 0),
-          this.fetchBudget(this.ledger().length === 0),
-          this.fetchStats(this.monthlyStats().length === 0),
+          this.fetchAccounts(true),
+          this.fetchBudget(true),
+          this.fetchStats(true),
           this.fetchDbStatus(),
+          this.isRealAdmin() ? this.fetchUsers() : Promise.resolve(),
         ]);
         if (!this.dtekShutdownInfo() && Date.now() >= this.apiRateLimitCooldownUntil) {
           await this.fetchDtekShutdowns();
@@ -2651,12 +2927,30 @@ export class IptvData {
         this.http.get<DtekShutdownInfo>(url)
       );
       if (info && Array.isArray(info.hourlySchedule)) {
+        const todaySlots = this.resolveTodayIntervals(info);
+        const tomorrowSlots = this.resolveTomorrowIntervals(info);
+        const nextSignature = `${info.queueGroup || ''}|${todaySlots.join(',')}|${tomorrowSlots.join(',')}`;
+        if (
+          this.lastDtekScheduleSignature &&
+          this.lastDtekScheduleSignature !== nextSignature &&
+          this.notificationPermission() === 'granted'
+        ) {
+          const slotsText = todaySlots.join(', ') || 'Без відключень';
+          void this.showAndroidSystemNotification({
+            title: `⚡ Зміна графіку ДТЕК (${(info.queueGroup || 'Черга').replace('GPV', 'Черга ')})`,
+            body: `Новий розклад на сьогодні: ${slotsText}`,
+            tag: `dtek-local-diff-${info.queueGroup || 'gpv'}`,
+            queueGroup: info.queueGroup || undefined,
+          });
+        }
+        this.lastDtekScheduleSignature = nextSignature;
         this.dtekShutdownInfo.set(info);
         if (forceRefresh) {
           if (info.didFetchLiveFromDtek) {
             this.triggerSuccess(
               `Графік ДТЕК оновлено з сайту та збережено в БД (${info.lastDtekFetchAt || info.fetchedAt || 'щойно'})!`
             );
+            void this.fetchRecentScheduleChanges(false);
           } else if (info.refreshSkippedByCooldown) {
             const mins = info.minutesUntilNextRefresh || 1;
             const intervalMins = info.syncIntervalMinutes || this.dtekSyncIntervalMinutes();
@@ -4683,6 +4977,44 @@ export class IptvData {
 
   private saveUtilityReadingsLocal(readings: UtilityReading[]): void {
     void readings;
+  }
+
+  openConfirmDialog(config: ConfirmDialogConfig): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (this.confirmDialogResolver) {
+        this.confirmDialogResolver(false);
+      }
+      this.confirmDialogResolver = resolve;
+      this.confirmDialog.set({
+        confirmText: 'Підтвердити',
+        cancelText: 'Скасувати',
+        ...config,
+        isDanger: config.isDanger ?? config.tone === 'danger',
+      });
+    });
+  }
+
+  resolveConfirmDialog(accepted: boolean): void {
+    const resolver = this.confirmDialogResolver;
+    this.confirmDialogResolver = null;
+    this.confirmDialog.set(null);
+    if (resolver) {
+      resolver(accepted);
+    }
+  }
+
+  async showAlertMessage(
+    title: string,
+    message: string,
+    tone: 'danger' | 'warning' | 'info' | 'primary' = 'info'
+  ): Promise<void> {
+    await this.openConfirmDialog({
+      title,
+      message,
+      confirmText: 'Зрозуміло',
+      isAlertOnly: true,
+      tone,
+    });
   }
 
   private triggerSuccess(msg: string): void {

@@ -41,7 +41,6 @@ export type SettingsGroupModalId =
   | 'outage_display'
   | 'outage_sync_interval'
   | 'house_visibility'
-  | 'telegram'
   | 'viber'
   | 'electricity_tariffs'
   | 'water_tariffs'
@@ -468,50 +467,6 @@ export type SettingsGroupModalId =
             </button>
           }
 
-          <!-- TILE 5: НАЛАШТУВАННЯ TELEGRAM BOT -->
-          @if (shouldShowTile('telegram')) {
-            <button
-              id="settings-tile-telegram"
-              type="button"
-              (click)="openSettingsModal('telegram')"
-              class="group relative w-full min-h-[115px] sm:min-h-[220px] rounded-2xl sm:rounded-3xl overflow-hidden border-2 border-white/20 hover:border-sky-400 shadow-md hover:shadow-2xl transition-all duration-300 cursor-pointer flex flex-col justify-between p-3.5 sm:p-6 text-left bg-slate-950 focus:outline-none focus:ring-4 focus:ring-sky-400/40"
-            >
-              <img
-                src="/assets/images/tile_iptv_media_1793997828251.jpg"
-                alt="Налаштування Telegram Bot"
-                class="absolute inset-0 w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-700 opacity-60"
-                referrerpolicy="no-referrer"
-              />
-              <div class="absolute inset-0 bg-gradient-to-t from-slate-950/95 via-sky-950/75 to-slate-950/40 group-hover:from-slate-950/90 transition-colors duration-300"></div>
-
-              <div class="relative z-10 flex items-center justify-between w-full">
-                <div class="w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-sky-500/25 backdrop-blur-xs border border-sky-400/40 text-sky-300 flex items-center justify-center shadow-sm">
-                  <mat-icon class="text-xl sm:text-2xl">send</mat-icon>
-                </div>
-                <span
-                  class="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full backdrop-blur-xs border text-3xs sm:text-2xs font-bold"
-                  [class.bg-emerald-500/25]="form.controls.telegramBotToken.value"
-                  [class.border-emerald-400/40]="form.controls.telegramBotToken.value"
-                  [class.text-emerald-200]="form.controls.telegramBotToken.value"
-                  [class.bg-white/15]="!form.controls.telegramBotToken.value"
-                  [class.border-white/20]="!form.controls.telegramBotToken.value"
-                  [class.text-slate-200]="!form.controls.telegramBotToken.value"
-                >
-                  {{ form.controls.telegramBotToken.value ? 'Токен налаштовано' : 'Без токена' }}
-                </span>
-              </div>
-
-              <div class="relative z-10 space-y-1 sm:space-y-1.5 mt-2.5 sm:mt-6">
-                <h3 class="text-base sm:text-2xl font-black text-white tracking-tight drop-shadow-xs">
-                  Telegram Bot та сповіщення
-                </h3>
-                <p class="text-2xs sm:text-xs text-slate-200/90 line-clamp-1 sm:line-clamp-2">
-                  Токен бота, юзернейм &#64;{{ form.controls.telegramBotUsername.value || 'bot' }} та ім'я відправника повідомлень
-                </p>
-              </div>
-            </button>
-          }
-
           <!-- TILE 6: КЕРУВАННЯ БАЗАМИ ДАНИХ POSTGRESQL & CLOUD SQL -->
           @if (shouldShowTile('database')) {
             <button
@@ -638,17 +593,20 @@ export type SettingsGroupModalId =
       @if (activeSettingsModal(); as modalId) {
         <div
           id="settings-group-modal-backdrop"
-          class="fixed inset-0 z-[100] overflow-y-auto p-3 sm:p-5 flex items-center justify-center bg-slate-950/75 backdrop-blur-xs animate-in fade-in duration-150"
+          class="fixed inset-0 z-[100] overflow-y-auto p-0 sm:p-5 flex items-end sm:items-center justify-center bg-slate-950/75 backdrop-blur-xs animate-in fade-in duration-150"
           (click)="closeSettingsModal()"
           (keydown.escape)="closeSettingsModal()"
           tabindex="-1"
         >
           <div
-            class="relative w-full max-w-4xl bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden my-auto flex flex-col max-h-[92dvh]"
+            class="relative w-full max-w-4xl bg-white rounded-t-3xl sm:rounded-3xl shadow-2xl border border-slate-200 overflow-hidden sm:my-auto flex flex-col max-h-[92dvh] pb-safe"
             tabindex="-1"
             (click)="$event.stopPropagation()"
             (keydown)="$event.stopPropagation()"
           >
+            <div class="sm:hidden flex justify-center pt-2 pb-1 bg-slate-900 shrink-0">
+              <span class="w-10 h-1 rounded-full bg-white/30"></span>
+            </div>
             <!-- Modal Header -->
             <div class="px-5 sm:px-6 py-4 bg-slate-900 text-white flex items-center justify-between gap-3 shrink-0">
               <div class="flex items-center gap-3 min-w-0">
@@ -677,7 +635,7 @@ export type SettingsGroupModalId =
 
             <!-- Modal Scrollable Body -->
             <div class="p-5 sm:p-6 overflow-y-auto flex-1 space-y-5">
-              <!-- FORM-BASED GROUPS (billing, telegram, viber, electricity_tariffs, water_waste_tariffs) -->
+              <!-- FORM-BASED GROUPS (billing, viber, electricity_tariffs, water_waste_tariffs) -->
               <form [formGroup]="form" (ngSubmit)="onSubmit()">
                 @switch (modalId) {
                   <!-- 1. GENERAL SETTINGS, OUTAGE SCHEDULE VIEW & REQUISITES -->
@@ -691,6 +649,7 @@ export type SettingsGroupModalId =
                           <input
                             id="settings-default-price"
                             type="number"
+                            inputmode="decimal"
                             min="0"
                             step="10"
                             formControlName="defaultMonthlyPrice"
@@ -705,6 +664,7 @@ export type SettingsGroupModalId =
                           <input
                             id="settings-reminder-days"
                             type="number"
+                            inputmode="numeric"
                             min="1"
                             max="30"
                             formControlName="reminderDaysBefore"
@@ -721,7 +681,7 @@ export type SettingsGroupModalId =
                             id="settings-card-requisites"
                             type="text"
                             formControlName="cardRequisites"
-                            placeholder="4441 1144 5566 7788 (Монобанк, Шевченко А.)"
+                            placeholder="Номер картки / IBAN та назва банку"
                             class="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm text-slate-900 focus:outline-none focus:border-emerald-600"
                           />
                           <p class="text-xs text-slate-500 mt-1">
@@ -796,6 +756,7 @@ export type SettingsGroupModalId =
                             <input
                               id="settings-billing-dtek-sync-interval"
                               type="number"
+                              inputmode="numeric"
                               min="1"
                               max="360"
                               step="1"
@@ -855,6 +816,7 @@ export type SettingsGroupModalId =
                           <input
                             id="settings-dtek-sync-interval-input"
                             type="number"
+                            inputmode="numeric"
                             min="1"
                             max="360"
                             step="1"
@@ -980,50 +942,6 @@ export type SettingsGroupModalId =
                             </div>
                           </button>
                         }
-                      </div>
-                    </div>
-                  }
-
-                  <!-- 2. TELEGRAM BOT -->
-                  @case ('telegram') {
-                    <div class="space-y-4">
-                      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                        <div class="sm:col-span-2">
-                          <label for="settings-telegram-token" class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                            Telegram Bot Token
-                          </label>
-                          <input
-                            id="settings-telegram-token"
-                            type="text"
-                            formControlName="telegramBotToken"
-                            placeholder="8508491517:AAFgSfvnHmEg6RiC-tYfqiFvmflTbeacZf0"
-                            class="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs sm:text-sm font-mono text-slate-900 focus:outline-none focus:border-sky-600"
-                          />
-                        </div>
-                        <div>
-                          <label for="settings-telegram-username" class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                            Юзернейм бота (&#64;)
-                          </label>
-                          <input
-                            id="settings-telegram-username"
-                            type="text"
-                            formControlName="telegramBotUsername"
-                            placeholder="iptv_billing_bot"
-                            class="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm text-slate-900 focus:outline-none focus:border-sky-600"
-                          />
-                        </div>
-                        <div class="sm:col-span-3">
-                          <label for="settings-telegram-sender" class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                            Ім'я відправника (підпис бота)
-                          </label>
-                          <input
-                            id="settings-telegram-sender"
-                            type="text"
-                            formControlName="telegramSenderName"
-                            placeholder="IPTV Підтримка"
-                            class="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm text-slate-900 focus:outline-none focus:border-sky-600"
-                          />
-                        </div>
                       </div>
                     </div>
                   }
@@ -1281,6 +1199,7 @@ export type SettingsGroupModalId =
                             <input
                               id="set-elec-single-rate"
                               type="number"
+                              inputmode="decimal"
                               step="0.01"
                               min="0"
                               formControlName="elecSingleRate"
@@ -1369,6 +1288,7 @@ export type SettingsGroupModalId =
                                 <input
                                   id="set-elec-sd"
                                   type="number"
+                                  inputmode="decimal"
                                   step="0.01"
                                   min="0"
                                   formControlName="elecDualSummerDay"
@@ -1384,6 +1304,7 @@ export type SettingsGroupModalId =
                                 <input
                                   id="set-elec-sn"
                                   type="number"
+                                  inputmode="decimal"
                                   step="0.01"
                                   min="0"
                                   formControlName="elecDualSummerNight"
@@ -1412,6 +1333,7 @@ export type SettingsGroupModalId =
                                 <input
                                   id="set-elec-wd"
                                   type="number"
+                                  inputmode="decimal"
                                   step="0.01"
                                   min="0"
                                   formControlName="elecDualWinterDay"
@@ -1427,6 +1349,7 @@ export type SettingsGroupModalId =
                                 <input
                                   id="set-elec-wn"
                                   type="number"
+                                  inputmode="decimal"
                                   step="0.01"
                                   min="0"
                                   formControlName="elecDualWinterNight"
@@ -1443,6 +1366,7 @@ export type SettingsGroupModalId =
                                 <input
                                   id="set-elec-wlimit"
                                   type="number"
+                                  inputmode="numeric"
                                   step="50"
                                   min="100"
                                   formControlName="elecDualWinterLimit"
@@ -1478,6 +1402,7 @@ export type SettingsGroupModalId =
                             <input
                               id="set-water-price-only"
                               type="number"
+                              inputmode="decimal"
                               step="0.01"
                               min="0"
                               formControlName="waterPrice"
@@ -1493,6 +1418,7 @@ export type SettingsGroupModalId =
                             <input
                               id="set-water-fee-only"
                               type="number"
+                              inputmode="decimal"
                               step="0.01"
                               min="0"
                               formControlName="waterMonthlyFee"
@@ -1551,6 +1477,7 @@ export type SettingsGroupModalId =
                             <input
                               id="set-waste-price-only"
                               type="number"
+                              inputmode="decimal"
                               step="0.01"
                               min="0"
                               formControlName="wastePrice"
@@ -1606,6 +1533,7 @@ export type SettingsGroupModalId =
                               <input
                                 id="set-water-price"
                                 type="number"
+                                inputmode="decimal"
                                 step="0.01"
                                 min="0"
                                 formControlName="waterPrice"
@@ -1619,6 +1547,7 @@ export type SettingsGroupModalId =
                               <input
                                 id="set-water-fee"
                                 type="number"
+                                inputmode="decimal"
                                 step="0.01"
                                 min="0"
                                 formControlName="waterMonthlyFee"
@@ -1642,6 +1571,7 @@ export type SettingsGroupModalId =
                             <input
                               id="set-waste-price"
                               type="number"
+                              inputmode="decimal"
                               step="0.01"
                               min="0"
                               formControlName="wastePrice"
@@ -2042,9 +1972,9 @@ export type SettingsGroupModalId =
                                 <mat-icon class="text-lg">public</mat-icon>
                               </div>
                               <div>
-                                <div class="text-xs sm:text-sm font-bold text-slate-900">Зовнішня PostgreSQL (Aiven Cloud)</div>
+                                <div class="text-xs sm:text-sm font-bold text-slate-900">Зовнішня PostgreSQL</div>
                                 <div class="text-3xs text-slate-500 font-mono break-all">
-                                  {{ dbStatus()?.instances?.['external']?.host || 'aivencloud.com:13316' }}
+                                  {{ dbStatus()?.instances?.['external']?.host || 'External PostgreSQL' }}
                                 </div>
                               </div>
                             </div>
@@ -2359,7 +2289,7 @@ export type SettingsGroupModalId =
                           (change)="copySourceDb.set($any($event.target).value)"
                           class="w-full px-3 py-2 sm:px-3.5 sm:py-2.5 bg-white border border-amber-300 rounded-xl text-xs font-bold text-slate-900 shadow-2xs focus:outline-none focus:ring-2 focus:ring-amber-500"
                         >
-                          <option value="external">Зовнішня PostgreSQL (Aiven Cloud)</option>
+                          <option value="external">Зовнішня PostgreSQL</option>
                           <option value="cloudsql">Google Cloud SQL (PostgreSQL)</option>
                           <option value="firestore">Google Firebase Firestore DB</option>
                           @for (cdb of dbStatus()?.customDatabases || []; track cdb.id) {
@@ -2380,7 +2310,7 @@ export type SettingsGroupModalId =
                           class="w-full px-3 py-2 sm:px-3.5 sm:py-2.5 bg-white border border-amber-300 rounded-xl text-xs font-bold text-slate-900 shadow-2xs focus:outline-none focus:ring-2 focus:ring-amber-500"
                         >
                           <option value="cloudsql">Google Cloud SQL (PostgreSQL)</option>
-                          <option value="external">Зовнішня PostgreSQL (Aiven Cloud)</option>
+                          <option value="external">Зовнішня PostgreSQL</option>
                           <option value="firestore">Google Firebase Firestore DB</option>
                           @for (cdb of dbStatus()?.customDatabases || []; track cdb.id) {
                             <option [value]="cdb.id">{{ cdb.name }} ({{ cdb.database }})</option>
@@ -2773,7 +2703,6 @@ export class SettingsView implements OnInit {
       modalId === 'billing' ||
       modalId === 'outage_display' ||
       modalId === 'outage_sync_interval' ||
-      modalId === 'telegram' ||
       modalId === 'viber' ||
       modalId === 'electricity_tariffs' ||
       modalId === 'water_tariffs' ||
@@ -2813,12 +2742,6 @@ export class SettingsView implements OnInit {
           title: 'Відображення будинків по вкладках',
           subtitle: 'Індивідуальний показ або приховування спільних будинків для кожної окремої вкладки',
           icon: 'visibility',
-        };
-      case 'telegram':
-        return {
-          title: 'Налаштування Telegram Bot',
-          subtitle: 'Параметри підключення бота для автоматичних сповіщень',
-          icon: 'send',
         };
       case 'viber':
         return {
@@ -2897,9 +2820,6 @@ export class SettingsView implements OnInit {
     ]),
     viberReminderMessageTemplate: new FormControl(''),
     viberRenewalMessageTemplate: new FormControl(''),
-    telegramBotToken: new FormControl(''),
-    telegramBotUsername: new FormControl('iptv_billing_bot'),
-    telegramSenderName: new FormControl('IPTV Підтримка'),
     // Utility Tariffs Controls
     waterPrice: new FormControl<number>(32, [Validators.required, Validators.min(0)]),
     waterMonthlyFee: new FormControl<number>(0, [Validators.min(0)]),
@@ -2982,9 +2902,6 @@ export class SettingsView implements OnInit {
         dtekSyncIntervalMinutes,
         viberReminderMessageTemplate: reminderTmpl,
         viberRenewalMessageTemplate: renewalTmpl,
-        telegramBotToken: s.telegramBotToken || '',
-        telegramBotUsername: s.telegramBotUsername || 'iptv_billing_bot',
-        telegramSenderName: s.telegramSenderName || 'IPTV Підтримка',
         waterPrice: tariffs.water?.price ?? 32,
         waterMonthlyFee: tariffs.water?.monthlyFee ?? 0,
         waterValidFrom: tariffs.water?.validFrom ?? '2026-01-01',
@@ -3016,7 +2933,7 @@ export class SettingsView implements OnInit {
 
   readonly previewReminderText = computed(() => {
     const tmpl = this.reminderTemplateVal() || DEFAULT_VIBER_REMINDER_TEMPLATE;
-    const card = this.form.controls.cardRequisites.value || '4441 1144 5566 7788 (Монобанк)';
+    const card = this.form.controls.cardRequisites.value || '(Реквізити картки не вказано в Опціях)';
     const price = this.form.controls.defaultMonthlyPrice.value || 100;
     const todayFormatted = formatDateUa(new Date().toISOString().split('T')[0], true);
 
@@ -3042,7 +2959,7 @@ export class SettingsView implements OnInit {
 
   readonly previewRenewalText = computed(() => {
     const tmpl = this.renewalTemplateVal() || DEFAULT_VIBER_RENEWAL_TEMPLATE;
-    const card = this.form.controls.cardRequisites.value || '4441 1144 5566 7788 (Монобанк)';
+    const card = this.form.controls.cardRequisites.value || '(Реквізити картки не вказано в Опціях)';
     const price = this.form.controls.defaultMonthlyPrice.value || 100;
     const todayFormatted = formatDateUa(new Date().toISOString().split('T')[0], true);
 
@@ -3369,9 +3286,6 @@ export class SettingsView implements OnInit {
             val.viberReminderMessageTemplate?.trim() || DEFAULT_VIBER_REMINDER_TEMPLATE,
           viberRenewalMessageTemplate:
             val.viberRenewalMessageTemplate?.trim() || DEFAULT_VIBER_RENEWAL_TEMPLATE,
-          telegramBotToken: val.telegramBotToken?.trim() || '',
-          telegramBotUsername: val.telegramBotUsername?.trim() || 'iptv_billing_bot',
-          telegramSenderName: val.telegramSenderName?.trim() || 'IPTV Підтримка',
           utilityTariffsSettings: isSystemEdit
             ? tariffs
             : {
@@ -3484,7 +3398,15 @@ export class SettingsView implements OnInit {
   }
 
   async deleteCustomDb(id: string): Promise<void> {
-    if (confirm('Видалити цю конфігурацію бази даних?')) {
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Видалити базу даних?',
+      message: 'Видалити цю конфігурацію бази даних?',
+      confirmText: 'Видалити',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'delete',
+    });
+    if (ok) {
       await this.dataService.deleteCustomDatabase(id);
     }
   }
@@ -3498,7 +3420,11 @@ export class SettingsView implements OnInit {
     const src = this.copySourceDb();
     const tgt = this.copyTargetDb();
     if (src === tgt) {
-      alert('Будь ласка, виберіть різні бази даних для копіювання!');
+      await this.dataService.showAlertMessage(
+        'Оберіть іншу базу даних',
+        'Будь ласка, виберіть різні бази даних для копіювання!',
+        'warning'
+      );
       return;
     }
     await this.dataService.copyBetweenDatabases(src, tgt);

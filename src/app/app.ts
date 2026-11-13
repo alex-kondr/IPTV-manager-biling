@@ -9,7 +9,6 @@ import {
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
 import { IptvData } from './services/iptv-data';
-import { TelegramWebApp } from './services/telegram-web-app';
 import {
   Client,
   ClientGroupView,
@@ -87,7 +86,6 @@ type FilterStatus = 'all' | 'expiring_soon' | 'expired' | 'active' | 'paused';
 export class App {
   readonly dataService = inject(IptvData);
   readonly themeService = inject(ThemeService);
-  readonly tgApp = inject(TelegramWebApp);
   readonly Math = Math;
 
   // Application metadata for user tracking (v4.2)
@@ -122,7 +120,10 @@ export class App {
     } else if (this.isIOSDevice()) {
       this.showIOSInstallGuide.set(true);
     } else {
-      alert('Щоб встановити HomeHub на пристрій:\n\n• На Android / Chrome: Торкніться меню (⋮) ➔ "Встановити додаток" або "Додати на початковий екран".\n• На iPhone / Safari: Торкніться кнопки "Поділитися" (Share) ➔ "На початковий екран".');
+      void this.dataService.showAlertMessage(
+        'Встановлення HomeHub',
+        '• На Android / Chrome: Торкніться меню (⋮) ➔ "Встановити додаток" або "Додати на початковий екран".\n• На iPhone / Safari: Торкніться "Поділитися" ➔ "На початковий екран".'
+      );
     }
   }
 
@@ -664,6 +665,17 @@ export class App {
       void this.dataService.fetchStats(true);
       void this.dataService.fetchBudget(true);
       void this.dataService.fetchAccounts(true);
+    } else if (tab === 'users') {
+      void this.dataService.fetchUsers();
+      void this.dataService.fetchHouseholdInvites();
+    } else if (
+      tab === 'electricity' ||
+      tab === 'outage_schedule' ||
+      tab === 'water' ||
+      tab === 'waste' ||
+      tab === 'water_waste'
+    ) {
+      void this.dataService.fetchUtilityData();
     }
   }
 

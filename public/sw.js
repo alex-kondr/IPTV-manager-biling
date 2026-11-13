@@ -1,13 +1,13 @@
-const CACHE_NAME = 'iptv-billing-v2';
+const CACHE_NAME = 'homehub-v4';
+const META_CACHE_NAME = 'homehub-sw-meta-v1';
 const ASSETS_TO_CACHE = [
-  '/',
   '/manifest.webmanifest',
   '/apple-touch-icon.png',
   '/icons/icon-192x192.png',
   '/icons/icon-512x512.png',
   '/icons/icon-maskable-512x512.png',
   '/icons/icon.svg',
-  '/favicon.ico'
+  '/favicon.ico',
 ];
 
 self.addEventListener('install', (event) => {
@@ -23,7 +23,9 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+        keys
+          .filter((key) => key !== CACHE_NAME && key !== META_CACHE_NAME)
+          .map((key) => caches.delete(key))
       );
     })
   );
@@ -31,16 +33,15 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  // Pass all /api/ requests straight to network
-  if (event.request.url.includes('/api/')) {
+  if (event.request.url.includes('/api/') || event.request.method !== 'GET') {
     return;
   }
 
-  // Network-first with cache fallback for HTML/assets
+  // Network-first with cache fallback for assets & navigation
   event.respondWith(
     fetch(event.request)
       .then((response) => {
-        if (response && response.status === 200 && event.request.method === 'GET') {
+        if (response && response.status === 200) {
           const responseClone = response.clone();
           caches.open(CACHE_NAME).then((cache) => {
             cache.put(event.request, responseClone).catch(() => {});
@@ -56,13 +57,53 @@ self.addEventListener('fetch', (event) => {
           if (event.request.mode === 'navigate') {
             return caches.match('/');
           }
-          return new Response('Network error occurred', {
-            status: 408,
-            headers: { 'Content-Type': 'text/plain' },
+          return new Response('Offline', {
+            status: 503,
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' },
           });
         });
       })
   );
+});
+
+function buildNotificationOptions(payload) {
+  return {
+    body: payload.body || 'Оновлено погодинний графік відключень світла ДТЕК.',
+    icon: payload.icon || '/icons/icon-192x192.png',
+    badge: payload.badge || '/icons/icon-192x192.png',
+    tag: payload.tag || 'dtek-schedule-change-' + Date.now(),
+    renotify: true,
+    silent: false,
+    vibrate: [250, 100, 250, 100, 400],
+    timestamp: Date.now(),
+    data: {
+      url: payload.url || '/?tab=outage_schedule',
+      title: payload.title || '⚡ Зміна графіку відключень ДТЕК',
+      body: payload.body || '',
+      queueGroup: payload.queueGroup || '',
+    },
+    actions: [
+      { action: 'open', title: 'Відкрити графік' },
+      { action: 'snooze_15m', title: 'Нагадати +15 хв' },
+    ],
+  };
+}
+
+// Allow the Angular app to trigger native Android drawer notifications via ServiceWorker
+self.addEventListener('message', (event) => {
+  const data = event.data;
+  if (!data || typeof data !== 'object') return;
+
+  if (data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+    return;
+  }
+
+  if (data.type === 'SHOW_NOTIFICATION' && data.payload) {
+    const title = data.payload.title || '⚡ Зміна графіку відключень ДТЕК';
+    const options = buildNotificationOptions(data.payload);
+    event.waitUntil(self.registration.showNotification(title, options));
+  }
 });
 
 // Background Web Push Notification Dispatcher (VAPID)
@@ -70,7 +111,7 @@ self.addEventListener('push', (event) => {
   let payload = {
     title: '⚡ Зміна графіку відключень ДТЕК',
     body: 'Оновлено погодинний графік відключень світла за вашою чергою.',
-    tag: 'dtek-schedule-change',
+    tag: 'dtek-schedule-change-' + Date.now(),
     url: '/?tab=outage_schedule',
     queueGroup: '',
   };
@@ -84,28 +125,60 @@ self.addEventListener('push', (event) => {
     }
   }
 
-  const options = {
-    body: payload.body,
-    icon: '/icons/icon-192x192.png',
-    badge: '/icons/icon-192x192.png',
-    tag: payload.tag || 'dtek-schedule-change',
-    renotify: true,
-    requireInteraction: true,
-    vibrate: [200, 100, 200, 100, 350],
-    data: {
-      url: payload.url || '/?tab=outage_schedule',
-      title: payload.title,
-      body: payload.body,
-      queueGroup: payload.queueGroup || '',
-    },
-    actions: [
-      { action: 'open', title: 'Відкрити' },
-      { action: 'snooze_15m', title: 'Відкласти +15 хв' },
-    ],
-  };
+  const options = buildNotificationOptions(payload);
 
-  event.waitUntil(self.registration.showNotification(payload.title, options));
+  event.waitUntil(
+    Promise.all([
+      self.registration.showNotification(payload.title, options),
+      self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+        for (const client of windowClients) {
+          client.postMessage({
+            type: 'DTEK_PUSH_RECEIVED',
+            payload,
+          });
+        }
+      }),
+    ])
+  );
 });
+
+// Periodic Background Sync (Android Chrome / PWA when installed)
+self.addEventListener('periodicsync', (event) => {
+  if (event.tag === 'dtek-schedule-check') {
+    event.waitUntil(checkScheduleChangesInBackground());
+  }
+});
+
+async function checkScheduleChangesInBackground() {
+  try {
+    const resp = await fetch('/api/push/changes', { cache: 'no-store' });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const changes = Array.isArray(data?.changes) ? data.changes : [];
+    if (changes.length === 0) return;
+
+    const latest = changes[0];
+    const cache = await caches.open(META_CACHE_NAME);
+    const prevResp = await cache.match('/__last_notified_change_id');
+    const prevId = prevResp ? await prevResp.text() : '';
+
+    if (latest && latest.id && latest.id !== prevId) {
+      await cache.put('/__last_notified_change_id', new Response(String(latest.id)));
+      await self.registration.showNotification(
+        latest.title || '⚡ Зміна графіку відключень ДТЕК',
+        buildNotificationOptions({
+          title: latest.title,
+          body: latest.body,
+          tag: `dtek-bg-${latest.id}`,
+          url: '/?tab=outage_schedule',
+          queueGroup: latest.queueKey || '',
+        })
+      );
+    }
+  } catch {
+    // Ignore background network error
+  }
+}
 
 self.addEventListener('notificationclick', (event) => {
   const notification = event.notification;
@@ -121,7 +194,7 @@ self.addEventListener('notificationclick', (event) => {
         body: JSON.stringify({
           delayMinutes: 15,
           title: data.title || '⚡ Нагадування: Графік відключень ДТЕК',
-          body: data.body || 'Перевірте актуальний графік відключень світла.',
+          body: data.body || 'Минуло 15 хвилин. Перевірте актуальний графік відключень світла.',
           queueGroup: data.queueGroup || '',
         }),
       }).catch(() => {})

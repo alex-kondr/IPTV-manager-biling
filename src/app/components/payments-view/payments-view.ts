@@ -398,15 +398,18 @@ import { PaymentModal } from '../payment-modal/payment-modal';
 
     <!-- Edit payment modal dialog overlay -->
     @if (isEditModalOpen()) {
-      <div class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs p-3 sm:p-4 flex items-center justify-center">
-        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200">
-          <div class="px-5 py-4 bg-slate-900 text-white flex items-center justify-between">
+      <div class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+        <div class="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200 max-h-[92dvh] flex flex-col pb-safe">
+          <div class="sm:hidden flex justify-center pt-2 pb-1 bg-slate-900 shrink-0">
+            <span class="w-10 h-1 rounded-full bg-white/30"></span>
+          </div>
+          <div class="px-5 py-4 bg-slate-900 text-white flex items-center justify-between shrink-0">
             <h3 class="text-sm font-bold">Редагувати платіжну транзакцію</h3>
-            <button type="button" (click)="isEditModalOpen.set(false)" class="text-slate-400 hover:text-white border-0 bg-transparent cursor-pointer">
+            <button type="button" (click)="isEditModalOpen.set(false)" class="text-slate-400 hover:text-white border-0 bg-transparent cursor-pointer" aria-label="Закрити">
               <mat-icon>close</mat-icon>
             </button>
           </div>
-          <form [formGroup]="editForm" (ngSubmit)="savePaymentEdit()" class="p-5 space-y-4">
+          <form [formGroup]="editForm" (ngSubmit)="savePaymentEdit()" class="p-5 space-y-4 overflow-y-auto">
             <div>
               <label for="edit-client-name" class="block text-2xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Абонент</label>
               <input id="edit-client-name" type="text" formControlName="clientName" class="w-full px-3 py-2 bg-slate-100 rounded-xl text-xs font-semibold" readonly />
@@ -415,11 +418,11 @@ import { PaymentModal } from '../payment-modal/payment-modal';
             <div class="grid grid-cols-2 gap-3">
               <div>
                 <label for="edit-payment-amount" class="block text-2xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Сума (₴)</label>
-                <input id="edit-payment-amount" type="number" formControlName="amount" class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold" />
+                <input id="edit-payment-amount" type="number" inputmode="decimal" formControlName="amount" class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold" />
               </div>
               <div>
                 <label for="edit-payment-months" class="block text-2xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Продовжено (міс)</label>
-                <input id="edit-payment-months" type="number" formControlName="monthsAdded" class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs" />
+                <input id="edit-payment-months" type="number" inputmode="numeric" formControlName="monthsAdded" class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs" />
               </div>
             </div>
 
@@ -430,7 +433,7 @@ import { PaymentModal } from '../payment-modal/payment-modal';
               </div>
               <div>
                 <label for="edit-payment-balance" class="block text-2xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Залишок (₴)</label>
-                <input id="edit-payment-balance" type="number" formControlName="newBalance" class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold" />
+                <input id="edit-payment-balance" type="number" inputmode="decimal" formControlName="newBalance" class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold" />
               </div>
             </div>
 
@@ -563,7 +566,7 @@ export class PaymentsView {
     });
 
     const viberUrl = `viber://chat?number=${formattedPhone}&draft=${encodeURIComponent(text)}`;
-    window.open(viberUrl, '_blank');
+    window.location.href = viberUrl;
   }
 
   openPaymentModalForClient(client: Client): void {
@@ -619,9 +622,14 @@ export class PaymentsView {
   }
 
   async confirmDeletePayment(payment: PaymentTransaction): Promise<void> {
-    const ok = confirm(
-      `Ви дійсно бажаєте видалити запис оплати на ${payment.amount} грн для абонента "${payment.clientName}"?`
-    );
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Видалити оплату?',
+      message: `Ви дійсно бажаєте видалити запис оплати на ${payment.amount} грн для абонента "${payment.clientName}"?`,
+      confirmText: 'Видалити',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'delete',
+    });
     if (ok) {
       await this.dataService.deletePayment(payment.id);
     }

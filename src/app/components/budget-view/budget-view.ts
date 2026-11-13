@@ -16,7 +16,6 @@ import {
   LedgerEntryType,
   ProviderBalanceAdjustment,
 } from '../../models/client.model';
-import { TelegramWebApp } from '../../services/telegram-web-app';
 
 type LedgerFilter = 'all' | 'income' | 'expense' | 'deduction';
 type BalanceCalibTab = 'exact' | 'delta';
@@ -690,8 +689,11 @@ type BalanceCalibTab = 'exact' | 'delta';
       <!-- MODAL: ADD / EDIT CUSTOM LEDGER ENTRY (Журнал руху коштів) -->
       <!-- ======================================================== -->
       @if (isCustomLedgerModalOpen()) {
-        <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-3 sm:p-4 flex items-center justify-center">
-          <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden my-auto border border-slate-200 flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)]">
+        <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+          <div class="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden sm:my-auto border border-slate-200 flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] pb-safe">
+            <div class="sm:hidden flex justify-center pt-2 pb-1 bg-slate-900 shrink-0">
+              <span class="w-10 h-1 rounded-full bg-white/30"></span>
+            </div>
             <!-- Modal Header -->
             <div class="flex items-center justify-between px-5 sm:px-6 py-4 bg-slate-900 text-white shrink-0">
               <div class="flex items-center gap-2.5">
@@ -845,6 +847,7 @@ type BalanceCalibTab = 'exact' | 'delta';
                       <input
                         id="ledger-amount-uah"
                         type="number"
+                        inputmode="decimal"
                         min="0"
                         step="1"
                         formControlName="amountUah"
@@ -869,6 +872,7 @@ type BalanceCalibTab = 'exact' | 'delta';
                       <input
                         id="ledger-amount-usd"
                         type="number"
+                        inputmode="decimal"
                         min="0"
                         step="0.5"
                         formControlName="amountUsd"
@@ -976,8 +980,11 @@ type BalanceCalibTab = 'exact' | 'delta';
       <!-- MODAL: PROVIDER BALANCE AUDIT & ADJUSTMENT (Управління)    -->
       <!-- ======================================================== -->
       @if (isBalanceAdjustmentModalOpen()) {
-        <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-3 sm:p-4 flex items-center justify-center">
-          <div class="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden my-auto border border-slate-200 flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)]">
+        <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+          <div class="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden sm:my-auto border border-slate-200 flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] pb-safe">
+            <div class="sm:hidden flex justify-center pt-2 pb-1 bg-slate-900 shrink-0">
+              <span class="w-10 h-1 rounded-full bg-white/30"></span>
+            </div>
             <!-- Modal Header -->
             <div class="flex items-center justify-between px-5 sm:px-6 py-4 bg-slate-900 text-white shrink-0">
               <div class="flex items-center gap-2.5">
@@ -1077,6 +1084,7 @@ type BalanceCalibTab = 'exact' | 'delta';
                         <input
                           id="exact-balance-input"
                           type="number"
+                          inputmode="decimal"
                           step="0.01"
                           [formControl]="exactBalanceControl"
                           placeholder="напр. 15.50"
@@ -1136,6 +1144,7 @@ type BalanceCalibTab = 'exact' | 'delta';
                       <input
                         id="delta-amount-input"
                         type="number"
+                        inputmode="decimal"
                         step="0.1"
                         [formControl]="deltaAmountControl"
                         placeholder="напр. +5 або -2"
@@ -1246,8 +1255,11 @@ type BalanceCalibTab = 'exact' | 'delta';
       <!-- MODAL: ADD / EDIT PROVIDER DEPOSIT                       -->
       <!-- ======================================================== -->
       @if (isDepositModalOpen()) {
-        <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-3 sm:p-4 flex items-center justify-center">
-          <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden my-auto border border-slate-200 flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)]">
+        <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+          <div class="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-md overflow-hidden sm:my-auto border border-slate-200 flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] pb-safe">
+            <div class="sm:hidden flex justify-center pt-2 pb-1 bg-slate-900 shrink-0">
+              <span class="w-10 h-1 rounded-full bg-white/30"></span>
+            </div>
             <!-- Modal Header (pinned at top) -->
             <div class="flex items-center justify-between px-5 sm:px-6 py-4 bg-slate-900 text-white shrink-0">
               <div class="flex items-center gap-2.5">
@@ -1285,6 +1297,7 @@ type BalanceCalibTab = 'exact' | 'delta';
                     <input
                       id="deposit-amount-usd"
                       type="number"
+                      inputmode="decimal"
                       min="1"
                       step="1"
                       formControlName="amountUsd"
@@ -1307,6 +1320,7 @@ type BalanceCalibTab = 'exact' | 'delta';
                     <input
                       id="deposit-spent-uah"
                       type="number"
+                      inputmode="decimal"
                       min="1"
                       step="10"
                       formControlName="spentUah"
@@ -1397,8 +1411,11 @@ type BalanceCalibTab = 'exact' | 'delta';
       <!-- MODAL: EDIT CLIENT PAYMENT FROM LEDGER                   -->
       <!-- ======================================================== -->
       @if (isEditPaymentModalOpen()) {
-        <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-3 sm:p-4 flex items-center justify-center">
-          <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden my-auto border border-slate-200 flex flex-col max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)]">
+        <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+          <div class="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-md overflow-hidden sm:my-auto border border-slate-200 flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] pb-safe">
+            <div class="sm:hidden flex justify-center pt-2 pb-1 bg-slate-900 shrink-0">
+              <span class="w-10 h-1 rounded-full bg-white/30"></span>
+            </div>
             <div class="flex items-center justify-between px-5 sm:px-6 py-4 bg-slate-900 text-white shrink-0">
               <div class="flex items-center gap-2.5">
                 <div class="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center border border-emerald-500/30">
@@ -1442,6 +1459,7 @@ type BalanceCalibTab = 'exact' | 'delta';
                       <input
                         id="ledger-edit-amount"
                         type="number"
+                        inputmode="decimal"
                         min="1"
                         step="10"
                         formControlName="amount"
@@ -1503,7 +1521,6 @@ type BalanceCalibTab = 'exact' | 'delta';
 })
 export class BudgetView {
   readonly dataService = inject(IptvData);
-  private readonly tgApp = inject(TelegramWebApp);
   readonly Math = Math;
 
   readonly budgetSummary = this.dataService.budgetSummary;
@@ -1617,7 +1634,6 @@ export class BudgetView {
       paymentMethod: 'Монобанк',
       note: '',
     });
-    this.tgApp.hapticImpact('light');
     this.isDepositModalOpen.set(true);
   }
 
@@ -1635,7 +1651,6 @@ export class BudgetView {
       paymentMethod: dep.paymentMethod || 'Картка банку',
       note: dep.note || '',
     });
-    this.tgApp.hapticImpact('light');
     this.isDepositModalOpen.set(true);
   }
 
@@ -1666,7 +1681,6 @@ export class BudgetView {
       }
 
       if (success) {
-        this.tgApp.hapticNotification('success');
         this.isDepositModalOpen.set(false);
       }
     } finally {
@@ -1675,11 +1689,16 @@ export class BudgetView {
   }
 
   async deleteDepositConfirm(dep: ProviderDeposit): Promise<void> {
-    this.tgApp.hapticImpact('medium');
-    const ok = confirm(`Ви дійсно бажаєте видалити запис поповнення на $${dep.amountUsd} (${dep.spentUah} грн)?`);
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Видалити поповнення?',
+      message: `Ви дійсно бажаєте видалити запис поповнення на $${dep.amountUsd} (${dep.spentUah} грн)?`,
+      confirmText: 'Видалити',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'delete',
+    });
     if (ok) {
       await this.dataService.deleteDeposit(dep.id);
-      this.tgApp.hapticNotification('warning');
     }
   }
 
@@ -1699,7 +1718,6 @@ export class BudgetView {
       paymentMethod: 'Монобанк',
       note: '',
     });
-    this.tgApp.hapticImpact('light');
     this.isCustomLedgerModalOpen.set(true);
   }
 
@@ -1813,7 +1831,6 @@ export class BudgetView {
       }
 
       if (success) {
-        this.tgApp.hapticNotification('success');
         this.isCustomLedgerModalOpen.set(false);
         this.editingLedgerId.set(null);
       }
@@ -1858,7 +1875,6 @@ export class BudgetView {
       note: item.note || '',
     });
 
-    this.tgApp.hapticImpact('light');
     this.isCustomLedgerModalOpen.set(true);
   }
 
@@ -1872,22 +1888,24 @@ export class BudgetView {
   }
 
   async deleteLedgerItem(item: BudgetLedgerItem): Promise<void> {
-    this.tgApp.hapticImpact('medium');
-
     const desc = item.amountUah !== 0
       ? `${item.amountUah > 0 ? '+' : ''}${item.amountUah} ₴`
       : (item.amountUsd ? `${item.amountUsd > 0 ? '+' : ''}$${item.amountUsd} USD` : '');
 
-    const ok = confirm(
-      `Ви дійсно бажаєте видалити цей запис:\n"${item.title}" (${this.formatDate(item.date)}${desc ? ', ' + desc : ''})?\n\nЗапис буде видалено з журналу, а залишок балансу провайдера та бюджет буде автоматично перераховано.`
-    );
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Видалити запис журналу?',
+      message: `Ви дійсно бажаєте видалити цей запис: "${item.title}" (${this.formatDate(item.date)}${desc ? ', ' + desc : ''})? Залишок балансу провайдера та бюджет буде автоматично перераховано.`,
+      confirmText: 'Видалити',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'delete',
+    });
 
     if (ok) {
       this.isSubmitting.set(true);
       try {
         const success = await this.dataService.deleteLedgerEntry(item.id);
         if (success) {
-          this.tgApp.hapticNotification('warning');
           this.isCustomLedgerModalOpen.set(false);
           this.editingLedgerId.set(null);
         }
@@ -1906,7 +1924,6 @@ export class BudgetView {
     this.deltaDateControl.setValue(new Date().toISOString().split('T')[0]);
     this.deltaNoteControl.setValue('Коригування балансу');
     this.balanceCalibTab.set('exact');
-    this.tgApp.hapticImpact('light');
     this.isBalanceAdjustmentModalOpen.set(true);
   }
 
@@ -1921,7 +1938,6 @@ export class BudgetView {
         note: this.exactBalanceNoteControl.value || `Калібрування до балансу $${target}`,
       });
       if (success) {
-        this.tgApp.hapticNotification('success');
         this.isBalanceAdjustmentModalOpen.set(false);
       }
     } finally {
@@ -1941,7 +1957,6 @@ export class BudgetView {
         note: this.deltaNoteControl.value || 'Ручне коригування балансу',
       });
       if (success) {
-        this.tgApp.hapticNotification('success');
         this.isBalanceAdjustmentModalOpen.set(false);
       }
     } finally {
@@ -1950,11 +1965,16 @@ export class BudgetView {
   }
 
   async deleteAdjustmentConfirm(adj: ProviderBalanceAdjustment): Promise<void> {
-    this.tgApp.hapticImpact('medium');
-    const ok = confirm(`Ви дійсно бажаєте видалити коригування на $${adj.amountUsd} (${adj.note || 'без примітки'})?`);
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Видалити коригування?',
+      message: `Ви дійсно бажаєте видалити коригування на $${adj.amountUsd} (${adj.note || 'без примітки'})?`,
+      confirmText: 'Видалити',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'delete',
+    });
     if (ok) {
       await this.dataService.deleteProviderAdjustment(adj.id);
-      this.tgApp.hapticNotification('warning');
     }
   }
 
@@ -1972,7 +1992,6 @@ export class BudgetView {
         note: val.note || '',
       });
       if (success) {
-        this.tgApp.hapticNotification('success');
         this.isEditPaymentModalOpen.set(false);
       }
     } finally {

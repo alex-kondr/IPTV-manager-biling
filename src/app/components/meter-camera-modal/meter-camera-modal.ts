@@ -48,7 +48,7 @@ function parseMeterNumber(val: unknown): number | null {
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div
-      class="fixed inset-0 z-50 overflow-y-auto p-2 sm:p-4 flex items-center justify-center bg-slate-900/75 backdrop-blur-sm animate-in fade-in duration-150"
+      class="fixed inset-0 z-50 overflow-y-auto p-0 sm:p-4 flex items-end sm:items-center justify-center bg-slate-900/75 backdrop-blur-sm animate-in fade-in duration-150"
     >
       <!-- Backdrop click-to-close overlay -->
       <button
@@ -59,8 +59,11 @@ function parseMeterNumber(val: unknown): number | null {
       ></button>
 
       <div
-        class="relative w-full max-w-xl bg-slate-900 text-white rounded-2xl shadow-2xl border border-slate-700/80 overflow-hidden flex flex-col max-h-[94dvh] my-auto animate-in zoom-in-95 duration-150"
+        class="relative w-full max-w-xl bg-slate-900 text-white rounded-t-3xl sm:rounded-2xl shadow-2xl border border-slate-700/80 overflow-hidden flex flex-col max-h-[94dvh] sm:my-auto animate-in zoom-in-95 duration-150 pb-safe"
       >
+        <div class="sm:hidden flex justify-center pt-2 pb-1 bg-slate-950/70 shrink-0">
+          <span class="w-10 h-1 rounded-full bg-white/30"></span>
+        </div>
         <!-- Pinned Header -->
         <div class="flex items-center justify-between p-4 sm:p-5 border-b border-slate-800 bg-slate-950/70 shrink-0">
           <div class="flex items-center gap-3">
@@ -365,6 +368,7 @@ function parseMeterNumber(val: unknown): number | null {
                             <input
                               id="meter-manual-t1"
                               type="number"
+                              inputmode="decimal"
                               step="0.1"
                               min="0"
                               [value]="manualReadingT1() ?? ''"
@@ -381,6 +385,7 @@ function parseMeterNumber(val: unknown): number | null {
                             <input
                               id="meter-manual-t2"
                               type="number"
+                              inputmode="decimal"
                               step="0.1"
                               min="0"
                               [value]="manualReadingT2() ?? ''"
@@ -398,6 +403,7 @@ function parseMeterNumber(val: unknown): number | null {
                           <input
                             id="meter-manual-single"
                             type="number"
+                            inputmode="decimal"
                             step="0.1"
                             min="0"
                             [value]="manualReadingT1() ?? ''"
@@ -415,6 +421,7 @@ function parseMeterNumber(val: unknown): number | null {
                         <input
                           id="meter-manual-water"
                           type="number"
+                          inputmode="decimal"
                           step="0.01"
                           min="0"
                           [value]="manualReadingWater() ?? ''"

@@ -2047,6 +2047,7 @@ import {
                       <div class="flex items-center gap-2 mt-0.5">
                         <input
                           type="number"
+                          inputmode="decimal"
                           step="0.1"
                           min="0"
                           [value]="customMonthHouseKwh() !== null ? customMonthHouseKwh() : dSummary.houseReferenceKwh"
@@ -4163,7 +4164,158 @@ import {
             <!-- History Table Content -->
             @if (isHistoryTableExpanded()) {
               @if (filteredAccountReadings().length > 0) {
-                <div class="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+                <!-- Mobile Card List -->
+                <div class="md:hidden space-y-2.5">
+                  @for (r of filteredAccountReadings(); track r.id) {
+                    @let isPaid = isReadingPaid(r, currentAccount());
+                    <div class="p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/90 shadow-2xs space-y-2.5">
+                      <div class="flex items-start justify-between gap-2">
+                        <div class="min-w-0">
+                          <div class="flex items-center gap-1.5 flex-wrap">
+                            <span class="text-sm font-bold text-slate-900 dark:text-white">{{ formatDate(r.date) }}</span>
+                            @if (r.isControlOnly) {
+                              <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-950 text-indigo-800 dark:text-indigo-200 text-3xs font-bold border border-indigo-200 dark:border-indigo-800">
+                                <mat-icon class="text-3xs leading-none">visibility</mat-icon> Контрольний
+                              </span>
+                            }
+                          </div>
+                          <div class="text-3xs text-slate-400 dark:text-slate-500 font-mono mt-0.5">{{ r.periodMonth || r.date.substring(0, 7) }}</div>
+                        </div>
+                        <div class="text-right shrink-0">
+                          @if (r.isControlOnly) {
+                            <div class="font-semibold text-slate-400 dark:text-slate-500 text-base font-mono">0.00 грн</div>
+                            <div class="text-3xs text-indigo-600 dark:text-indigo-400 font-medium">Без оплати</div>
+                          } @else {
+                            <div class="font-extrabold text-slate-900 dark:text-white text-base font-mono">{{ formatCost(r.totalCost) }} грн</div>
+                            @if (acc.electricityTariffType === 'dual') {
+                              <div class="text-3xs font-semibold" [class.text-indigo-600]="r.season === 'winter'" [class.text-amber-600]="r.season === 'summer'">
+                                {{ r.season === 'summer' ? 'Літо' : 'Зима' }} • Д: {{ r.rateT1 || '—' }} / Н: {{ r.rateT2 || '—' }}
+                              </div>
+                            } @else {
+                              <div class="text-3xs text-slate-500 dark:text-slate-400">Тариф: {{ r.rateT1 || currentSingleRate() }} грн</div>
+                            }
+                          }
+                        </div>
+                      </div>
+
+                      <div class="grid grid-cols-2 gap-2 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-100 dark:border-slate-700/80 text-xs">
+                        <div>
+                          <div class="text-3xs text-slate-500 dark:text-slate-400 mb-0.5">Покази</div>
+                          @if (acc.electricityTariffType === 'dual') {
+                            <div class="font-mono text-xs text-slate-900 dark:text-white"><span class="text-amber-600 dark:text-amber-400 font-bold">Д (Т2):</span> {{ r.readingT1 }}</div>
+                            <div class="font-mono text-xs text-slate-900 dark:text-white"><span class="text-indigo-600 dark:text-indigo-400 font-bold">Н (Т1):</span> {{ r.readingT2 }}</div>
+                          } @else {
+                            <div class="font-mono font-bold text-slate-900 dark:text-white">{{ r.readingT1 }} кВт·г</div>
+                          }
+                        </div>
+                        <div class="text-right">
+                          <div class="text-3xs text-slate-500 dark:text-slate-400 mb-0.5">Спожито</div>
+                          <div class="font-bold text-slate-900 dark:text-white text-sm">{{ totalConsumedKwh(r) }} <span class="text-2xs font-normal text-slate-500 dark:text-slate-400">кВт·г</span></div>
+                          @if (acc.electricityTariffType === 'dual') {
+                            <div class="text-3xs text-slate-500 dark:text-slate-400">Д: {{ r.consumptionT1 || 0 }} • Н: {{ r.consumptionT2 || 0 }}</div>
+                          }
+                          @if (r.dailyAvgConsumption && r.dailyAvgConsumption > 0) {
+                            <div class="text-3xs text-emerald-600 dark:text-emerald-400 font-medium">~{{ r.dailyAvgConsumption }} кВт·г/добу</div>
+                          }
+                        </div>
+                      </div>
+
+                      @if (isWinterLimitExceededReading(r) || cleanReadingNote(r.note) || (r.isControlOnly && getControlNoteAnalysis(r))) {
+                        <div class="space-y-1">
+                          @if (isWinterLimitExceededReading(r)) {
+                            <button
+                              type="button"
+                              (click)="showReadingBreakdown(r)"
+                              class="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-3xs font-bold bg-amber-100 dark:bg-amber-950 text-amber-900 dark:text-amber-300 border border-amber-300 dark:border-amber-700 hover:bg-amber-200 transition-colors cursor-pointer"
+                            >
+                              <span>❄️ Понад ліміт 2000 кВт·г (деталі)</span>
+                              <mat-icon class="text-xs leading-none">info</mat-icon>
+                            </button>
+                          }
+                          @if (cleanReadingNote(r.note)) {
+                            <div class="text-2xs text-slate-500 dark:text-slate-400">{{ cleanReadingNote(r.note) }}</div>
+                          }
+                          @if (r.isControlOnly) {
+                            @if (getControlNoteAnalysis(r); as cAnalysis) {
+                              <div class="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/80 border border-emerald-200 dark:border-emerald-800 text-3xs font-semibold text-emerald-800 dark:text-emerald-200">
+                                <mat-icon class="text-3xs text-emerald-600 dark:text-emerald-400 leading-none">psychology</mat-icon>
+                                <span>{{ cAnalysis.matchedDeviceName || cAnalysis.detectedAction }}: ~{{ cAnalysis.estimatedKwh }} кВт·г ({{ cAnalysis.durationHours }} год)</span>
+                              </div>
+                            }
+                          }
+                        </div>
+                      }
+
+                      <div class="flex items-center justify-between gap-2 pt-0.5">
+                        <div>
+                          @if (r.isControlOnly) {
+                            <span class="px-2.5 py-1.5 rounded-full text-2xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 inline-flex items-center gap-1 border border-slate-200 dark:border-slate-700">
+                              <mat-icon class="text-xs leading-none">visibility</mat-icon>
+                              <span>Моніторинг</span>
+                            </span>
+                          } @else if (canEdit()) {
+                            <button
+                              type="button"
+                              (click)="togglePaidStatus(r)"
+                              class="px-3 py-1.5 rounded-full text-2xs font-bold inline-flex items-center gap-1 cursor-pointer transition-colors min-h-9"
+                              [class.bg-emerald-100]="isPaid"
+                              [class.dark:bg-emerald-950]="isPaid"
+                              [class.text-emerald-800]="isPaid"
+                              [class.dark:text-emerald-300]="isPaid"
+                              [class.hover:bg-emerald-200]="isPaid"
+                              [class.bg-rose-100]="!isPaid"
+                              [class.dark:bg-rose-950]="!isPaid"
+                              [class.text-rose-800]="!isPaid"
+                              [class.dark:text-rose-300]="!isPaid"
+                              [class.hover:bg-rose-200]="!isPaid"
+                            >
+                              <mat-icon class="text-xs leading-none">{{ isPaid ? 'check_circle' : 'pending' }}</mat-icon>
+                              <span>{{ isPaid ? 'Сплачено' : 'До сплати' }}</span>
+                            </button>
+                          } @else {
+                            <span
+                              class="px-2.5 py-1 rounded-full text-2xs font-bold inline-flex items-center gap-1"
+                              [class.bg-emerald-100]="isPaid"
+                              [class.dark:bg-emerald-950]="isPaid"
+                              [class.text-emerald-800]="isPaid"
+                              [class.dark:text-emerald-300]="isPaid"
+                              [class.bg-rose-100]="!isPaid"
+                              [class.dark:bg-rose-950]="!isPaid"
+                              [class.text-rose-800]="!isPaid"
+                              [class.dark:text-rose-300]="!isPaid"
+                            >
+                              <mat-icon class="text-xs leading-none">{{ isPaid ? 'check_circle' : 'pending' }}</mat-icon>
+                              <span>{{ isPaid ? 'Сплачено' : 'До сплати' }}</span>
+                            </span>
+                          }
+                        </div>
+                        @if (canEdit()) {
+                          <div class="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              (click)="openEditReadingModal(r)"
+                              class="w-9 h-9 rounded-xl text-slate-500 dark:text-slate-300 hover:text-amber-600 bg-slate-100 dark:bg-slate-800 hover:bg-amber-50 dark:hover:bg-amber-950/60 flex items-center justify-center transition-colors cursor-pointer"
+                              title="Редагувати запис"
+                            >
+                              <mat-icon class="text-base leading-none">edit</mat-icon>
+                            </button>
+                            <button
+                              type="button"
+                              (click)="deleteReading(r.id)"
+                              class="w-9 h-9 rounded-xl text-slate-500 dark:text-slate-300 hover:text-rose-600 bg-slate-100 dark:bg-slate-800 hover:bg-rose-50 dark:hover:bg-rose-950/60 flex items-center justify-center transition-colors cursor-pointer"
+                              title="Видалити запис"
+                            >
+                              <mat-icon class="text-base leading-none">delete</mat-icon>
+                            </button>
+                          </div>
+                        }
+                      </div>
+                    </div>
+                  }
+                </div>
+
+                <!-- Desktop Table -->
+                <div class="hidden md:block overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
                   <table class="w-full text-left border-collapse text-xs">
                     <thead>
                       <tr class="bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 font-semibold uppercase text-3xs tracking-wider">
@@ -4269,7 +4421,7 @@ import {
                               <div class="text-3xs text-indigo-600 dark:text-indigo-400 font-medium">Без оплати</div>
                             } @else {
                               <span class="font-bold text-slate-900 dark:text-white text-sm">
-                                {{ r.totalCost.toFixed(2) }} грн
+                                {{ formatCost(r.totalCost) }} грн
                               </span>
                             }
                             @if (cleanReadingNote(r.note)) {
@@ -4409,8 +4561,11 @@ import {
     <!-- MODAL: ADD / EDIT UTILITY ACCOUNT                        -->
     <!-- ======================================================== -->
     @if (isAccountModalOpen()) {
-      <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-2 sm:p-4 flex items-center justify-center">
-        <div class="w-full max-w-lg bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] animate-in fade-in zoom-in-95 duration-150 my-auto">
+      <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+        <div class="w-full max-w-lg bg-white rounded-t-3xl sm:rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] pb-safe sm:pb-0 animate-in fade-in duration-150 sm:my-auto">
+          <div class="sm:hidden flex justify-center pt-2.5 pb-1 bg-slate-50 shrink-0">
+            <div class="w-10 h-1 rounded-full bg-slate-300"></div>
+          </div>
           <!-- Pinned Header -->
           <div class="flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 bg-slate-50 shrink-0">
             <div class="flex items-center gap-2.5">
@@ -4676,6 +4831,7 @@ import {
                     <input
                       id="acc-t1"
                       type="number"
+                      inputmode="decimal"
                       min="0"
                       step="0.1"
                       formControlName="initialReadingT1"
@@ -4691,6 +4847,7 @@ import {
                       <input
                         id="acc-t2"
                         type="number"
+                        inputmode="decimal"
                         min="0"
                         step="0.1"
                         formControlName="initialReadingT2"
@@ -4743,8 +4900,11 @@ import {
     <!-- MODAL: ADD NEW METER READINGS (BILLING OR CONTROL)       -->
     <!-- ======================================================== -->
     @if (isReadingModalOpen()) {
-      <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-2 sm:p-4 flex items-center justify-center">
-        <div class="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] animate-in fade-in zoom-in-95 duration-150 my-auto">
+      <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+        <div class="w-full max-w-lg bg-white dark:bg-slate-900 rounded-t-3xl sm:rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] pb-safe sm:pb-0 animate-in fade-in duration-150 sm:my-auto">
+          <div class="sm:hidden flex justify-center pt-2.5 pb-1 bg-slate-50 dark:bg-slate-950/80 shrink-0">
+            <div class="w-10 h-1 rounded-full bg-slate-300 dark:bg-slate-700"></div>
+          </div>
           <!-- Pinned Header -->
           <div class="flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/80 shrink-0">
             <div class="flex items-center gap-2.5">
@@ -4908,6 +5068,7 @@ import {
                   <input
                     id="read-t1"
                     type="number"
+                    inputmode="decimal"
                     step="0.1"
                     min="0"
                     formControlName="readingT1"
@@ -4925,6 +5086,7 @@ import {
                     <input
                       id="read-t2"
                       type="number"
+                      inputmode="decimal"
                       step="0.1"
                       min="0"
                       formControlName="readingT2"
@@ -5176,7 +5338,7 @@ import {
     <!-- ======================================================== -->
     @if (selectedReadingForBreakdown(); as sel) {
       @let bDown = getReadingBreakdown(sel);
-      <div class="fixed inset-0 z-50 overflow-y-auto p-3 sm:p-4 flex items-center justify-center">
+      <div class="fixed inset-0 z-50 overflow-y-auto p-0 sm:p-4 flex items-end sm:items-center justify-center">
         <!-- Backdrop button for closing -->
         <button
           type="button"
@@ -5185,7 +5347,10 @@ import {
           (click)="closeReadingBreakdown()"
         ></button>
 
-        <div class="relative w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden my-auto flex flex-col max-h-[92dvh] animate-in fade-in zoom-in-95 duration-150">
+        <div class="relative w-full max-w-lg bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl border border-slate-200 overflow-hidden sm:my-auto flex flex-col max-h-[92dvh] pb-safe sm:pb-0 animate-in fade-in duration-150">
+          <div class="sm:hidden flex justify-center pt-2.5 pb-1 bg-slate-50/80 shrink-0">
+            <div class="w-10 h-1 rounded-full bg-slate-300"></div>
+          </div>
           <!-- Header -->
           <div class="flex items-center justify-between px-5 py-4 border-b border-slate-100 bg-slate-50/80 shrink-0">
             <div class="flex items-center gap-2.5">
@@ -5331,8 +5496,11 @@ import {
     <!-- MODAL 1: ADD / EDIT ELECTRICITY DEVICE                   -->
     <!-- ======================================================== -->
     @if (isDeviceModalOpen()) {
-      <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-3 sm:p-4 flex items-center justify-center">
-        <div class="w-full max-w-lg bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] animate-in fade-in zoom-in-95 duration-150 my-auto">
+      <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+        <div class="w-full max-w-lg bg-white rounded-t-3xl sm:rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] pb-safe sm:pb-0 animate-in fade-in duration-150 sm:my-auto">
+          <div class="sm:hidden flex justify-center pt-2.5 pb-1 bg-slate-50 shrink-0">
+            <div class="w-10 h-1 rounded-full bg-slate-300"></div>
+          </div>
           <div class="flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 bg-slate-50 shrink-0">
             <div class="flex items-center gap-2.5">
               <div
@@ -5404,6 +5572,7 @@ import {
                   <input
                     id="dev-power"
                     type="number"
+                    inputmode="numeric"
                     min="0"
                     formControlName="powerWatts"
                     placeholder="Напр. 1350 або 3600"
@@ -5417,6 +5586,7 @@ import {
                   <input
                     id="dev-battery"
                     type="number"
+                    inputmode="decimal"
                     step="0.5"
                     min="0"
                     formControlName="batteryCapacityKwh"
@@ -5502,8 +5672,11 @@ import {
     <!-- MODAL 2: ADD CONSUMPTION (DAY / TIME INTERVAL / MONTH)   -->
     <!-- ======================================================== -->
     @if (isDeviceLogModalOpen()) {
-      <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-3 sm:p-4 flex items-center justify-center">
-        <div class="w-full max-w-lg bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[94dvh] animate-in fade-in zoom-in-95 duration-150 my-auto">
+      <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+        <div class="w-full max-w-lg bg-white rounded-t-3xl sm:rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[94dvh] pb-safe sm:pb-0 animate-in fade-in duration-150 sm:my-auto">
+          <div class="sm:hidden flex justify-center pt-2.5 pb-1 bg-slate-50 shrink-0">
+            <div class="w-10 h-1 rounded-full bg-slate-300"></div>
+          </div>
           <div class="flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 bg-slate-50 shrink-0">
             <div class="flex items-center gap-2.5">
               <div class="w-9 h-9 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0">
@@ -5859,6 +6032,7 @@ import {
                       <input
                         id="ev-soc-start"
                         type="number"
+                        inputmode="numeric"
                         min="0"
                         max="100"
                         [value]="evChargeStartPct()"
@@ -5873,6 +6047,7 @@ import {
                       <input
                         id="ev-soc-end"
                         type="number"
+                        inputmode="numeric"
                         min="0"
                         max="100"
                         [value]="evChargeEndPct()"
@@ -5929,6 +6104,7 @@ import {
                   <input
                     id="dlog-kwh"
                     type="number"
+                    inputmode="decimal"
                     step="0.01"
                     min="0"
                     formControlName="consumedKwh"
@@ -5977,10 +6153,13 @@ import {
     <!-- ======================================================== -->
     @if (isScreenshotModalOpen()) {
       <div
-        class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/65 backdrop-blur-xs p-3 sm:p-4 flex items-center justify-center"
+        class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/65 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center"
         (paste)="onScreenshotPaste($event)"
       >
-        <div class="w-full max-w-xl bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[94dvh] animate-in fade-in zoom-in-95 duration-150 my-auto">
+        <div class="w-full max-w-xl bg-white rounded-t-3xl sm:rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[94dvh] pb-safe sm:pb-0 animate-in fade-in duration-150 sm:my-auto">
+          <div class="sm:hidden flex justify-center pt-2.5 pb-1 bg-emerald-50/40 shrink-0">
+            <div class="w-10 h-1 rounded-full bg-emerald-300/70"></div>
+          </div>
           <!-- Header -->
           <div class="flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 bg-gradient-to-r from-emerald-500/10 via-teal-500/5 to-white shrink-0">
             <div class="flex items-center gap-2.5">
@@ -6073,6 +6252,7 @@ import {
                   <div>
                     <input
                       type="number"
+                      inputmode="numeric"
                       min="0"
                       [value]="screenshotNewDeviceWatts() || ''"
                       (input)="screenshotNewDeviceWatts.set(+$any($event.target).value || null)"
@@ -6191,6 +6371,7 @@ import {
                     <input
                       id="scr-parsed-kwh"
                       type="number"
+                      inputmode="decimal"
                       step="0.01"
                       min="0"
                       [value]="screenshotExtractedKwh()"
@@ -7731,13 +7912,21 @@ export class ElectricityView {
     return selected || list[0];
   });
 
+  formatCost(value: unknown): string {
+    return (Number(value) || 0).toFixed(2);
+  }
+
   readonly accountReadings = computed<UtilityReading[]>(() => {
     const acc = this.currentAccount();
     if (!acc) return [];
     return this.dataService
       .utilityReadings()
       .filter((r) => r.accountId === acc.id)
-      .sort((a, b) => b.date.localeCompare(a.date));
+      .sort(
+        (a, b) =>
+          (b.date || '').localeCompare(a.date || '') ||
+          (b.createdAt || '').localeCompare(a.createdAt || '')
+      );
   });
 
   readonly filteredAccountReadings = computed<UtilityReading[]>(() => {
@@ -8351,7 +8540,14 @@ export class ElectricityView {
   }
 
   async confirmDeleteAccount(acc: UtilityAccount): Promise<void> {
-    const ok = confirm(`Ви дійсно бажаєте видалити особовий рахунок «${acc.name}» (№ ${acc.accountNumber}) та всі зафіксовані по ньому покази?`);
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Видалити особовий рахунок?',
+      message: `Ви дійсно бажаєте видалити особовий рахунок «${acc.name}» (№ ${acc.accountNumber}) та всі зафіксовані по ньому покази?`,
+      confirmText: 'Видалити',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'delete_forever',
+    });
     if (ok) {
       await this.dataService.deleteUtilityAccount(acc.id);
       const remaining = this.electricityAccounts();
@@ -8512,6 +8708,12 @@ export class ElectricityView {
       };
 
       await this.dataService.saveUtilityReading(reading);
+      this.isHistoryTableExpanded.set(true);
+      if (isControlOnly && this.filterPurpose() === 'billing') {
+        this.filterPurpose.set('all');
+      } else if (!isControlOnly && this.filterPurpose() === 'control') {
+        this.filterPurpose.set('all');
+      }
       this.closeReadingModal();
     } finally {
       this.isSubmitting.set(false);
@@ -8519,7 +8721,14 @@ export class ElectricityView {
   }
 
   async deleteReading(id: string): Promise<void> {
-    const ok = confirm('Видалити цей запис показів лічильника?');
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Видалити показник?',
+      message: 'Ви дійсно бажаєте видалити цей запис показів лічильника?',
+      confirmText: 'Видалити',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'delete',
+    });
     if (ok) {
       await this.dataService.deleteUtilityReading(id);
     }
@@ -9777,7 +9986,15 @@ export class ElectricityView {
     if (!acc) return;
     const target = this.accountDevices().find((d) => d.id === deviceId);
     if (!target) return;
-    if (!confirm(`Видалити пристрій «${target.name}» та всі його записи споживання?`)) return;
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Видалити пристрій?',
+      message: `Видалити пристрій «${target.name}» та всі його записи споживання?`,
+      confirmText: 'Видалити',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'delete',
+    });
+    if (!ok) return;
 
     const nextList = this.accountDevices().filter((d) => d.id !== deviceId);
     this.isSavingDevices.set(true);

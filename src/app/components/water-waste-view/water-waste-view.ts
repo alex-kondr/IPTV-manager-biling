@@ -576,7 +576,138 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
 
             <!-- History Table -->
             @if (filteredReadings().length > 0) {
-              <div class="overflow-x-auto rounded-xl border border-slate-200">
+              <!-- Mobile Card List -->
+              <div class="md:hidden space-y-2.5">
+                @for (r of filteredReadings(); track r.id) {
+                  <div class="p-3.5 rounded-2xl border border-slate-200 bg-white shadow-2xs space-y-2.5">
+                    <div class="flex items-start justify-between gap-2">
+                      <div class="min-w-0">
+                        <div class="flex items-center gap-1.5 flex-wrap">
+                          <span class="text-sm font-bold text-slate-900">{{ formatDate(r.date) }}</span>
+                          @if (r.isControlOnly) {
+                            <span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 text-3xs font-bold border border-indigo-200">
+                              <mat-icon class="text-3xs leading-none">visibility</mat-icon> Контрольний
+                            </span>
+                          }
+                        </div>
+                        <div class="text-3xs text-slate-400 font-mono mt-0.5">{{ r.periodMonth || r.date.substring(0, 7) }}</div>
+                      </div>
+                      @if (r.utilityType === 'water') {
+                        <span
+                          class="px-2 py-0.5 rounded-md text-3xs font-bold uppercase inline-flex items-center gap-1 shrink-0"
+                          [class.bg-cyan-100]="!r.isControlOnly"
+                          [class.text-cyan-800]="!r.isControlOnly"
+                          [class.bg-indigo-100]="r.isControlOnly"
+                          [class.text-indigo-800]="r.isControlOnly"
+                        >
+                          <mat-icon class="text-xs leading-none">{{ r.isControlOnly ? 'visibility' : 'water_drop' }}</mat-icon>
+                          {{ r.isControlOnly ? 'Вода (контроль)' : 'Вода' }}
+                        </span>
+                      } @else {
+                        <span class="px-2 py-0.5 rounded-md text-3xs font-bold uppercase inline-flex items-center gap-1 bg-emerald-100 text-emerald-800 shrink-0">
+                          <mat-icon class="text-xs leading-none">delete_outline</mat-icon> Сміття
+                        </span>
+                      }
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2 p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-xs">
+                      @if (r.utilityType === 'water') {
+                        <div>
+                          <div class="text-3xs text-slate-500">Показник</div>
+                          <div class="font-mono font-bold text-slate-900">{{ r.readingT1 }} м³</div>
+                          <div class="text-3xs text-slate-500 mt-0.5">
+                            Спожито: {{ r.consumptionT1 || 0 }} м³
+                            @if (r.dailyAvgConsumption && r.dailyAvgConsumption > 0) {
+                              <span class="text-emerald-600 font-medium">(~{{ Math.round(r.dailyAvgConsumption * 1000) }} л/д)</span>
+                            }
+                          </div>
+                        </div>
+                      } @else {
+                        <div>
+                          <div class="text-3xs text-slate-500">Нарахування</div>
+                          <div class="font-semibold text-slate-800">Абонплата</div>
+                          <div class="text-3xs text-slate-400 truncate">{{ r.note || 'Вивіз ТПВ' }}</div>
+                        </div>
+                      }
+                      <div class="text-right">
+                        <div class="text-3xs text-slate-500">
+                          @if (r.isControlOnly) {
+                            Тільки контроль
+                          } @else {
+                            Тариф: {{ r.rateT1 }} грн{{ r.utilityType === 'water' ? '/м³' : '/міс' }}
+                          }
+                        </div>
+                        @if (r.isControlOnly) {
+                          <div class="font-semibold text-slate-400 text-base font-mono mt-0.5">0.00 грн</div>
+                          <div class="text-3xs text-indigo-600 font-medium">Без оплати</div>
+                        } @else {
+                          <div class="font-extrabold text-slate-900 text-base font-mono mt-0.5">{{ formatCost(r.totalCost) }} грн</div>
+                        }
+                      </div>
+                    </div>
+
+                    <div class="flex items-center justify-between gap-2 pt-0.5">
+                      <div>
+                        @if (r.isControlOnly) {
+                          <span class="px-2.5 py-1.5 rounded-full text-2xs font-semibold bg-slate-100 text-slate-600 inline-flex items-center gap-1 border border-slate-200">
+                            <mat-icon class="text-xs leading-none">visibility</mat-icon>
+                            <span>Моніторинг</span>
+                          </span>
+                        } @else if (canEdit()) {
+                          <button
+                            type="button"
+                            (click)="togglePaidStatus(r)"
+                            class="px-3 py-1.5 rounded-full text-2xs font-bold inline-flex items-center gap-1 cursor-pointer transition-colors min-h-9"
+                            [class.bg-emerald-100]="r.isPaid"
+                            [class.text-emerald-800]="r.isPaid"
+                            [class.hover:bg-emerald-200]="r.isPaid"
+                            [class.bg-rose-100]="!r.isPaid"
+                            [class.text-rose-800]="!r.isPaid"
+                            [class.hover:bg-rose-200]="!r.isPaid"
+                          >
+                            <mat-icon class="text-xs leading-none">{{ r.isPaid ? 'check_circle' : 'pending' }}</mat-icon>
+                            <span>{{ r.isPaid ? 'Сплачено' : 'До сплати' }}</span>
+                          </button>
+                        } @else {
+                          <span
+                            class="px-2.5 py-1 rounded-full text-2xs font-bold inline-flex items-center gap-1"
+                            [class.bg-emerald-100]="r.isPaid"
+                            [class.text-emerald-800]="r.isPaid"
+                            [class.bg-rose-100]="!r.isPaid"
+                            [class.text-rose-800]="!r.isPaid"
+                          >
+                            <mat-icon class="text-xs leading-none">{{ r.isPaid ? 'check_circle' : 'pending' }}</mat-icon>
+                            <span>{{ r.isPaid ? 'Сплачено' : 'До сплати' }}</span>
+                          </span>
+                        }
+                      </div>
+                      @if (canEdit()) {
+                        <div class="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            (click)="r.utilityType === 'water' ? openEditWaterReadingModal(r) : openEditWasteAccrualModal(r)"
+                            class="w-9 h-9 rounded-xl text-slate-500 hover:text-cyan-600 bg-slate-100 hover:bg-cyan-50 flex items-center justify-center transition-colors cursor-pointer"
+                            title="Редагувати запис"
+                          >
+                            <mat-icon class="text-base leading-none">edit</mat-icon>
+                          </button>
+                          <button
+                            type="button"
+                            (click)="deleteReading(r.id)"
+                            class="w-9 h-9 rounded-xl text-slate-500 hover:text-rose-600 bg-slate-100 hover:bg-rose-50 flex items-center justify-center transition-colors cursor-pointer"
+                            title="Видалити запис"
+                          >
+                            <mat-icon class="text-base leading-none">delete</mat-icon>
+                          </button>
+                        </div>
+                      }
+                    </div>
+                  </div>
+                }
+              </div>
+
+              <!-- Desktop Table -->
+              <div class="hidden md:block overflow-x-auto rounded-xl border border-slate-200">
                 <table class="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr class="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase text-3xs tracking-wider">
@@ -673,7 +804,7 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
                             <div class="text-3xs text-indigo-600 font-medium">Без оплати</div>
                           } @else {
                             <span class="font-bold text-slate-900 text-sm">
-                              {{ r.totalCost.toFixed(2) }} грн
+                              {{ formatCost(r.totalCost) }} грн
                             </span>
                           }
                         </td>
@@ -776,8 +907,11 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
     <!-- MODAL: ADD / EDIT UTILITY ACCOUNT                        -->
     <!-- ======================================================== -->
     @if (isAccountModalOpen()) {
-      <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-2 sm:p-4 flex items-center justify-center">
-        <div class="w-full max-w-lg bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] animate-in fade-in zoom-in-95 duration-150 my-auto">
+      <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+        <div class="w-full max-w-lg bg-white rounded-t-3xl sm:rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] pb-safe sm:pb-0 animate-in fade-in duration-150 sm:my-auto">
+          <div class="sm:hidden flex justify-center pt-2.5 pb-1 bg-slate-50 shrink-0">
+            <div class="w-10 h-1 rounded-full bg-slate-300"></div>
+          </div>
           <!-- Pinned Header -->
           <div class="flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 bg-slate-50 shrink-0">
             <div class="flex items-center gap-2.5">
@@ -863,6 +997,7 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
                   <input
                     id="acc-res"
                     type="number"
+                    inputmode="numeric"
                     min="1"
                     formControlName="residentsCount"
                     class="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-cyan-600"
@@ -879,6 +1014,7 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
                   <input
                     id="acc-init-water"
                     type="number"
+                    inputmode="decimal"
                     min="0"
                     step="0.01"
                     formControlName="initialReadingWater"
@@ -893,6 +1029,7 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
                   <input
                     id="acc-balance"
                     type="number"
+                    inputmode="decimal"
                     step="0.01"
                     formControlName="balanceUah"
                     placeholder="0"
@@ -967,8 +1104,11 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
     <!-- MODAL: ADD WATER METER READING (BILLING OR CONTROL)      -->
     <!-- ======================================================== -->
     @if (isWaterModalOpen()) {
-      <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-2 sm:p-4 flex items-center justify-center">
-        <div class="w-full max-w-lg bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] animate-in fade-in zoom-in-95 duration-150 my-auto">
+      <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+        <div class="w-full max-w-lg bg-white rounded-t-3xl sm:rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] pb-safe sm:pb-0 animate-in fade-in duration-150 sm:my-auto">
+          <div class="sm:hidden flex justify-center pt-2.5 pb-1 bg-slate-50 shrink-0">
+            <div class="w-10 h-1 rounded-full bg-slate-300"></div>
+          </div>
           <!-- Pinned Header -->
           <div class="flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 bg-slate-50 shrink-0">
             <div class="flex items-center gap-2.5">
@@ -1111,6 +1251,7 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
                 <input
                   id="water-reading"
                   type="number"
+                  inputmode="decimal"
                   step="0.01"
                   min="0"
                   formControlName="reading"
@@ -1214,8 +1355,11 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
     <!-- MODAL: WASTE MONTHLY ACCRUAL                             -->
     <!-- ======================================================== -->
     @if (isWasteModalOpen()) {
-      <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-2 sm:p-4 flex items-center justify-center">
-        <div class="w-full max-w-lg bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] animate-in fade-in zoom-in-95 duration-150 my-auto">
+      <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+        <div class="w-full max-w-lg bg-white rounded-t-3xl sm:rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] sm:max-h-[calc(100dvh-2rem)] pb-safe sm:pb-0 animate-in fade-in duration-150 sm:my-auto">
+          <div class="sm:hidden flex justify-center pt-2.5 pb-1 bg-slate-50 shrink-0">
+            <div class="w-10 h-1 rounded-full bg-slate-300"></div>
+          </div>
           <!-- Pinned Header -->
           <div class="flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 bg-slate-50 shrink-0">
             <div class="flex items-center gap-2.5">
@@ -1338,8 +1482,11 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
     <!-- MODAL: QUICK BALANCE UPDATE                              -->
     <!-- ======================================================== -->
     @if (isQuickBalanceModalOpen()) {
-      <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-2 sm:p-4 flex items-center justify-center">
-        <div class="w-full max-w-md bg-white rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col my-auto animate-in fade-in zoom-in-95 duration-150">
+      <div class="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+        <div class="w-full max-w-md bg-white rounded-t-3xl sm:rounded-2xl border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] sm:my-auto pb-safe sm:pb-0 animate-in fade-in duration-150">
+          <div class="sm:hidden flex justify-center pt-2.5 pb-1 bg-emerald-50/50 shrink-0">
+            <div class="w-10 h-1 rounded-full bg-emerald-300/70"></div>
+          </div>
           <div class="flex items-center justify-between p-4 border-b border-slate-200 bg-emerald-50/50">
             <div class="flex items-center gap-2.5">
               <div class="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
@@ -1367,6 +1514,7 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
               <input
                 id="quick-balance-input"
                 type="number"
+                inputmode="decimal"
                 step="0.01"
                 [value]="quickBalanceInput()"
                 (input)="quickBalanceInput.set(+($any($event.target).value) || 0)"
@@ -1569,6 +1717,10 @@ export class WaterWasteView {
     return selected || list[0];
   });
 
+  formatCost(value: unknown): string {
+    return (Number(value) || 0).toFixed(2);
+  }
+
   readonly accountReadings = computed<UtilityReading[]>(() => {
     const acc = this.currentAccount();
     if (!acc) return [];
@@ -1581,7 +1733,11 @@ export class WaterWasteView {
         if (mode === 'waste') return r.utilityType === 'waste';
         return r.utilityType === 'water' || r.utilityType === 'waste';
       })
-      .sort((a, b) => b.date.localeCompare(a.date));
+      .sort(
+        (a, b) =>
+          (b.date || '').localeCompare(a.date || '') ||
+          (b.createdAt || '').localeCompare(a.createdAt || '')
+      );
   });
 
   readonly filteredReadings = computed<UtilityReading[]>(() => {
@@ -1967,7 +2123,14 @@ export class WaterWasteView {
   }
 
   async confirmDeleteAccount(acc: UtilityAccount): Promise<void> {
-    const ok = confirm(`Ви дійсно бажаєте видалити особовий рахунок «${acc.name}» (№ ${acc.accountNumber}) та всі пов'язані з ним записи?`);
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Видалити особовий рахунок?',
+      message: `Ви дійсно бажаєте видалити особовий рахунок «${acc.name}» (№ ${acc.accountNumber}) та всі пов'язані з ним записи?`,
+      confirmText: 'Видалити',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'delete_forever',
+    });
     if (ok) {
       await this.dataService.deleteUtilityAccount(acc.id);
       const remaining = this.waterWasteAccounts();
@@ -2117,6 +2280,11 @@ export class WaterWasteView {
       };
 
       await this.dataService.saveUtilityReading(reading);
+      if (isControlOnly && (this.filterType() === 'water' || this.filterType() === 'waste')) {
+        this.filterType.set('all');
+      } else if (!isControlOnly && (this.filterType() === 'water_control' || this.filterType() === 'waste')) {
+        this.filterType.set('all');
+      }
       this.closeWaterModal();
     } finally {
       this.isSubmitting.set(false);
@@ -2196,6 +2364,9 @@ export class WaterWasteView {
       };
 
       await this.dataService.saveUtilityReading(reading);
+      if (this.filterType() === 'water' || this.filterType() === 'water_control') {
+        this.filterType.set('all');
+      }
       this.closeWasteModal();
     } finally {
       this.isSubmitting.set(false);
@@ -2203,7 +2374,14 @@ export class WaterWasteView {
   }
 
   async deleteReading(id: string): Promise<void> {
-    const ok = confirm('Видалити цей запис?');
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Видалити запис?',
+      message: 'Ви дійсно бажаєте видалити цей запис? Цю дію неможливо скасувати.',
+      confirmText: 'Видалити',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'delete',
+    });
     if (ok) {
       await this.dataService.deleteUtilityReading(id);
     }

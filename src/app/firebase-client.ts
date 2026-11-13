@@ -2,6 +2,7 @@ import { FIREBASE_APPLET_CONFIG } from './firebase-config';
 
 export interface FirebasePopupLoginResult {
   idToken?: string;
+  accessToken?: string;
   email?: string;
   name?: string;
   picture?: string;
@@ -93,6 +94,7 @@ async function triggerGisOAuthPopup(): Promise<FirebasePopupLoginResult | null> 
   }
   const profile = (await userInfoResp.json()) as Record<string, unknown>;
   return {
+    accessToken,
     email: typeof profile['email'] === 'string' ? profile['email'] : undefined,
     name: typeof profile['name'] === 'string' ? profile['name'] : undefined,
     picture: typeof profile['picture'] === 'string' ? profile['picture'] : undefined,

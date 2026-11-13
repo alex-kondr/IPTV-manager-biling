@@ -521,9 +521,9 @@
         </div>
       }
 
-      <!-- Toast Notifications (Fixed Bottom) -->
+      <!-- Toast Notifications (Fixed Bottom above Android Mobile Nav) -->
       @if (dataService.successMessage() || dataService.errorMessage()) {
-        <div class="fixed bottom-4 sm:bottom-6 inset-x-0 z-100 px-4 sm:px-6 pointer-events-none flex flex-col items-center gap-2.5">
+        <div class="fixed bottom-20 lg:bottom-6 inset-x-0 z-100 px-3 sm:px-6 pointer-events-none flex flex-col items-center gap-2.5">
           @if (dataService.successMessage()) {
             <div class="pointer-events-auto w-full max-w-2xl p-3.5 rounded-xl bg-emerald-600 text-white text-xs sm:text-sm font-semibold shadow-lg border border-emerald-500/40 flex items-center justify-between gap-3 animate-fade-in">
               <div class="flex items-center gap-2.5 min-w-0">
@@ -533,7 +533,7 @@
               <button
                 type="button"
                 (click)="dataService.successMessage.set(null)"
-                class="w-7 h-7 rounded-lg hover:bg-emerald-700/60 text-white/80 hover:text-white flex items-center justify-center shrink-0 cursor-pointer border-0 bg-transparent transition-colors"
+                class="w-8 h-8 rounded-lg hover:bg-emerald-700/60 text-white/80 hover:text-white flex items-center justify-center shrink-0 cursor-pointer border-0 bg-transparent transition-colors"
                 title="Закрити"
               >
                 <mat-icon class="text-base">close</mat-icon>
@@ -549,7 +549,7 @@
               <button
                 type="button"
                 (click)="dataService.errorMessage.set(null)"
-                class="w-7 h-7 rounded-lg hover:bg-rose-700/60 text-white/80 hover:text-white flex items-center justify-center shrink-0 cursor-pointer border-0 bg-transparent transition-colors"
+                class="w-8 h-8 rounded-lg hover:bg-rose-700/60 text-white/80 hover:text-white flex items-center justify-center shrink-0 cursor-pointer border-0 bg-transparent transition-colors"
                 title="Закрити"
               >
                 <mat-icon class="text-base">close</mat-icon>
@@ -560,7 +560,7 @@
       }
 
       <!-- Main Body Content -->
-      <main class="p-4 sm:p-6 flex-1">
+      <main class="p-3 sm:p-6 pb-24 lg:pb-6 flex-1">
         @if (isUserBlocked()) {
           <div class="max-w-xl mx-auto my-12 bg-white rounded-3xl border border-rose-200 p-8 text-center shadow-sm space-y-4">
             <div class="w-16 h-16 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
@@ -1575,7 +1575,7 @@
     </div>
 
     <!-- Mobile Bottom Navigation (Core Service Tabs Only — Settings & Admin Users moved to Profile Modal) -->
-    <nav class="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-slate-950/95 backdrop-blur-md text-white border-t border-slate-800 px-1.5 py-1.5 flex items-center justify-between gap-0.5">
+    <nav class="lg:hidden fixed bottom-0 inset-x-0 z-30 bg-slate-950/95 backdrop-blur-md text-white border-t border-slate-800 px-1.5 pt-1.5 pb-safe flex items-center justify-between gap-0.5">
       <button
         type="button"
         (click)="setTab('home')"
@@ -1683,8 +1683,11 @@
     }
 
     @if (isGroupModalOpen()) {
-      <div class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs p-4 flex items-center justify-center">
-        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-slate-200 flex flex-col max-h-[90dvh]">
+      <div class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs p-0 sm:p-4 flex items-end sm:items-center justify-center">
+        <div class="bg-white rounded-t-3xl sm:rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-slate-200 flex flex-col max-h-[92dvh] pb-safe">
+          <div class="sm:hidden flex justify-center pt-2.5 pb-1 bg-indigo-950">
+            <div class="w-10 h-1 rounded-full bg-white/30"></div>
+          </div>
           <div class="px-5 py-4 bg-indigo-950 text-white flex items-center justify-between">
             <div class="flex items-center gap-2.5">
               <mat-icon class="text-indigo-400">workspaces</mat-icon>
@@ -1722,6 +1725,7 @@
               <input
                 id="group-balance-input"
                 type="number"
+                inputmode="decimal"
                 [formControl]="groupFormBalance"
                 class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-sm"
               />
@@ -1821,13 +1825,16 @@
   <!-- USER PROFILE MODAL (Email, Settings/"Опції", Admin Users/"Доступ", and Logout) -->
   @if (isProfileModalOpen()) {
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-xs"
+      class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/75 p-0 sm:p-4 backdrop-blur-xs"
       (click)="closeProfileModal()"
     >
       <div
-        class="w-full max-w-md rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col"
+        class="w-full max-w-md rounded-t-3xl sm:rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] pb-safe"
         (click)="$event.stopPropagation()"
       >
+        <div class="sm:hidden flex justify-center pt-2.5 pb-1 bg-slate-950">
+          <div class="w-10 h-1 rounded-full bg-white/30"></div>
+        </div>
         <!-- Profile Modal Header -->
         <div class="px-5 py-4 bg-gradient-to-r from-slate-950 via-indigo-950 to-slate-950 text-white flex items-center justify-between gap-3">
           <div class="flex items-center gap-3 min-w-0">
@@ -2013,13 +2020,16 @@
   @if (isUpdateModalOpen()) {
     <div
       id="modal-app-release-notes"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-3 sm:p-4 backdrop-blur-xs"
+      class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/75 p-0 sm:p-4 backdrop-blur-xs"
       (click)="closeUpdateModal()"
     >
       <div
-        class="w-full max-w-2xl rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[90dvh]"
+        class="w-full max-w-2xl rounded-t-3xl sm:rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] pb-safe"
         (click)="$event.stopPropagation()"
       >
+        <div class="sm:hidden flex justify-center pt-2.5 pb-1 bg-slate-950">
+          <div class="w-10 h-1 rounded-full bg-white/30"></div>
+        </div>
         <!-- Header -->
         <div class="px-5 py-4 bg-gradient-to-r from-slate-950 via-indigo-950 to-slate-950 text-white flex items-center justify-between gap-3 shrink-0">
           <div class="flex items-center gap-3 min-w-0">
@@ -2128,13 +2138,16 @@
   <!-- SHARED HOUSEHOLD & BUDGET INVITE LINK MODAL -->
   @if (isSharedHouseholdModalOpen()) {
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-3 sm:p-4 backdrop-blur-xs"
+      class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/75 p-0 sm:p-4 backdrop-blur-xs"
       (click)="closeSharedHouseholdModal()"
     >
       <div
-        class="w-full max-w-3xl rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh]"
+        class="w-full max-w-3xl rounded-t-3xl sm:rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[92dvh] pb-safe"
         (click)="$event.stopPropagation()"
       >
+        <div class="sm:hidden flex justify-center pt-2.5 pb-1 bg-slate-950">
+          <div class="w-10 h-1 rounded-full bg-white/30"></div>
+        </div>
         <!-- Modal Header -->
         <div class="px-5 py-4 bg-gradient-to-r from-slate-950 via-teal-950 to-slate-950 text-white flex items-center justify-between gap-3 shrink-0">
           <div class="flex items-center gap-3 min-w-0">
@@ -2747,6 +2760,61 @@
                 <span>Перевірити та приєднатися</span>
               </button>
             </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  }
+
+  <!-- Global Android-Friendly Material Confirm / Alert Dialog -->
+  @if (dataService.confirmDialog(); as dlg) {
+    <div
+      class="fixed inset-0 z-[110] flex items-end sm:items-center justify-center bg-slate-950/75 p-0 sm:p-4 backdrop-blur-xs"
+      (click)="dataService.resolveConfirmDialog(false)"
+    >
+      <div
+        class="w-full max-w-md rounded-t-3xl sm:rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col pb-safe"
+        (click)="$event.stopPropagation()"
+      >
+        <div class="sm:hidden flex justify-center pt-2.5 pb-1">
+          <div class="w-10 h-1 rounded-full bg-slate-300 dark:bg-slate-700"></div>
+        </div>
+        <div class="p-5 sm:p-6 space-y-4">
+          <div class="flex items-start gap-3">
+            <div
+              [class]="dlg.isDanger ? 'bg-rose-100 text-rose-600 dark:bg-rose-950/60 dark:text-rose-400' : 'bg-amber-100 text-amber-600 dark:bg-amber-950/60 dark:text-amber-400'"
+              class="w-10 h-10 rounded-2xl flex items-center justify-center shrink-0"
+            >
+              <mat-icon class="text-xl">{{ dlg.icon || (dlg.isDanger ? 'delete_forever' : dlg.isAlertOnly ? 'info' : 'help_outline') }}</mat-icon>
+            </div>
+            <div class="min-w-0 flex-1">
+              <h3 class="text-base font-extrabold text-slate-900 dark:text-white leading-snug">
+                {{ dlg.title }}
+              </h3>
+              <p class="mt-1.5 text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed whitespace-pre-line">
+                {{ dlg.message }}
+              </p>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-end gap-2.5 pt-2">
+            @if (!dlg.isAlertOnly) {
+              <button
+                type="button"
+                (click)="dataService.resolveConfirmDialog(false)"
+                class="flex-1 sm:flex-none px-4 py-3 sm:py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs sm:text-sm font-bold cursor-pointer border-0 transition-colors"
+              >
+                {{ dlg.cancelText || 'Скасувати' }}
+              </button>
+            }
+            <button
+              type="button"
+              (click)="dataService.resolveConfirmDialog(true)"
+              [class]="dlg.isDanger ? 'bg-rose-600 hover:bg-rose-700 text-white' : 'bg-indigo-600 hover:bg-indigo-700 text-white'"
+              class="flex-1 sm:flex-none px-5 py-3 sm:py-2.5 rounded-xl text-xs sm:text-sm font-extrabold cursor-pointer border-0 shadow-sm transition-colors"
+            >
+              {{ dlg.confirmText || 'Підтвердити' }}
+            </button>
           </div>
         </div>
       </div>
