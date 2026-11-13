@@ -112,8 +112,7 @@ app.get(['/_ah/health', '/healthz'], (_req, res) => {
 
 const DEFAULT_PROJECT_SEED = [
   process.env['FIREBASE_PROJECT_ID'] || 'modern-realm-9nm8c',
-  process.env['FIREBASE_FIRESTORE_DATABASE_ID'] || 'ai-studio-iptv-d3d15c62-7975-482f-a649-5dcbe2bedaf3',
-  process.env['SQL_HOST'] || 'homehub3-iptv',
+  process.env['SQL_PASSWORD'] || process.env['EXTERNAL_DATABASE_URL'] || process.env['GEMINI_API_KEY'] || 'local-dev-only',
 ].join(':');
 
 const ADMIN_EMAILS_SET = new Set(
@@ -1285,6 +1284,7 @@ app.put('/api/app-release/dismiss', handleDismissAppRelease);
 // ============================================================================
 
 const PUBLIC_API_EXACT = new Set([
+  '/firebase-config',
   '/sync/version',
   '/auth/me',
   '/auth/google',

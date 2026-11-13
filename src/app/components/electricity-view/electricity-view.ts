@@ -279,7 +279,7 @@ export class ElectricityView implements ElectricityViewContext {
   constructor() {
     this.updateLiveKyivTime();
     if (typeof window !== 'undefined') {
-      const clockTimer = setInterval(() => this.updateLiveKyivTime(), 1000);
+      const clockTimer = setInterval(() => this.updateLiveKyivTime(), 15_000);
       this.destroyRef.onDestroy(() => clearInterval(clockTimer));
       this.dataService.fetchDtekCatalog();
     }
@@ -312,7 +312,6 @@ export class ElectricityView implements ElectricityViewContext {
         if (typeof window !== 'undefined') {
           this.dataService.fetchDtekCatalog(city);
           this.dataService.fetchDtekShutdowns(city, street, house);
-          void this.loadWeatherForCurrentAccount(city, this.deviceSelectedMonth());
         }
       });
     });
@@ -320,9 +319,10 @@ export class ElectricityView implements ElectricityViewContext {
     effect(() => {
       const selMonth = this.deviceSelectedMonth();
       const acc = this.currentAccount();
+      const mode = this.viewMode();
       const city = acc?.city || 'с-ще Окни';
       untracked(() => {
-        if (typeof window !== 'undefined' && selMonth) {
+        if (typeof window !== 'undefined' && selMonth && mode !== 'schedule') {
           void this.loadWeatherForCurrentAccount(city, selMonth);
         }
       });
@@ -335,11 +335,10 @@ export class ElectricityView implements ElectricityViewContext {
         timeZone: 'Europe/Kyiv',
         hour: '2-digit',
         minute: '2-digit',
-        second: '2-digit',
       }).format(new Date());
       this.liveKyivTime.set(timeStr);
     } catch {
-      this.liveKyivTime.set(new Date().toLocaleTimeString('uk-UA'));
+      this.liveKyivTime.set(new Date().toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' }));
     }
   }
 

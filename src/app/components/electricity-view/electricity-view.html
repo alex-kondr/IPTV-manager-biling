@@ -1,19 +1,6 @@
     <div id="electricity-container" class="space-y-6 max-w-7xl mx-auto">
-      @if (viewMode() !== 'schedule' && canEdit()) {
-        <div class="flex items-center justify-end">
-          <button
-            type="button"
-            (click)="openAccountModal(null)"
-            class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
-          >
-            <mat-icon aria-hidden="true" class="text-base leading-none">add_business</mat-icon>
-            <span>Додати будинок</span>
-          </button>
-        </div>
-      }
-
       <!-- Unified House / Account Selector with Default House Persistence & Per-Tab Visibility -->
-      @if (visibleAccountsForCurrentTab().length > 0 || hiddenAccountsForCurrentTab().length > 0) {
+      @if (visibleAccountsForCurrentTab().length > 0 || hiddenAccountsForCurrentTab().length > 0 || (viewMode() !== 'schedule' && canEdit())) {
         <div class="p-3 sm:p-4 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-2">
           <div class="flex items-center justify-between gap-1.5 flex-wrap">
             <div class="flex items-center gap-1.5 min-w-0">
@@ -21,6 +8,17 @@
               <span class="text-xs font-bold text-slate-800 truncate">
                 Будинок ({{ visibleAccountsForCurrentTab().length }}):
               </span>
+              @if (viewMode() !== 'schedule' && canEdit()) {
+                <button
+                  type="button"
+                  (click)="openAccountModal(null)"
+                  aria-label="Додати будинок"
+                  title="Додати будинок"
+                  class="w-6 h-6 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white inline-flex items-center justify-center transition-colors shadow-2xs cursor-pointer shrink-0"
+                >
+                  <mat-icon aria-hidden="true" class="text-sm leading-none">add</mat-icon>
+                </button>
+              }
             </div>
             <div class="flex items-center gap-1.5 flex-wrap justify-end">
               @if (currentAccount(); as activeAcc) {
