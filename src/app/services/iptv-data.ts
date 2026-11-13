@@ -3231,7 +3231,6 @@ export class IptvData {
             status: computeClientStatus(c),
           }));
           this.clients.set(mapped);
-          this.saveClientsLocal(mapped);
         }
       } catch (err) {
         if (this.isRateLimitError(err)) {
@@ -3254,7 +3253,6 @@ export class IptvData {
         const data = await firstValueFrom(this.http.get<PaymentTransaction[]>('/api/payments', this.getAuthHeaders()));
         if (Array.isArray(data)) {
           this.payments.set(data);
-          this.savePaymentsLocal(data);
         }
       } catch (err) {
         if (this.isRateLimitError(err)) {
@@ -3291,7 +3289,6 @@ export class IptvData {
           const tariffs = normalizeUtilityTariffs(data.utilityTariffsSettings);
           const merged: AppSettings = { ...DEFAULT_SETTINGS, ...data, utilityTariffsSettings: tariffs };
           this.settings.set(merged);
-          this.saveSettingsLocal(merged);
           this.lastSettingsFetchTime = Date.now();
           this.settingsCooldownUntil = 0;
         }
@@ -3680,7 +3677,6 @@ export class IptvData {
       const res = await firstValueFrom(this.http.post<Client>('/api/clients', payload));
       res.status = computeClientStatus(res);
       this.clients.update((prev) => [res, ...prev]);
-      this.saveClientsLocal(this.clients());
       this.triggerSuccess('Клієнта успішно створено');
       return res;
     } catch {
@@ -3707,7 +3703,6 @@ export class IptvData {
       };
       fallback.status = computeClientStatus(fallback);
       this.clients.update((prev) => [fallback, ...prev]);
-      this.saveClientsLocal(this.clients());
       this.triggerSuccess('Клієнта збережено');
       return fallback;
     } finally {
@@ -3723,7 +3718,6 @@ export class IptvData {
       const res = await firstValueFrom(this.http.put<Client>(`/api/clients/${id}`, updates));
       res.status = computeClientStatus(res);
       this.clients.update((list) => list.map((c) => (c.id === id ? res : c)));
-      this.saveClientsLocal(this.clients());
       this.triggerSuccess('Дані клієнта оновлено');
     } catch {
       // Local fallback
@@ -3737,7 +3731,6 @@ export class IptvData {
           return c;
         })
       );
-      this.saveClientsLocal(this.clients());
       this.triggerSuccess('Дані оновлено локально');
     } finally {
       this.isLoading.set(false);
@@ -3814,11 +3807,9 @@ export class IptvData {
     try {
       await firstValueFrom(this.http.delete(`/api/clients/${id}`));
       this.clients.update((list) => list.filter((c) => c.id !== id));
-      this.saveClientsLocal(this.clients());
       this.triggerSuccess('Клієнта видалено');
     } catch {
       this.clients.update((list) => list.filter((c) => c.id !== id));
-      this.saveClientsLocal(this.clients());
       this.triggerSuccess('Клієнта видалено');
     } finally {
       this.isLoading.set(false);
@@ -3854,8 +3845,6 @@ export class IptvData {
       this.clients.update((list) => list.map((c) => (c.id === params.clientId ? res.client : c)));
       this.payments.update((prev) => [res.transaction, ...prev]);
 
-      this.saveClientsLocal(this.clients());
-      this.savePaymentsLocal(this.payments());
       this.fetchStats();
       this.fetchAccounts();
       this.fetchBudget();
@@ -3902,8 +3891,6 @@ export class IptvData {
 
       this.clients.update((list) => list.map((c) => (c.id === params.clientId ? updatedClient : c)));
       this.payments.update((prev) => [transaction, ...prev]);
-      this.saveClientsLocal(this.clients());
-      this.savePaymentsLocal(this.payments());
 
       this.triggerSuccess(
         `Оплату ${params.amount} грн враховано! Продовжено на ${calc.monthsAdded} міс., залишок: ${calc.leftoverBalance} грн.`
@@ -3926,7 +3913,6 @@ export class IptvData {
     try {
       const res = await firstValueFrom(this.http.put<PaymentTransaction>(`/api/payments/${id}`, updates));
       this.payments.update((list) => list.map((p) => (p.id === id ? res : p)));
-      this.savePaymentsLocal(this.payments());
       this.triggerSuccess('Запис оплати оновлено');
       return true;
     } catch (err: unknown) {
@@ -3945,7 +3931,6 @@ export class IptvData {
     try {
       await firstValueFrom(this.http.delete(`/api/payments/${id}`));
       this.payments.update((list) => list.filter((p) => p.id !== id));
-      this.savePaymentsLocal(this.payments());
       this.triggerSuccess('Запис оплати видалено');
       return true;
     } catch (err: unknown) {
@@ -4181,7 +4166,6 @@ export class IptvData {
         if (data) {
           if (Array.isArray(data.accounts)) {
             this.utilityAccounts.set(data.accounts);
-            this.saveUtilityAccountsLocal(data.accounts);
 
             // Automatically resolve single or default house and fetch DTEK schedule for its address
             const elecAccs = data.accounts.filter((a) => a.type === 'electricity');
@@ -4213,7 +4197,6 @@ export class IptvData {
           }
           if (Array.isArray(data.readings)) {
             this.utilityReadings.set(data.readings);
-            this.saveUtilityReadingsLocal(data.readings);
           }
         }
       } catch (err) {
@@ -4530,7 +4513,6 @@ export class IptvData {
           sessionStorage.setItem('homehub_gauth3_user', JSON.stringify(res.user));
         }
       }
-      this.saveUtilityAccountsLocal(this.utilityAccounts());
       if (this.isRealAdmin()) {
         void this.fetchAdminUtilityAccounts();
       }
@@ -4554,8 +4536,6 @@ export class IptvData {
       );
       this.utilityAccounts.update((list) => list.filter((a) => a.id !== id));
       this.utilityReadings.update((list) => list.filter((r) => r.accountId !== id));
-      this.saveUtilityAccountsLocal(this.utilityAccounts());
-      this.saveUtilityReadingsLocal(this.utilityReadings());
       this.triggerSuccess('Акаунт та всі пов\'язані покази видалено');
       this.broadcastDataChange();
     } catch (err: unknown) {
@@ -4598,7 +4578,6 @@ export class IptvData {
         }
         return [saved, ...list];
       });
-      this.saveUtilityReadingsLocal(this.utilityReadings());
       this.triggerSuccess(reading.id ? 'Запис показів успішно оновлено!' : 'Покази лічильника успішно збережено!');
       this.broadcastDataChange();
       return saved;
@@ -4618,7 +4597,6 @@ export class IptvData {
         this.http.delete(`/api/utility/readings/${id}`, this.getAuthHeaders())
       );
       this.utilityReadings.update((list) => list.filter((r) => r.id !== id));
-      this.saveUtilityReadingsLocal(this.utilityReadings());
       this.triggerSuccess('Запис показів видалено');
       this.broadcastDataChange();
     } catch (err: unknown) {
@@ -4649,7 +4627,6 @@ export class IptvData {
         }
         return list;
       });
-      this.saveUtilityReadingsLocal(this.utilityReadings());
       this.triggerSuccess(isPaid ? 'Оплату зафіксовано!' : 'Статус оплати скасовано');
       this.broadcastDataChange();
     } catch (err: unknown) {
@@ -4918,22 +4895,18 @@ export class IptvData {
       };
       if (parsed.clients && Array.isArray(parsed.clients)) {
         this.clients.set(parsed.clients.map((c) => ({ ...c, status: computeClientStatus(c) })));
-        this.saveClientsLocal(this.clients());
       }
       if (parsed.payments && Array.isArray(parsed.payments)) {
         this.payments.set(parsed.payments);
-        this.savePaymentsLocal(this.payments());
       }
       if (parsed.settings) {
         this.settings.set({ ...DEFAULT_SETTINGS, ...parsed.settings });
       }
       if (parsed.utilityAccounts && Array.isArray(parsed.utilityAccounts)) {
         this.utilityAccounts.set(parsed.utilityAccounts);
-        this.saveUtilityAccountsLocal(parsed.utilityAccounts);
       }
       if (parsed.utilityReadings && Array.isArray(parsed.utilityReadings)) {
         this.utilityReadings.set(parsed.utilityReadings);
-        this.saveUtilityReadingsLocal(parsed.utilityReadings);
       }
       this.triggerSuccess('Резервну копію успішно відновлено!');
       this.refreshAllData(true);
@@ -4957,26 +4930,6 @@ export class IptvData {
     } catch {
       // Ignore storage errors
     }
-  }
-
-  private saveSettingsLocal(settings: AppSettings): void {
-    void settings;
-  }
-
-  private saveClientsLocal(clients: Client[]): void {
-    void clients;
-  }
-
-  private savePaymentsLocal(payments: PaymentTransaction[]): void {
-    void payments;
-  }
-
-  private saveUtilityAccountsLocal(accounts: UtilityAccount[]): void {
-    void accounts;
-  }
-
-  private saveUtilityReadingsLocal(readings: UtilityReading[]): void {
-    void readings;
   }
 
   openConfirmDialog(config: ConfirmDialogConfig): Promise<boolean> {

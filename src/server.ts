@@ -53,20 +53,44 @@ const serverDistFolder = dirname(fileURLToPath(import.meta.url));
 const browserDistFolder = resolve(serverDistFolder, '../browser');
 
 const app = express();
+app.set('trust proxy', 1);
+
 const angularApp = new AngularNodeAppEngine({
   allowedHosts: ['homehub3.ai.studio', '*.ai.studio', '*.run.app', 'localhost', '127.0.0.1'],
 });
 
-app.use(express.json({ limit: '15mb' }));
+app.use(
+  ['/api/utility/recognize-meter', '/api/utility/analyze-device-screenshot'],
+  express.json({ limit: '10mb' })
+);
+app.use(express.json({ limit: '1mb' }));
 app.use('/src/assets', express.static(resolve(process.cwd(), 'src/assets')));
 app.use('/assets', express.static(resolve(process.cwd(), 'src/assets')));
 
-// Security response headers
-app.use((_req, res, next) => {
+// Security response headers (CSP, conditional HSTS, framing & content protections)
+app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
+  const cspDirectives = [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' https://accounts.google.com https://apis.google.com https://www.gstatic.com https://*.gstatic.com https://www.google.com https://*.firebaseapp.com",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com https://www.gstatic.com",
+    "font-src 'self' https://fonts.gstatic.com https://*.gstatic.com data:",
+    "img-src 'self' data: blob: https://*.googleusercontent.com https://ui-avatars.com https://www.gstatic.com https://*.gstatic.com https://www.google.com",
+    "connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com https://*.googleapis.com https://apis.google.com https://www.google.com https://www.gstatic.com https://*.firebaseapp.com https://*.firebaseio.com wss://*.firebaseio.com",
+    "frame-src 'self' https://accounts.google.com https://apis.google.com https://www.google.com https://www.gstatic.com https://*.firebaseapp.com",
+    "worker-src 'self'",
+    "manifest-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'self' https://aistudio.google.com https://*.ai.studio https://*.google.com",
+  ].join('; ');
+  res.setHeader('Content-Security-Policy', cspDirectives);
+  if (req.secure || req.headers['x-forwarded-proto'] === 'https') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
   next();
 });
 
@@ -80,7 +104,10 @@ app.get(['/_ah/health', '/healthz'], (_req, res) => {
   res.status(200).send('OK');
 });
 
-const SESSION_HMAC_SECRET = process.env['SESSION_SECRET']?.trim() || randomBytes(32).toString('hex');
+const ENV_SESSION_SECRET = process.env['SESSION_SECRET']?.trim() || '';
+const ENV_CABINET_ENCRYPTION_KEY = process.env['CABINET_ENCRYPTION_KEY']?.trim() || '';
+const SESSION_HMAC_SECRET = ENV_SESSION_SECRET || randomBytes(32).toString('hex');
+const DEV_EPHEMERAL_CABINET_KEY = randomBytes(32).toString('hex');
 const ADMIN_EMAILS_SET = new Set(
   (process.env['ADMIN_EMAILS'] || '')
     .split(',')
@@ -88,8 +115,30 @@ const ADMIN_EMAILS_SET = new Set(
     .filter((e) => e.includes('@'))
 );
 
+function validateSecurityConfiguration(): void {
+  const isProd = process.env['NODE_ENV'] === 'production';
+  const missing: string[] = [];
+  if (!ENV_SESSION_SECRET) missing.push('SESSION_SECRET');
+  if (!ENV_CABINET_ENCRYPTION_KEY) missing.push('CABINET_ENCRYPTION_KEY');
+  if (ADMIN_EMAILS_SET.size === 0) missing.push('ADMIN_EMAILS');
+
+  if (missing.length > 0) {
+    if (isProd) {
+      console.error(
+        `[SECURITY FATAL] Missing required production environment variables: ${missing.join(', ')}. Refusing to start server.`
+      );
+      process.exit(1);
+    } else {
+      console.warn(
+        `[SECURITY WARNING] Missing environment variables (${missing.join(', ')}) in non-production mode. Ephemeral keys are active; configure them before production deployment.`
+      );
+    }
+  }
+}
+
 function getCabinetEncryptionKey(): Buffer {
-  const raw = process.env['CABINET_ENCRYPTION_KEY']?.trim() || SESSION_HMAC_SECRET;
+  // Never fall back to SESSION_HMAC_SECRET so session signing and cabinet password encryption remain cryptographically isolated
+  const raw = ENV_CABINET_ENCRYPTION_KEY || DEV_EPHEMERAL_CABINET_KEY;
   return createHash('sha256').update(raw, 'utf8').digest();
 }
 
@@ -122,21 +171,79 @@ function sanitizeSettingsForClient(s: Record<string, unknown>): Record<string, u
   return copy;
 }
 
+const SESSION_TTL_SECONDS = 14 * 24 * 60 * 60; // 14 days
+const revokedSessionJtis = new Map<string, number>();
+
+function isSessionJtiRevoked(jti: string): boolean {
+  const now = Date.now();
+  const memExp = revokedSessionJtis.get(jti);
+  if (memExp !== undefined) {
+    if (memExp > now) return true;
+    revokedSessionJtis.delete(jti);
+  }
+  const sysVals = getSystemValuesMap();
+  const stored =
+    sysVals['revokedSessionJtis'] && typeof sysVals['revokedSessionJtis'] === 'object'
+      ? (sysVals['revokedSessionJtis'] as Record<string, number>)
+      : null;
+  if (stored && typeof stored[jti] === 'number') {
+    if (stored[jti] > now) {
+      revokedSessionJtis.set(jti, stored[jti]);
+      return true;
+    }
+    delete stored[jti];
+  }
+  return false;
+}
+
+async function revokeSessionJti(jti: string, expMs: number): Promise<void> {
+  if (!jti) return;
+  const now = Date.now();
+  const effectiveExpMs = expMs > now ? expMs : now + SESSION_TTL_SECONDS * 1000;
+  revokedSessionJtis.set(jti, effectiveExpMs);
+  const sysVals = getSystemValuesMap();
+  const stored =
+    sysVals['revokedSessionJtis'] && typeof sysVals['revokedSessionJtis'] === 'object'
+      ? { ...(sysVals['revokedSessionJtis'] as Record<string, number>) }
+      : {};
+  for (const [k, v] of Object.entries(stored)) {
+    if (typeof v !== 'number' || v <= now) {
+      delete stored[k];
+    }
+  }
+  for (const [k, v] of revokedSessionJtis.entries()) {
+    if (v <= now) {
+      revokedSessionJtis.delete(k);
+    }
+  }
+  stored[jti] = effectiveExpMs;
+  sysVals['revokedSessionJtis'] = stored;
+  await persistSystemValues();
+}
+
 function signSessionToken(userId: string, normEmail: string): string {
   const emailB64 = Buffer.from(normEmail, 'utf8').toString('base64url');
-  const payload = `${userId}__${emailB64}`;
+  const expSec = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
+  const jti = randomBytes(12).toString('base64url');
+  const payload = `${userId}__${emailB64}__${expSec}__${jti}`;
   const sig = createHmac('sha256', SESSION_HMAC_SECRET).update(payload).digest('base64url');
   return `gauth3_${payload}__${sig}`;
 }
 
-function verifySignedSessionToken(rawToken: string): { userId: string; email: string } | null {
+function verifySignedSessionToken(
+  rawToken: string
+): { userId: string; email: string; jti: string; expSec: number } | null {
   if (!rawToken) return null;
   const parts = rawToken.split('__');
-  if (parts.length !== 3) return null;
-  const [userId, emailB64, sigB64] = parts;
-  if (!userId || !emailB64 || !sigB64) return null;
+  if (parts.length !== 5) return null;
+  const [userId, emailB64, expStr, jti, sigB64] = parts;
+  if (!userId || !emailB64 || !expStr || !jti || !sigB64) return null;
+  const expSec = Number(expStr);
+  if (!Number.isFinite(expSec) || expSec <= Math.floor(Date.now() / 1000)) {
+    return null;
+  }
   const expectedSig = createHmac('sha256', SESSION_HMAC_SECRET)
-    .update(`${userId}__${emailB64}`)
+    .update(`${userId}__${emailB64}__${expStr}__${jti}`)
     .digest('base64url');
   try {
     const a = Buffer.from(sigB64, 'utf8');
@@ -144,8 +251,11 @@ function verifySignedSessionToken(rawToken: string): { userId: string; email: st
     if (a.length !== b.length || !timingSafeEqual(a, b)) {
       return null;
     }
+    if (isSessionJtiRevoked(jti)) {
+      return null;
+    }
     const email = Buffer.from(emailB64, 'base64url').toString('utf8').trim().toLowerCase();
-    return email.includes('@') ? { userId, email } : null;
+    return email.includes('@') ? { userId, email, jti, expSec } : null;
   } catch {
     return null;
   }
@@ -154,6 +264,13 @@ function verifySignedSessionToken(rawToken: string): { userId: string; email: st
 const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
 function checkRateLimit(bucketKey: string, maxRequests: number, windowMs: number): boolean {
   const now = Date.now();
+  if (rateLimitStore.size > 1000) {
+    for (const [k, v] of rateLimitStore.entries()) {
+      if (v.resetAt <= now) {
+        rateLimitStore.delete(k);
+      }
+    }
+  }
   const entry = rateLimitStore.get(bucketKey);
   if (!entry || entry.resetAt <= now) {
     rateLimitStore.set(bucketKey, { count: 1, resetAt: now + windowMs });
@@ -336,9 +453,10 @@ const dbLastUpdateVersions: Record<string, string> = {
   firestore: `v2.5.${state.version}`,
 };
 
+let hasCompletedInitialHydration = false;
 let isBackgroundSyncing = false;
 async function triggerBackgroundMultiDbSync(): Promise<void> {
-  if (isBackgroundSyncing) return;
+  if (!hasCompletedInitialHydration || isBackgroundSyncing) return;
   isBackgroundSyncing = true;
   try {
     const nowUa = getUkFormattedNow();
@@ -597,6 +715,7 @@ async function hydrateFromDatabase(): Promise<boolean> {
 
     normalizeUsersAndSettingsInState();
 
+    hasCompletedInitialHydration = true;
     bumpVersion();
     return true;
   } catch (err) {
@@ -605,13 +724,16 @@ async function hydrateFromDatabase(): Promise<boolean> {
   }
 }
 
-let initialHydrationStarted = false;
 let initialHydrationPromise: Promise<boolean> | null = null;
 
 function ensureInitialHydration(): Promise<boolean> | null {
-  if (!initialHydrationStarted) {
-    initialHydrationStarted = true;
-    initialHydrationPromise = hydrateFromDatabase();
+  if (hasCompletedInitialHydration) {
+    return null;
+  }
+  if (!initialHydrationPromise) {
+    initialHydrationPromise = hydrateFromDatabase().finally(() => {
+      initialHydrationPromise = null;
+    });
   }
   return initialHydrationPromise;
 }
@@ -623,8 +745,6 @@ app.use('/api', async (_req, _res, next) => {
       await promise;
     } catch {
       // ignore hydration warning
-    } finally {
-      initialHydrationPromise = null;
     }
   }
   next();
@@ -662,11 +782,9 @@ function resolveRequestUser(req: express.Request): {
       state.users.find((u) => String(u['email'] || '').toLowerCase() === tokenEmail) ||
       null;
 
-    // Restore user profile if DB cold-started and token has valid HMAC signature
+    // Restore user profile if DB cold-started and token has valid HMAC signature (never auto-promote to admin without ADMIN_EMAILS)
     if (!matchedUser && tokenEmail) {
-      const isOwnerAdmin =
-        ADMIN_EMAILS_SET.has(tokenEmail) ||
-        (ADMIN_EMAILS_SET.size === 0 && !state.users.some((u) => u['role'] === 'admin'));
+      const isOwnerAdmin = ADMIN_EMAILS_SET.has(tokenEmail);
       matchedUser = {
         id: isOwnerAdmin && !state.users.some((u) => u['id'] === 'usr_admin_default') ? 'usr_admin_default' : tokenUserId,
         email: tokenEmail,
@@ -887,9 +1005,7 @@ app.post('/api/auth/google', async (req, res) => {
   const picture = verifiedPayload.picture;
   const sub = verifiedPayload.uid;
 
-  const isOwnerAdmin =
-    ADMIN_EMAILS_SET.has(normEmail) ||
-    (ADMIN_EMAILS_SET.size === 0 && !state.users.some((u) => u['role'] === 'admin'));
+  const isOwnerAdmin = ADMIN_EMAILS_SET.has(normEmail);
 
   let existing = state.users.find(
     (u) => String(u['email'] || '').toLowerCase() === normEmail
@@ -947,7 +1063,20 @@ app.post('/api/auth/google', async (req, res) => {
   });
 });
 
-app.post('/api/auth/logout', (_req, res) => {
+app.post('/api/auth/logout', async (req, res) => {
+  const authHeader = req.headers['authorization'] as string | undefined;
+  const rawToken =
+    authHeader && authHeader.startsWith('Bearer gauth3_')
+      ? authHeader.slice('Bearer gauth3_'.length).trim()
+      : '';
+  const verified = verifySignedSessionToken(rawToken);
+  if (verified?.jti) {
+    try {
+      await revokeSessionJti(verified.jti, verified.expSec * 1000);
+    } catch (err) {
+      console.warn('[Auth] Failed to persist revoked session token:', err);
+    }
+  }
   res.json({ success: true });
 });
 
@@ -4738,19 +4867,27 @@ function formatDtekMeterAccountNumber(rawNumber: string): string {
   return clean;
 }
 
-const DTEK_METER_DEFAULT_CSRF = process.env['DTEK_METER_CSRF_TOKEN'] || '';
-const DTEK_METER_DEFAULT_COOKIES = process.env['DTEK_METER_COOKIES'] || '';
+function getDtekMeterEnvCredentials(): { csrfToken: string; cookies: string; userAgent: string } {
+  return {
+    csrfToken: (process.env['DTEK_METER_CSRF_TOKEN'] || '').trim(),
+    cookies: (process.env['DTEK_METER_COOKIES'] || '').trim(),
+    userAgent: (process.env['DTEK_METER_USER_AGENT'] || '').trim() || DTEK_USER_AGENT,
+  };
+}
 
-async function fetchFreshDtekMeterSession(): Promise<{ csrfToken: string; cookies: string }> {
-  let csrfToken = DTEK_METER_DEFAULT_CSRF;
-  let cookies = DTEK_METER_DEFAULT_COOKIES;
+async function fetchFreshDtekMeterSession(): Promise<{ csrfToken: string; cookies: string; userAgent: string }> {
+  const envCreds = getDtekMeterEnvCredentials();
+  let csrfToken = envCreds.csrfToken;
+  let cookies = envCreds.cookies;
+  const userAgent = envCreds.userAgent;
   try {
     const pageResp = await fetch('https://www.dtek-oem.com.ua/ua/meter', {
       method: 'GET',
       headers: {
-        'User-Agent': DTEK_USER_AGENT,
+        'User-Agent': userAgent,
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+        ...(envCreds.cookies ? { Cookie: envCreds.cookies } : {}),
       },
       signal: AbortSignal.timeout(10000),
     });
@@ -4764,20 +4901,47 @@ async function fetchFreshDtekMeterSession(): Promise<{ csrfToken: string; cookie
       .map((c) => c.split(';')[0]?.trim())
       .filter(Boolean)
       .join('; ');
-    if (extractedCookies) {
-      cookies = extractedCookies;
-    }
     const html = await pageResp.text();
     const csrfMatch =
       html.match(/<meta[^>]*name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i) ||
       html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']csrf-token["']/i);
     if (csrfMatch?.[1]) {
       csrfToken = csrfMatch[1];
+      if (extractedCookies) {
+        cookies = extractedCookies;
+      }
     }
   } catch {
     // Fallback to .env values if available
   }
-  return { csrfToken, cookies };
+  return { csrfToken, cookies, userAgent };
+}
+
+async function postDtekMeterAjax(
+  methodName: string,
+  formattedNumber: string,
+  creds: { csrfToken: string; cookies: string; userAgent: string }
+): Promise<Response> {
+  const postBody = new URLSearchParams();
+  postBody.set('method', methodName);
+  postBody.set('number', formattedNumber);
+
+  return await fetch('https://www.dtek-oem.com.ua/ua/ajax', {
+    method: 'POST',
+    headers: {
+      'User-Agent': creds.userAgent,
+      Accept: 'application/json, text/javascript, */*; q=0.01',
+      'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+      Referer: 'https://www.dtek-oem.com.ua/ua/meter',
+      ...(creds.csrfToken ? { 'X-CSRF-Token': creds.csrfToken } : {}),
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'X-Requested-With': 'XMLHttpRequest',
+      Origin: 'https://www.dtek-oem.com.ua',
+      ...(creds.cookies ? { Cookie: creds.cookies } : {}),
+    },
+    body: postBody.toString(),
+    signal: AbortSignal.timeout(12000),
+  });
 }
 
 app.post('/api/utility/dtek-meter-check', async (req, res) => {
@@ -4803,45 +4967,58 @@ app.post('/api/utility/dtek-meter-check', async (req, res) => {
     }
 
     const formattedNumber = formatDtekMeterAccountNumber(rawNumber);
+    const envCreds = getDtekMeterEnvCredentials();
+    let dtekAjaxResp: Response | null = null;
+    let parsedData: Record<string, unknown> | null = null;
 
-    const session = await fetchFreshDtekMeterSession();
-    const cookies = session.cookies || DTEK_METER_DEFAULT_COOKIES;
-    const csrfToken = session.csrfToken || DTEK_METER_DEFAULT_CSRF;
-
-    const postBody = new URLSearchParams();
-    postBody.set('method', 'checkAddress');
-    postBody.set('number', formattedNumber);
-
-    const dtekAjaxResp = await fetch('https://www.dtek-oem.com.ua/ua/ajax', {
-      method: 'POST',
-      headers: {
-        'User-Agent': DTEK_USER_AGENT,
-        Accept: 'application/json, text/javascript, */*; q=0.01',
-        'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
-        Referer: 'https://www.dtek-oem.com.ua/ua/meter',
-        ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'X-Requested-With': 'XMLHttpRequest',
-        Origin: 'https://www.dtek-oem.com.ua',
-        ...(cookies ? { Cookie: cookies } : {}),
-      },
-      body: postBody.toString(),
-      signal: AbortSignal.timeout(12000),
-    });
-
-    if (!dtekAjaxResp.ok) {
-      const errText = await dtekAjaxResp.text();
-      res.json({
-        success: false,
-        error: `ДТЕК ОЕМ повернув HTTP ${dtekAjaxResp.status}`,
-        details: errText.slice(0, 300),
-        rawNumber,
-        formattedNumber,
-      });
-      return;
+    // 1. Try .env session tokens first when configured
+    if (envCreds.csrfToken && envCreds.cookies) {
+      try {
+        const resp = await postDtekMeterAjax('checkAddress', formattedNumber, envCreds);
+        if (resp.ok) {
+          const ct = resp.headers.get('content-type') || '';
+          const txt = await resp.text();
+          if (ct.includes('json') || txt.trim().startsWith('{')) {
+            dtekAjaxResp = resp;
+            parsedData = JSON.parse(txt) as Record<string, unknown>;
+          }
+        }
+      } catch {
+        // Fall through to fresh session fetch
+      }
     }
 
-    const data = (await dtekAjaxResp.json()) as Record<string, unknown>;
+    // 2. Refresh session via GET /ua/meter if .env tokens missing or rejected
+    if (!parsedData) {
+      const freshCreds = await fetchFreshDtekMeterSession();
+      dtekAjaxResp = await postDtekMeterAjax('checkAddress', formattedNumber, freshCreds);
+      if (!dtekAjaxResp.ok) {
+        const errText = await dtekAjaxResp.text();
+        res.json({
+          success: false,
+          error: `ДТЕК ОЕМ повернув HTTP ${dtekAjaxResp.status}`,
+          details: errText.slice(0, 300),
+          rawNumber,
+          formattedNumber,
+        });
+        return;
+      }
+      const txt = await dtekAjaxResp.text();
+      try {
+        parsedData = JSON.parse(txt) as Record<string, unknown>;
+      } catch {
+        res.json({
+          success: false,
+          error: 'ДТЕК ОЕМ повернув невалідну відповідь (можливо, потрібне оновлення cookies у .env)',
+          details: txt.slice(0, 200),
+          rawNumber,
+          formattedNumber,
+        });
+        return;
+      }
+    }
+
+    const data = parsedData;
     if (data && data['result'] === false) {
       const addressMsg =
         typeof data['address'] === 'string'
@@ -6139,20 +6316,73 @@ app.post('/api/push/subscribe', async (req, res) => {
 });
 
 app.post('/api/push/unsubscribe', async (req, res) => {
+  const { authenticated, user, realAdmin } = resolveRequestUser(req);
+  if (!authenticated) {
+    res.status(401).json({ success: false, error: 'Потрібна авторизація' });
+    return;
+  }
   const { endpoint } = req.body || {};
+  const targetEndpoint = typeof endpoint === 'string' ? endpoint.trim() : '';
+  if (!targetEndpoint) {
+    res.status(400).json({ success: false, error: 'Не вказано endpoint підписки' });
+    return;
+  }
+
+  const callerId = String(user['id'] || '');
+  const callerIsAdmin = isAdminUser(user, realAdmin);
   const sysVals = getSystemValuesMap();
   const subs = getPushSubscriptionsList();
-  sysVals['pushSubscriptions'] = subs.filter((s) => s.endpoint !== endpoint);
+  const matching = subs.filter((s) => s.endpoint === targetEndpoint);
+  if (
+    !callerIsAdmin &&
+    matching.some((s) => !s.userId || s.userId !== callerId)
+  ) {
+    res.status(403).json({ success: false, error: 'Немає прав на видалення чужої підписки' });
+    return;
+  }
+
+  sysVals['pushSubscriptions'] = subs.filter((s) => {
+    if (s.endpoint !== targetEndpoint) return true;
+    return !callerIsAdmin && s.userId !== callerId;
+  });
   await persistSystemValues();
   res.json({ success: true, totalSubscriptions: (sysVals['pushSubscriptions'] as unknown[]).length });
 });
 
 app.post('/api/push/test-delayed', async (req, res) => {
+  const { authenticated, user, realAdmin } = resolveRequestUser(req);
+  if (!authenticated) {
+    res.status(401).json({ success: false, error: 'Потрібна авторизація' });
+    return;
+  }
+
   const { endpoint, delaySeconds = 5, queueGroup, simulateScheduleDiff = false } = req.body || {};
+  const targetEndpoint = typeof endpoint === 'string' ? endpoint.trim() : '';
+  const callerId = String(user['id'] || '');
+  const callerIsAdmin = isAdminUser(user, realAdmin);
   const subs = getPushSubscriptionsList();
-  const targetSubs = endpoint
-    ? subs.filter((s) => s.endpoint === endpoint)
-    : subs;
+
+  let targetSubs: StoredPushSubscription[];
+  if (callerIsAdmin) {
+    targetSubs = targetEndpoint ? subs.filter((s) => s.endpoint === targetEndpoint) : subs;
+  } else {
+    if (!targetEndpoint) {
+      res.status(403).json({
+        success: false,
+        error: 'Загальна розсилка сповіщень дозволена лише адміністратору.',
+      });
+      return;
+    }
+    const matching = subs.filter((s) => s.endpoint === targetEndpoint);
+    if (matching.length > 0 && matching.every((s) => s.userId !== callerId)) {
+      res.status(403).json({
+        success: false,
+        error: 'Немає прав надсилати сповіщення на чужий пристрій.',
+      });
+      return;
+    }
+    targetSubs = matching.filter((s) => s.userId === callerId);
+  }
 
   if (targetSubs.length === 0) {
     res.status(400).json({
@@ -6227,12 +6457,39 @@ app.post('/api/push/test-delayed', async (req, res) => {
 });
 
 app.post('/api/push/snooze', (req, res) => {
-  const { delayMinutes = 15, title, body, queueGroup } = req.body || {};
+  const { authenticated, user, realAdmin } = resolveRequestUser(req);
+  const { endpoint, delayMinutes = 15, title, body, queueGroup } = req.body || {};
+  const targetEndpoint = typeof endpoint === 'string' ? endpoint.trim() : '';
   const subs = getPushSubscriptionsList();
+  const callerId = String(user['id'] || '');
+  const callerIsAdmin = authenticated && isAdminUser(user, realAdmin);
+
+  let targetSubs: StoredPushSubscription[];
+  if (callerIsAdmin) {
+    targetSubs = targetEndpoint
+      ? subs.filter((s) => s.endpoint === targetEndpoint)
+      : subs.filter((s) => s.userId === callerId);
+  } else if (authenticated) {
+    targetSubs = subs.filter(
+      (s) => s.userId === callerId && (!targetEndpoint || s.endpoint === targetEndpoint)
+    );
+  } else if (targetEndpoint) {
+    // Allow service worker snooze ONLY for the single matching device endpoint
+    targetSubs = subs.filter((s) => s.endpoint === targetEndpoint);
+  } else {
+    res.status(401).json({ success: false, error: 'Потрібна авторизація або endpoint пристрою' });
+    return;
+  }
+
+  if (targetSubs.length === 0) {
+    res.status(404).json({ success: false, error: 'Підписку для нагадування не знайдено' });
+    return;
+  }
+
   const delayMs = Math.min(Math.max(Number(delayMinutes) || 15, 1), 120) * 60 * 1000;
 
   setTimeout(async () => {
-    for (const sub of subs) {
+    for (const sub of targetSubs) {
       await sendWebPushToSubscription(sub, {
         title: title || '⚡ Нагадування: Графік відключень ДТЕК',
         body: body || 'Минуло 15 хвилин. Перевірте актуальний графік відключень світла.',
@@ -6243,7 +6500,7 @@ app.post('/api/push/snooze', (req, res) => {
     }
   }, delayMs);
 
-  res.json({ success: true });
+  res.json({ success: true, recipientsCount: targetSubs.length });
 });
 
 // Background DTEK schedule synchronizer (checks every 60 seconds and fetches from DTEK website
@@ -6475,6 +6732,7 @@ app.use((req, res, next) => {
 });
 
 if (isMainModule(import.meta.url) || process.env['START_EXPRESS_SERVER'] === 'true') {
+  validateSecurityConfiguration();
   const port = Number(process.env['PORT']) || 3000;
   app.listen(port, '0.0.0.0', () => {
     console.log(`Node Express server listening on http://0.0.0.0:${port}`);

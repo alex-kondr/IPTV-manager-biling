@@ -1,4 +1,4 @@
-const CACHE_NAME = 'homehub-v4';
+const CACHE_NAME = 'homehub-v5';
 const META_CACHE_NAME = 'homehub-sw-meta-v1';
 const ASSETS_TO_CACHE = [
   '/manifest.webmanifest',
@@ -33,11 +33,15 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  if (event.request.url.includes('/api/') || event.request.method !== 'GET') {
+  if (event.request.method !== 'GET') {
+    return;
+  }
+  const reqUrl = new URL(event.request.url);
+  if (reqUrl.origin !== self.location.origin || reqUrl.pathname.startsWith('/api/')) {
     return;
   }
 
-  // Network-first with cache fallback for assets & navigation
+  // Network-first with cache fallback for same-origin assets & navigation
   event.respondWith(
     fetch(event.request)
       .then((response) => {
@@ -188,16 +192,26 @@ self.addEventListener('notificationclick', (event) => {
 
   if (action === 'snooze_15m') {
     event.waitUntil(
-      fetch('/api/push/snooze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          delayMinutes: 15,
-          title: data.title || '⚡ Нагадування: Графік відключень ДТЕК',
-          body: data.body || 'Минуло 15 хвилин. Перевірте актуальний графік відключень світла.',
-          queueGroup: data.queueGroup || '',
-        }),
-      }).catch(() => {})
+      (async () => {
+        try {
+          const sub = self.registration?.pushManager
+            ? await self.registration.pushManager.getSubscription()
+            : null;
+          await fetch('/api/push/snooze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              endpoint: sub?.endpoint || '',
+              delayMinutes: 15,
+              title: data.title || '⚡ Нагадування: Графік відключень ДТЕК',
+              body: data.body || 'Минуло 15 хвилин. Перевірте актуальний графік відключень світла.',
+              queueGroup: data.queueGroup || '',
+            }),
+          });
+        } catch {
+          // Ignore snooze network error
+        }
+      })()
     );
     return;
   }

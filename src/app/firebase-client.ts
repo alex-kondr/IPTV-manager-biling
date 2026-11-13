@@ -144,11 +144,14 @@ export async function triggerFirebaseGooglePopup(): Promise<FirebasePopupLoginRe
       throw err;
     }
 
-    // If dynamic chunk loading failed (e.g. stale Vite/Rollup chunk in browser cache),
-    // or domain is unauthorized in Firebase console, smoothly fall back to Google Identity Services
+    // If dynamic chunk loading failed, domain is unauthorized, or internal/iframe init error occurs,
+    // smoothly fall back to Google Identity Services OAuth popup
     if (
       errString.includes('Failed to fetch dynamically imported module') ||
       errString.includes('dynamically imported module') ||
+      errString.includes('auth/internal-error') ||
+      code === 'auth/internal-error' ||
+      code === 'auth/network-request-failed' ||
       code === 'auth/unauthorized-domain' ||
       code === 'auth/operation-not-supported-in-this-environment' ||
       code === 'auth/configuration-not-found'
