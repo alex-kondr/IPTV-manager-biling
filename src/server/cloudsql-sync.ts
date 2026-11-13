@@ -1475,6 +1475,85 @@ export async function saveSystemSettingsConfigToCloudSql(
   }
 }
 
+export async function loadRevokedSessionJtisFromCloudSql(
+  mode?: DatabaseMode
+): Promise<Record<string, number> | null> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local' || !isCloudSqlAvailable(targetMode)) return null;
+  try {
+    const targetDb = getDbForMode(targetMode);
+    const rows = await targetDb.select().from(systemSettingsConfig);
+    const globalRow = rows.find((r) => r.id === 'global') || rows[0];
+    const sysVals =
+      globalRow?.systemValues && typeof globalRow.systemValues === 'object'
+        ? (globalRow.systemValues as Record<string, unknown>)
+        : {};
+    const raw = sysVals['revokedSessionJtis'];
+    if (!raw || typeof raw !== 'object') return {};
+    const result: Record<string, number> = {};
+    const now = Date.now();
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      const exp = Number(v);
+      if (Number.isFinite(exp) && exp > now) {
+        result[k] = exp;
+      }
+    }
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveRevokedSessionJtiToCloudSql(
+  jti: string,
+  expMs: number,
+  mode?: DatabaseMode
+): Promise<void> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local' || !isCloudSqlAvailable(targetMode)) return;
+  try {
+    const targetDb = getDbForMode(targetMode);
+    const rows = await targetDb.select().from(systemSettingsConfig);
+    const globalRow = rows.find((r) => r.id === 'global') || rows[0];
+    const existingSysVals =
+      globalRow?.systemValues && typeof globalRow.systemValues === 'object'
+        ? { ...(globalRow.systemValues as Record<string, unknown>) }
+        : {};
+    const existingRevoked =
+      existingSysVals['revokedSessionJtis'] && typeof existingSysVals['revokedSessionJtis'] === 'object'
+        ? { ...(existingSysVals['revokedSessionJtis'] as Record<string, number>) }
+        : {};
+
+    const now = Date.now();
+    for (const [k, v] of Object.entries(existingRevoked)) {
+      if (typeof v !== 'number' || v <= now) {
+        delete existingRevoked[k];
+      }
+    }
+    existingRevoked[jti] = expMs;
+    existingSysVals['revokedSessionJtis'] = existingRevoked;
+
+    const data = {
+      id: globalRow?.id || 'global',
+      scopesConfig:
+        globalRow?.scopesConfig && typeof globalRow.scopesConfig === 'object'
+          ? (globalRow.scopesConfig as Record<string, 'user' | 'system'>)
+          : {},
+      systemValues: existingSysVals,
+      updatedAt: new Date().toISOString(),
+    };
+    await targetDb
+      .insert(systemSettingsConfig)
+      .values(data)
+      .onConflictDoUpdate({
+        target: systemSettingsConfig.id,
+        set: data,
+      });
+  } catch (err: unknown) {
+    console.warn(`[PostgreSQL:${targetMode}] saveRevokedSessionJti warning:`, err);
+  }
+}
+
 export async function getSettingsFromCloudSql(): Promise<Record<string, unknown> | null> {
   if (!isCloudSqlAvailable()) return null;
   try {

@@ -1,4 +1,58 @@
-import { FIREBASE_APPLET_CONFIG } from '../app/firebase-config';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+export interface ServerFirebaseConfig {
+  projectId: string;
+  appId: string;
+  apiKey: string;
+  authDomain: string;
+  firestoreDatabaseId: string;
+  storageBucket: string;
+  messagingSenderId: string;
+  measurementId: string;
+  oAuthClientId: string;
+  recaptchaSiteKey: string;
+}
+
+let cachedDiskFirebaseConfig: Partial<ServerFirebaseConfig> | null = null;
+
+function readDiskFirebaseConfig(): Partial<ServerFirebaseConfig> {
+  if (cachedDiskFirebaseConfig) return cachedDiskFirebaseConfig;
+  try {
+    const cfgPath = resolve(process.cwd(), 'firebase-applet-config.json');
+    if (existsSync(cfgPath)) {
+      cachedDiskFirebaseConfig = JSON.parse(readFileSync(cfgPath, 'utf8')) as Partial<ServerFirebaseConfig>;
+      return cachedDiskFirebaseConfig;
+    }
+  } catch {
+    // Ignore file read errors
+  }
+  cachedDiskFirebaseConfig = {};
+  return cachedDiskFirebaseConfig;
+}
+
+export function getServerFirebaseConfig(): ServerFirebaseConfig {
+  const disk = readDiskFirebaseConfig();
+  return {
+    projectId: process.env['FIREBASE_PROJECT_ID']?.trim() || disk.projectId || '',
+    appId: process.env['FIREBASE_APP_ID']?.trim() || disk.appId || '',
+    apiKey: process.env['FIREBASE_API_KEY']?.trim() || disk.apiKey || '',
+    authDomain: process.env['FIREBASE_AUTH_DOMAIN']?.trim() || disk.authDomain || '',
+    firestoreDatabaseId:
+      process.env['FIREBASE_FIRESTORE_DATABASE_ID']?.trim() || disk.firestoreDatabaseId || '',
+    storageBucket: process.env['FIREBASE_STORAGE_BUCKET']?.trim() || disk.storageBucket || '',
+    messagingSenderId:
+      process.env['FIREBASE_MESSAGING_SENDER_ID']?.trim() || disk.messagingSenderId || '',
+    measurementId: process.env['FIREBASE_MEASUREMENT_ID']?.trim() || disk.measurementId || '',
+    oAuthClientId:
+      process.env['FIREBASE_OAUTH_CLIENT_ID']?.trim() ||
+      process.env['GOOGLE_CLIENT_ID']?.trim() ||
+      disk.oAuthClientId ||
+      '',
+    recaptchaSiteKey:
+      process.env['FIREBASE_RECAPTCHA_SITE_KEY']?.trim() || disk.recaptchaSiteKey || '',
+  };
+}
 
 export interface VerifiedGoogleTokenPayload {
   email?: string;
@@ -8,10 +62,11 @@ export interface VerifiedGoogleTokenPayload {
 }
 
 function getAllowedGoogleClientIds(): string[] {
+  const cfg = getServerFirebaseConfig();
   const candidates = [
     process.env['GOOGLE_CLIENT_ID'],
     process.env['FIREBASE_OAUTH_CLIENT_ID'],
-    FIREBASE_APPLET_CONFIG?.oAuthClientId,
+    cfg.oAuthClientId,
   ];
   return Array.from(
     new Set(
@@ -41,7 +96,7 @@ export async function verifyFirebaseTokenSafe(
   }
 
   // 1. Verify Firebase Auth ID token via Firebase Identity Toolkit accounts:lookup
-  const apiKey = FIREBASE_APPLET_CONFIG?.apiKey;
+  const apiKey = getServerFirebaseConfig().apiKey;
   if (apiKey) {
     try {
       const controller = new AbortController();

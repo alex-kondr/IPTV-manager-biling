@@ -3,6 +3,7 @@ import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import * as QRCode from 'qrcode';
 import { triggerFirebaseGooglePopup, triggerFirebaseSignOut } from '../firebase-client';
+import { FirebaseAppletConfig, setFirebaseAppletConfig } from '../firebase-config';
 import {
   Client,
   PaymentTransaction,
@@ -1380,6 +1381,7 @@ export class IptvData {
 
           if (savedToken && savedToken.startsWith('gauth3_')) {
             this.authToken.set(savedToken);
+            this.syncAuthTokenWithServiceWorker(savedToken);
             if (!this.currentUser() && savedUserJson) {
               try {
                 const parsedUser = JSON.parse(savedUserJson) as AppUser;
@@ -1407,6 +1409,7 @@ export class IptvData {
           user: AppUser | null;
           realAdminUser?: AppUser | null;
           googleClientId: string;
+          firebaseConfig?: Partial<FirebaseAppletConfig>;
           totalUsersCount: number;
           appReleaseInfo?: {
             currentVersion: string;
@@ -1417,6 +1420,10 @@ export class IptvData {
           };
         }>('/api/auth/me', this.getAuthHeaders())
       );
+
+      if (res.firebaseConfig) {
+        setFirebaseAppletConfig(res.firebaseConfig);
+      }
 
       if (res.googleClientId) {
         this.googleClientId.set(res.googleClientId);
@@ -1458,6 +1465,7 @@ export class IptvData {
         this.realAdminUser.set(null);
         this.impersonatedUser.set(null);
         this.authToken.set(null);
+        this.syncAuthTokenWithServiceWorker(null);
         if (typeof window !== 'undefined') {
           try {
             localStorage.removeItem('homehub_gauth3_token');
@@ -1615,6 +1623,7 @@ export class IptvData {
           this.realAdminUser.set(null);
         }
         this.authToken.set(res.token);
+        this.syncAuthTokenWithServiceWorker(res.token);
         if (typeof localStorage !== 'undefined') {
           try {
             localStorage.setItem('homehub_gauth3_token', res.token);
@@ -1665,6 +1674,7 @@ export class IptvData {
     this.realAdminUser.set(null);
     this.impersonatedUser.set(null);
     this.authToken.set(null);
+    this.syncAuthTokenWithServiceWorker(null);
     this.clients.set([]);
     this.payments.set([]);
     this.accounts.set([]);
@@ -1685,6 +1695,23 @@ export class IptvData {
       }
     }
     this.triggerSuccess('Ви вийшли з облікового запису');
+  }
+
+  private syncAuthTokenWithServiceWorker(token: string | null): void {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+      return;
+    }
+    const payload = token ? { type: 'SET_AUTH_TOKEN', token } : { type: 'CLEAR_AUTH_TOKEN' };
+    try {
+      navigator.serviceWorker.controller?.postMessage(payload);
+      void navigator.serviceWorker.ready
+        .then((reg) => {
+          reg.active?.postMessage(payload);
+        })
+        .catch(() => {});
+    } catch {
+      // Ignore SW messaging errors
+    }
   }
 
   async fetchUsers(): Promise<void> {

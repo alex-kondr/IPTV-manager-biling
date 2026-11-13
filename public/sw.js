@@ -1,5 +1,7 @@
-const CACHE_NAME = 'homehub-v5';
+const CACHE_NAME = 'homehub-v6';
 const META_CACHE_NAME = 'homehub-sw-meta-v1';
+const AUTH_CACHE_NAME = 'homehub-sw-auth-v1';
+const AUTH_TOKEN_CACHE_KEY = '/__sw_auth_token';
 const ASSETS_TO_CACHE = [
   '/manifest.webmanifest',
   '/apple-touch-icon.png',
@@ -24,7 +26,7 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((keys) => {
       return Promise.all(
         keys
-          .filter((key) => key !== CACHE_NAME && key !== META_CACHE_NAME)
+          .filter((key) => key !== CACHE_NAME && key !== META_CACHE_NAME && key !== AUTH_CACHE_NAME)
           .map((key) => caches.delete(key))
       );
     })
@@ -100,6 +102,28 @@ self.addEventListener('message', (event) => {
 
   if (data.type === 'SKIP_WAITING') {
     self.skipWaiting();
+    return;
+  }
+
+  if (data.type === 'SET_AUTH_TOKEN' && typeof data.token === 'string' && data.token) {
+    event.waitUntil(
+      caches
+        .open(AUTH_CACHE_NAME)
+        .then((cache) =>
+          cache.put(AUTH_TOKEN_CACHE_KEY, new Response(String(data.token), { headers: { 'Content-Type': 'text/plain' } }))
+        )
+        .catch(() => {})
+    );
+    return;
+  }
+
+  if (data.type === 'CLEAR_AUTH_TOKEN') {
+    event.waitUntil(
+      caches
+        .open(AUTH_CACHE_NAME)
+        .then((cache) => cache.delete(AUTH_TOKEN_CACHE_KEY))
+        .catch(() => {})
+    );
     return;
   }
 
@@ -197,9 +221,23 @@ self.addEventListener('notificationclick', (event) => {
           const sub = self.registration?.pushManager
             ? await self.registration.pushManager.getSubscription()
             : null;
+          let authToken = '';
+          try {
+            const authCache = await caches.open(AUTH_CACHE_NAME);
+            const tokResp = await authCache.match(AUTH_TOKEN_CACHE_KEY);
+            if (tokResp) {
+              authToken = (await tokResp.text()).trim();
+            }
+          } catch {
+            // Ignore cache read error
+          }
+          const headers = { 'Content-Type': 'application/json' };
+          if (authToken) {
+            headers['Authorization'] = authToken.startsWith('Bearer ') ? authToken : `Bearer ${authToken}`;
+          }
           await fetch('/api/push/snooze', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers,
             body: JSON.stringify({
               endpoint: sub?.endpoint || '',
               delayMinutes: 15,

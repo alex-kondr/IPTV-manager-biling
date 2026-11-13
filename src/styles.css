@@ -43,6 +43,16 @@ label {
   }
 }
 
+.cv-device-card {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 320px;
+}
+
+.cv-reading-row {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 110px;
+}
+
 /* ==========================================================================
    GLOBAL DARK THEME TRANSFORMATION & CONTRAST PAIRING
    ========================================================================== */

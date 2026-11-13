@@ -1077,23 +1077,43 @@
           }
 
           @case ('outage_schedule') {
-            <app-electricity-view viewMode="schedule" />
+            @defer {
+              <app-electricity-view viewMode="schedule" />
+            } @placeholder {
+              <div class="p-6 text-center text-slate-400">Завантаження графіка...</div>
+            }
           }
 
           @case ('electricity') {
-            <app-electricity-view viewMode="readings" />
+            @defer {
+              <app-electricity-view viewMode="readings" />
+            } @placeholder {
+              <div class="p-6 text-center text-slate-400">Завантаження обліку електроенергії...</div>
+            }
           }
 
           @case ('water') {
-            <app-water-waste-view serviceMode="water" />
+            @defer {
+              <app-water-waste-view serviceMode="water" />
+            } @placeholder {
+              <div class="p-6 text-center text-slate-400">Завантаження водопостачання...</div>
+            }
           }
 
           @case ('waste') {
-            <app-water-waste-view serviceMode="waste" />
+            @defer {
+              <app-water-waste-view serviceMode="waste" />
+            } @placeholder {
+              <div class="p-6 text-center text-slate-400">Завантаження вивозу сміття...</div>
+            }
           }
 
           @case ('water_waste') {
-            <app-water-waste-view serviceMode="all" />
+            @defer {
+              <app-water-waste-view serviceMode="all" />
+            } @placeholder {
+              <div class="p-6 text-center text-slate-400">Завантаження...</div>
+            }
           }
 
           @case ('clients') {
@@ -1547,27 +1567,51 @@
           }
 
           @case ('accounts') {
-            <app-accounts-view />
+            @defer {
+              <app-accounts-view />
+            } @placeholder {
+              <div class="p-6 text-center text-slate-400">Завантаження рахунків...</div>
+            }
           }
 
           @case ('budget') {
-            <app-budget-view />
+            @defer {
+              <app-budget-view />
+            } @placeholder {
+              <div class="p-6 text-center text-slate-400">Завантаження бюджету...</div>
+            }
           }
 
           @case ('analytics') {
-            <app-analytics-view />
+            @defer {
+              <app-analytics-view />
+            } @placeholder {
+              <div class="p-6 text-center text-slate-400">Завантаження аналітики...</div>
+            }
           }
 
           @case ('payments') {
-            <app-payments-view />
+            @defer {
+              <app-payments-view />
+            } @placeholder {
+              <div class="p-6 text-center text-slate-400">Завантаження платежів...</div>
+            }
           }
 
           @case ('users') {
-            <app-users-view />
+            @defer {
+              <app-users-view />
+            } @placeholder {
+              <div class="p-6 text-center text-slate-400">Завантаження користувачів...</div>
+            }
           }
 
           @case ('settings') {
-            <app-settings-view />
+            @defer {
+              <app-settings-view />
+            } @placeholder {
+              <div class="p-6 text-center text-slate-400">Завантаження налаштувань...</div>
+            }
           }
         }
         }

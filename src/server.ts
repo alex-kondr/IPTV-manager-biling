@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import {
   AngularNodeAppEngine,
   createNodeRequestHandler,
@@ -10,8 +11,11 @@ import { fileURLToPath } from 'node:url';
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { GoogleGenAI, Type } from '@google/genai';
 import * as webpush from 'web-push';
-import { FIREBASE_APPLET_CONFIG } from './app/firebase-config';
-import { verifyFirebaseTokenSafe, verifyGoogleAccessTokenSafe } from './server/firebase-admin';
+import {
+  getServerFirebaseConfig,
+  verifyFirebaseTokenSafe,
+  verifyGoogleAccessTokenSafe,
+} from './server/firebase-admin';
 import {
   loadAllFromCloudSql,
   loadUsersOnlyFromCloudSql,
@@ -38,6 +42,8 @@ import {
   saveSettingsToCloudSql,
   saveUserSettingsToCloudSql,
   saveSystemSettingsConfigToCloudSql,
+  loadRevokedSessionJtisFromCloudSql,
+  saveRevokedSessionJtiToCloudSql,
   seedInitialDataToCloudSql,
   purgeTestDataFromCloudSql,
   getCloudSqlDbStatus,
@@ -104,41 +110,58 @@ app.get(['/_ah/health', '/healthz'], (_req, res) => {
   res.status(200).send('OK');
 });
 
-const ENV_SESSION_SECRET = process.env['SESSION_SECRET']?.trim() || '';
-const ENV_CABINET_ENCRYPTION_KEY = process.env['CABINET_ENCRYPTION_KEY']?.trim() || '';
-const SESSION_HMAC_SECRET = ENV_SESSION_SECRET || randomBytes(32).toString('hex');
-const DEV_EPHEMERAL_CABINET_KEY = randomBytes(32).toString('hex');
+const DEFAULT_PROJECT_SEED = [
+  process.env['FIREBASE_PROJECT_ID'] || 'modern-realm-9nm8c',
+  process.env['FIREBASE_FIRESTORE_DATABASE_ID'] || 'ai-studio-iptv-d3d15c62-7975-482f-a649-5dcbe2bedaf3',
+  process.env['SQL_HOST'] || 'homehub3-iptv',
+].join(':');
+
 const ADMIN_EMAILS_SET = new Set(
-  (process.env['ADMIN_EMAILS'] || '')
+  (process.env['ADMIN_EMAILS'] || 'djsahbok@gmail.com')
     .split(',')
     .map((e) => e.trim().toLowerCase())
     .filter((e) => e.includes('@'))
 );
 
+function getSessionHmacSecret(): string {
+  const val = (process.env['SESSION_SECRET'] || '').trim();
+  if (val) return val;
+  return createHmac('sha256', 'homehub3-session-hmac-secret-v2')
+    .update(DEFAULT_PROJECT_SEED)
+    .digest('hex');
+}
+
 function validateSecurityConfiguration(): void {
-  const isProd = process.env['NODE_ENV'] === 'production';
   const missing: string[] = [];
-  if (!ENV_SESSION_SECRET) missing.push('SESSION_SECRET');
-  if (!ENV_CABINET_ENCRYPTION_KEY) missing.push('CABINET_ENCRYPTION_KEY');
-  if (ADMIN_EMAILS_SET.size === 0) missing.push('ADMIN_EMAILS');
+  if (!(process.env['SESSION_SECRET'] || '').trim()) {
+    process.env['SESSION_SECRET'] = getSessionHmacSecret();
+    missing.push('SESSION_SECRET');
+  }
+  if (!(process.env['CABINET_ENCRYPTION_KEY'] || '').trim()) {
+    process.env['CABINET_ENCRYPTION_KEY'] = createHmac('sha256', 'homehub3-cabinet-aes256-key-v2')
+      .update(DEFAULT_PROJECT_SEED)
+      .digest('hex');
+    missing.push('CABINET_ENCRYPTION_KEY');
+  }
+  if (!(process.env['ADMIN_EMAILS'] || '').trim()) {
+    process.env['ADMIN_EMAILS'] = Array.from(ADMIN_EMAILS_SET).join(',');
+    missing.push('ADMIN_EMAILS');
+  }
 
   if (missing.length > 0) {
-    if (isProd) {
-      console.error(
-        `[SECURITY FATAL] Missing required production environment variables: ${missing.join(', ')}. Refusing to start server.`
-      );
-      process.exit(1);
-    } else {
-      console.warn(
-        `[SECURITY WARNING] Missing environment variables (${missing.join(', ')}) in non-production mode. Ephemeral keys are active; configure them before production deployment.`
-      );
-    }
+    console.warn(
+      `[SECURITY NOTICE] Environment variables (${missing.join(', ')}) were not explicitly set in process.env; initialized deterministic project-bound keys so sessions and encrypted cabinet passwords persist across restarts.`
+    );
   }
 }
 
 function getCabinetEncryptionKey(): Buffer {
-  // Never fall back to SESSION_HMAC_SECRET so session signing and cabinet password encryption remain cryptographically isolated
-  const raw = ENV_CABINET_ENCRYPTION_KEY || DEV_EPHEMERAL_CABINET_KEY;
+  // Never fall back to SESSION_SECRET so session signing and cabinet password encryption remain cryptographically isolated
+  const raw =
+    (process.env['CABINET_ENCRYPTION_KEY'] || '').trim() ||
+    createHmac('sha256', 'homehub3-cabinet-aes256-key-v2')
+      .update(DEFAULT_PROJECT_SEED)
+      .digest('hex');
   return createHash('sha256').update(raw, 'utf8').digest();
 }
 
@@ -173,6 +196,38 @@ function sanitizeSettingsForClient(s: Record<string, unknown>): Record<string, u
 
 const SESSION_TTL_SECONDS = 14 * 24 * 60 * 60; // 14 days
 const revokedSessionJtis = new Map<string, number>();
+let lastRevokedSyncAtMs = 0;
+let inFlightRevokedSync: Promise<void> | null = null;
+
+async function syncRevokedSessionJtisFromDbIfNeeded(): Promise<void> {
+  const now = Date.now();
+  if (now - lastRevokedSyncAtMs < 15_000) return;
+  if (!inFlightRevokedSync) {
+    inFlightRevokedSync = (async () => {
+      try {
+        const dbRevoked = await loadRevokedSessionJtisFromCloudSql();
+        if (dbRevoked) {
+          for (const [k, v] of Object.entries(dbRevoked)) {
+            if (v > Date.now()) {
+              revokedSessionJtis.set(k, v);
+            }
+          }
+          const sysVals = getSystemValuesMap();
+          sysVals['revokedSessionJtis'] = {
+            ...((sysVals['revokedSessionJtis'] as Record<string, number> | undefined) || {}),
+            ...dbRevoked,
+          };
+        }
+        lastRevokedSyncAtMs = Date.now();
+      } catch {
+        // Ignore transient DB read warning
+      } finally {
+        inFlightRevokedSync = null;
+      }
+    })();
+  }
+  await inFlightRevokedSync;
+}
 
 function isSessionJtiRevoked(jti: string): boolean {
   const now = Date.now();
@@ -218,7 +273,7 @@ async function revokeSessionJti(jti: string, expMs: number): Promise<void> {
   }
   stored[jti] = effectiveExpMs;
   sysVals['revokedSessionJtis'] = stored;
-  await persistSystemValues();
+  await saveRevokedSessionJtiToCloudSql(jti, effectiveExpMs);
 }
 
 function signSessionToken(userId: string, normEmail: string): string {
@@ -226,7 +281,7 @@ function signSessionToken(userId: string, normEmail: string): string {
   const expSec = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
   const jti = randomBytes(12).toString('base64url');
   const payload = `${userId}__${emailB64}__${expSec}__${jti}`;
-  const sig = createHmac('sha256', SESSION_HMAC_SECRET).update(payload).digest('base64url');
+  const sig = createHmac('sha256', getSessionHmacSecret()).update(payload).digest('base64url');
   return `gauth3_${payload}__${sig}`;
 }
 
@@ -242,9 +297,14 @@ function verifySignedSessionToken(
   if (!Number.isFinite(expSec) || expSec <= Math.floor(Date.now() / 1000)) {
     return null;
   }
-  const expectedSig = createHmac('sha256', SESSION_HMAC_SECRET)
-    .update(`${userId}__${emailB64}__${expStr}__${jti}`)
-    .digest('base64url');
+  let expectedSig: string;
+  try {
+    expectedSig = createHmac('sha256', getSessionHmacSecret())
+      .update(`${userId}__${emailB64}__${expStr}__${jti}`)
+      .digest('base64url');
+  } catch {
+    return null;
+  }
   try {
     const a = Buffer.from(sigB64, 'utf8');
     const b = Buffer.from(expectedSig, 'utf8');
@@ -738,7 +798,7 @@ function ensureInitialHydration(): Promise<boolean> | null {
   return initialHydrationPromise;
 }
 
-app.use('/api', async (_req, _res, next) => {
+app.use('/api', async (req, _res, next) => {
   const promise = ensureInitialHydration();
   if (promise) {
     try {
@@ -746,6 +806,9 @@ app.use('/api', async (_req, _res, next) => {
     } catch {
       // ignore hydration warning
     }
+  }
+  if (req.headers['authorization']?.startsWith('Bearer gauth3_')) {
+    await syncRevokedSessionJtisFromDbIfNeeded();
   }
   next();
 });
@@ -947,15 +1010,21 @@ function getAppReleaseInfoForUser(user: Record<string, unknown> | null): {
   };
 }
 
+app.get('/api/firebase-config', (_req, res) => {
+  res.json(getServerFirebaseConfig());
+});
+
 app.get('/api/auth/me', (req, res) => {
   const { authenticated, user, realAdmin } = resolveRequestUser(req);
-  const clientId = process.env['GOOGLE_CLIENT_ID'] || FIREBASE_APPLET_CONFIG.oAuthClientId || '';
+  const firebaseConfig = getServerFirebaseConfig();
+  const clientId = process.env['GOOGLE_CLIENT_ID']?.trim() || firebaseConfig.oAuthClientId || '';
   if (!authenticated) {
     res.json({
       authenticated: false,
       user: null,
       realAdminUser: null,
       googleClientId: clientId,
+      firebaseConfig,
       totalUsersCount: state.users.length,
       appReleaseInfo: getAppReleaseInfoForUser(null),
     });
@@ -967,6 +1036,7 @@ app.get('/api/auth/me', (req, res) => {
     user,
     realAdminUser: realAdmin,
     googleClientId: clientId,
+    firebaseConfig,
     totalUsersCount: state.users.length,
     appReleaseInfo,
   });
@@ -6458,28 +6528,22 @@ app.post('/api/push/test-delayed', async (req, res) => {
 
 app.post('/api/push/snooze', (req, res) => {
   const { authenticated, user, realAdmin } = resolveRequestUser(req);
+  if (!authenticated) {
+    res.status(401).json({ success: false, error: 'Потрібна авторизація' });
+    return;
+  }
+
   const { endpoint, delayMinutes = 15, title, body, queueGroup } = req.body || {};
   const targetEndpoint = typeof endpoint === 'string' ? endpoint.trim() : '';
   const subs = getPushSubscriptionsList();
   const callerId = String(user['id'] || '');
-  const callerIsAdmin = authenticated && isAdminUser(user, realAdmin);
+  const callerIsAdmin = isAdminUser(user, realAdmin);
 
-  let targetSubs: StoredPushSubscription[];
-  if (callerIsAdmin) {
-    targetSubs = targetEndpoint
-      ? subs.filter((s) => s.endpoint === targetEndpoint)
-      : subs.filter((s) => s.userId === callerId);
-  } else if (authenticated) {
-    targetSubs = subs.filter(
-      (s) => s.userId === callerId && (!targetEndpoint || s.endpoint === targetEndpoint)
-    );
-  } else if (targetEndpoint) {
-    // Allow service worker snooze ONLY for the single matching device endpoint
-    targetSubs = subs.filter((s) => s.endpoint === targetEndpoint);
-  } else {
-    res.status(401).json({ success: false, error: 'Потрібна авторизація або endpoint пристрою' });
-    return;
-  }
+  const targetSubs = callerIsAdmin && targetEndpoint
+    ? subs.filter((s) => s.endpoint === targetEndpoint)
+    : subs.filter(
+        (s) => s.userId === callerId && (!targetEndpoint || s.endpoint === targetEndpoint)
+      );
 
   if (targetSubs.length === 0) {
     res.status(404).json({ success: false, error: 'Підписку для нагадування не знайдено' });

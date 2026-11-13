@@ -1,4 +1,4 @@
-import { FIREBASE_APPLET_CONFIG } from './firebase-config';
+import { ensureFirebaseClientConfigLoaded, FIREBASE_APPLET_CONFIG } from './firebase-config';
 
 export interface FirebasePopupLoginResult {
   idToken?: string;
@@ -56,6 +56,7 @@ function loadGisScript(): Promise<void> {
 }
 
 async function triggerGisOAuthPopup(): Promise<FirebasePopupLoginResult | null> {
+  await ensureFirebaseClientConfigLoaded();
   await loadGisScript();
   const w = window as unknown as GisWindow;
   const oauth2 = w.google?.accounts?.oauth2;
@@ -109,6 +110,7 @@ export async function triggerFirebaseGooglePopup(): Promise<FirebasePopupLoginRe
 
   // 1. Try Firebase Auth popup first if modules load cleanly
   try {
+    await ensureFirebaseClientConfigLoaded();
     const { initializeApp, getApps, getApp } = await import('firebase/app');
     const { getAuth, GoogleAuthProvider, signInWithPopup } = await import('firebase/auth');
 

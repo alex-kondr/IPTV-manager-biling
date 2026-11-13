@@ -6,6 +6,9 @@ process.env['START_EXPRESS_SERVER'] = 'true';
 const builtServer = resolve(process.cwd(), 'dist/app/server/server.mjs');
 
 if (existsSync(builtServer)) {
+  if (!process.env['NODE_ENV']) {
+    process.env['NODE_ENV'] = 'production';
+  }
   process.argv[1] = builtServer;
   await import(`file://${builtServer}`);
 } else {
