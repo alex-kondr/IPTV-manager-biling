@@ -24,6 +24,9 @@ import {
   SettingScopeType,
   ALL_SETTINGS_SECTIONS,
   SettingsSectionMeta,
+  HOME_MENU_TILE_OPTIONS,
+  HomeMenuTileMeta,
+  AppTabId,
 } from '../../models/client.model';
 import {
   UtilityAccount,
@@ -33,6 +36,8 @@ import {
   OutageScheduleViewVariant,
   OUTAGE_SCHEDULE_VARIANTS,
   OutageScheduleVariantMeta,
+  resolveElectricitySingleRate,
+  resolveElectricityDualRates,
 } from '../../models/utility.model';
 
 export type SettingsGroupModalId =
@@ -41,6 +46,7 @@ export type SettingsGroupModalId =
   | 'outage_display'
   | 'outage_sync_interval'
   | 'house_visibility'
+  | 'ooek_credentials'
   | 'viber'
   | 'electricity_tariffs'
   | 'water_tariffs'
@@ -171,11 +177,13 @@ export type SettingsGroupModalId =
                     @else { contrast }
                   </mat-icon>
                 </div>
-                <span class="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full bg-white/15 backdrop-blur-xs border border-white/20 text-white text-3xs sm:text-2xs font-bold">
-                  @if (themeService.themeMode() === 'dark') { Темна тема }
-                  @else if (themeService.themeMode() === 'light') { Світла тема }
-                  @else { Авто (Системна) }
-                </span>
+                <div class="flex items-center gap-1.5 flex-wrap justify-end">
+                  <span class="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full bg-white/15 backdrop-blur-xs border border-white/20 text-white text-3xs sm:text-2xs font-bold">
+                    @if (themeService.themeMode() === 'dark') { Темна тема }
+                    @else if (themeService.themeMode() === 'light') { Світла тема }
+                    @else { Авто (Системна) }
+                  </span>
+                </div>
               </div>
 
               <div class="relative z-10 space-y-1 sm:space-y-1.5 mt-2.5 sm:mt-6">
@@ -183,7 +191,7 @@ export type SettingsGroupModalId =
                   Тема оформлення
                 </h3>
                 <p class="text-2xs sm:text-xs text-slate-200/90 line-clamp-1 sm:line-clamp-2">
-                  Світла, темна або автоматичне визначення за системною темою пристрою
+                  Вибір світлої, темної або системної кольорової теми застосунку
                 </p>
               </div>
             </button>
@@ -241,16 +249,47 @@ export type SettingsGroupModalId =
                   <mat-icon class="text-xl sm:text-2xl">visibility</mat-icon>
                 </div>
                 <span class="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full bg-sky-500/25 backdrop-blur-xs border border-sky-400/40 text-sky-200 text-3xs sm:text-2xs font-bold">
-                  Будинків: {{ utilityAccounts().length }}
+                  Плитки та {{ utilityAccounts().length }} буд.
                 </span>
               </div>
 
               <div class="relative z-10 space-y-1 sm:space-y-1.5 mt-2.5 sm:mt-6">
                 <h3 class="text-base sm:text-2xl font-black text-white tracking-tight drop-shadow-xs">
-                  Відображення будинків по вкладках
+                  Відображення плиток меню та будинків
                 </h3>
                 <p class="text-2xs sm:text-xs text-slate-200/90 line-clamp-1 sm:line-clamp-2">
-                  Індивідуальний показ або приховування спільних будинків для кожної окремої вкладки
+                  Показ або приховування плиток на головній сторінці «Меню» та будинків по вкладках
+                </p>
+              </div>
+            </button>
+          }
+
+          <!-- TILE 1D-OOEK: ООЕК (ЛОГІН ТА ПАРОЛЬ) -->
+          @if (shouldShowTile('ooek_credentials')) {
+            <button
+              id="settings-tile-ooek-credentials"
+              type="button"
+              (click)="openSettingsModal('ooek_credentials')"
+              class="group relative w-full min-h-[115px] sm:min-h-[220px] rounded-2xl sm:rounded-3xl overflow-hidden border-2 border-white/20 hover:border-emerald-400 shadow-md hover:shadow-2xl transition-all duration-300 cursor-pointer flex flex-col justify-between p-3.5 sm:p-6 text-left bg-slate-950 focus:outline-none focus:ring-4 focus:ring-emerald-400/40"
+            >
+              <div class="absolute inset-0 bg-gradient-to-br from-emerald-950 via-slate-900 to-teal-950 group-hover:scale-105 transition-transform duration-700 opacity-90"></div>
+              <div class="absolute inset-0 bg-gradient-to-t from-slate-950/95 via-emerald-950/65 to-slate-950/35"></div>
+
+              <div class="relative z-10 flex items-center justify-between w-full gap-2">
+                <div class="w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-emerald-500/25 backdrop-blur-xs border border-emerald-400/40 text-emerald-300 flex items-center justify-center shadow-sm shrink-0">
+                  <mat-icon class="text-xl sm:text-2xl">receipt_long</mat-icon>
+                </div>
+                <span class="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full bg-emerald-500/25 backdrop-blur-xs border border-emerald-400/40 text-emerald-200 text-3xs sm:text-2xs font-bold">
+                  {{ ooekConfiguredCount() }} / {{ electricityAccounts().length }} налаштовано
+                </span>
+              </div>
+
+              <div class="relative z-10 space-y-1 sm:space-y-1.5 mt-2.5 sm:mt-6">
+                <h3 class="text-base sm:text-2xl font-black text-white tracking-tight drop-shadow-xs">
+                  ООЕК
+                </h3>
+                <p class="text-2xs sm:text-xs text-slate-200/90 line-clamp-1 sm:line-clamp-2">
+                  Логін та пароль особистого кабінету ТОВ «ООЕК» (personal.ooek.od.ua)
                 </p>
               </div>
             </button>
@@ -276,8 +315,11 @@ export type SettingsGroupModalId =
                 <div class="w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-amber-500/25 backdrop-blur-xs border border-amber-400/40 text-amber-300 flex items-center justify-center shadow-sm">
                   <mat-icon class="text-xl sm:text-2xl">bolt</mat-icon>
                 </div>
-                <span class="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full bg-amber-500/25 backdrop-blur-xs border border-amber-400/40 text-amber-200 text-3xs sm:text-2xs font-mono font-bold">
-                  {{ form.controls.elecDualSummerDay.value }} / {{ form.controls.elecDualSummerNight.value }} ₴
+                <span
+                  [title]="defaultElectricityTariffBadgeTooltip()"
+                  class="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full bg-amber-500/25 backdrop-blur-xs border border-amber-400/40 text-amber-200 text-3xs sm:text-2xs font-mono font-bold"
+                >
+                  {{ defaultElectricityTariffBadgeText() }}
                 </span>
               </div>
 
@@ -313,7 +355,7 @@ export type SettingsGroupModalId =
                   <mat-icon class="text-xl sm:text-2xl">water_drop</mat-icon>
                 </div>
                 <span class="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full bg-cyan-500/25 backdrop-blur-xs border border-cyan-400/40 text-cyan-200 text-3xs sm:text-2xs font-mono font-bold">
-                  {{ form.controls.waterPrice.value }} ₴/м³
+                  {{ activeDisplayTariffs().water.price }} ₴/м³
                 </span>
               </div>
 
@@ -344,7 +386,7 @@ export type SettingsGroupModalId =
                   <mat-icon class="text-xl sm:text-2xl">delete_outline</mat-icon>
                 </div>
                 <span class="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full bg-emerald-500/25 backdrop-blur-xs border border-emerald-400/40 text-emerald-200 text-3xs sm:text-2xs font-mono font-bold">
-                  ТПВ {{ form.controls.wastePrice.value }} ₴/особа
+                  ТПВ {{ activeDisplayTariffs().waste.price }} ₴/особа
                 </span>
               </div>
 
@@ -380,7 +422,7 @@ export type SettingsGroupModalId =
                   <mat-icon class="text-xl sm:text-2xl">update</mat-icon>
                 </div>
                 <span class="px-2.5 py-0.5 sm:px-3 sm:py-1 rounded-full bg-amber-500/25 backdrop-blur-xs border border-amber-400/40 text-amber-200 text-3xs sm:text-2xs font-mono font-bold">
-                  Кожні {{ form.controls.dtekSyncIntervalMinutes.value || 20 }} хв
+                  Кожні {{ dtekSyncIntervalMinutes() }} хв
                 </span>
               </div>
 
@@ -1585,22 +1627,95 @@ export type SettingsGroupModalId =
                 }
               </form>
 
-              <!-- PER-USER HOUSE VISIBILITY MODAL CONTENT -->
+              <!-- PER-USER MENU TILES & HOUSE VISIBILITY MODAL CONTENT -->
               @if (modalId === 'house_visibility') {
-                <div class="space-y-4">
-                  <div class="p-4 rounded-2xl bg-sky-50/80 border border-sky-200 flex items-start gap-3">
-                    <div class="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center shrink-0">
-                      <mat-icon>visibility</mat-icon>
+                <div class="space-y-6">
+                  <!-- SECTION 1: HOME MENU TILES VISIBILITY -->
+                  <div class="space-y-3">
+                    <div class="p-4 rounded-2xl bg-indigo-50/80 border border-indigo-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div class="flex items-start gap-3">
+                        <div class="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0">
+                          <mat-icon>dashboard_customize</mat-icon>
+                        </div>
+                        <div class="space-y-0.5">
+                          <h4 class="text-xs sm:text-sm font-black text-slate-900">
+                            Відображення плиток головного меню
+                          </h4>
+                          <p class="text-2xs sm:text-xs text-slate-600">
+                            Оберіть, які плитки показувати на головній сторінці «Меню». Синхронізується напряму з іконкою олівця на головній сторінці.
+                          </p>
+                        </div>
+                      </div>
+                      @if (hiddenHomeTiles().length > 0) {
+                        <button
+                          type="button"
+                          (click)="resetHiddenHomeTiles()"
+                          class="px-3 py-1.5 rounded-xl bg-white hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-bold inline-flex items-center gap-1.5 shrink-0 cursor-pointer transition-colors"
+                        >
+                          <mat-icon class="text-sm leading-none">restart_alt</mat-icon>
+                          <span>Показати всі</span>
+                        </button>
+                      }
                     </div>
-                    <div class="space-y-1">
-                      <h4 class="text-xs sm:text-sm font-black text-slate-900">
-                        Індивідуальне відображення будинків по вкладках ({{ currentUser()?.name || 'Користувач' }})
-                      </h4>
-                      <p class="text-2xs sm:text-xs text-slate-600">
-                        Налаштуйте, на яких вкладках показувати чи приховувати кожен будинок особисто для вас. Навіть якщо будинок спільний для декількох користувачів, ваш вибір зберігається індивідуально у таблиці <code class="font-mono text-sky-900">user_settings</code>.
-                      </p>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      @for (tile of permittedHomeMenuTiles(); track tile.id) {
+                        @let isTileHidden = isHomeTileHidden(tile.id);
+                        <button
+                          type="button"
+                          (click)="toggleHomeTile(tile.id)"
+                          class="p-3.5 rounded-2xl border flex items-center justify-between gap-3 text-left transition-all cursor-pointer"
+                          [class.bg-emerald-50/70]="!isTileHidden"
+                          [class.border-emerald-300]="!isTileHidden"
+                          [class.bg-slate-50]="isTileHidden"
+                          [class.border-slate-200]="isTileHidden"
+                          [class.opacity-70]="isTileHidden"
+                        >
+                          <div class="flex items-center gap-2.5 min-w-0">
+                            <span
+                              class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+                              [class.bg-emerald-600]="!isTileHidden"
+                              [class.text-white]="!isTileHidden"
+                              [class.bg-slate-200]="isTileHidden"
+                              [class.text-slate-500]="isTileHidden"
+                            >
+                              <mat-icon class="text-lg leading-none">{{ tile.icon }}</mat-icon>
+                            </span>
+                            <div class="min-w-0">
+                              <div class="text-xs sm:text-sm font-bold text-slate-900 truncate">{{ tile.label }}</div>
+                              <div class="text-2xs text-slate-500 truncate">{{ tile.subtitle }}</div>
+                            </div>
+                          </div>
+                          <span
+                            class="px-2.5 py-1 rounded-xl text-2xs font-bold inline-flex items-center gap-1 shrink-0"
+                            [class.bg-emerald-600]="!isTileHidden"
+                            [class.text-white]="!isTileHidden"
+                            [class.bg-slate-200]="isTileHidden"
+                            [class.text-slate-600]="isTileHidden"
+                          >
+                            <mat-icon class="text-xs leading-none">{{ isTileHidden ? 'visibility_off' : 'visibility' }}</mat-icon>
+                            <span>{{ isTileHidden ? 'Приховано' : 'Показано' }}</span>
+                          </span>
+                        </button>
+                      }
                     </div>
                   </div>
+
+                  <!-- SECTION 2: HOUSES VISIBILITY PER TAB -->
+                  <div class="space-y-4 pt-3 border-t border-slate-200">
+                    <div class="p-4 rounded-2xl bg-sky-50/80 border border-sky-200 flex items-start gap-3">
+                      <div class="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center shrink-0">
+                        <mat-icon>visibility</mat-icon>
+                      </div>
+                      <div class="space-y-1">
+                        <h4 class="text-xs sm:text-sm font-black text-slate-900">
+                          Індивідуальне відображення будинків по вкладках ({{ currentUser()?.name || 'Користувач' }})
+                        </h4>
+                        <p class="text-2xs sm:text-xs text-slate-600">
+                          Налаштуйте, на яких вкладках показувати чи приховувати кожен будинок особисто для вас. Навіть якщо будинок спільний для декількох користувачів, ваш вибір зберігається індивідуально у таблиці <code class="font-mono text-sky-900">user_settings</code>.
+                        </p>
+                      </div>
+                    </div>
 
                   @if (utilityAccounts().length === 0) {
                     <div class="p-6 rounded-2xl bg-slate-50 border border-slate-200 text-center text-xs text-slate-500">
@@ -1703,120 +1818,236 @@ export type SettingsGroupModalId =
                       }
                     </div>
                   }
+                  </div>
+                </div>
+              }
+
+              <!-- OOEK CREDENTIALS MODAL CONTENT -->
+              @if (modalId === 'ooek_credentials') {
+                <div class="space-y-4">
+                  @if (electricityAccounts().length === 0) {
+                    <div class="p-6 rounded-2xl bg-slate-50 border border-slate-200 text-center text-xs text-slate-500">
+                      Спочатку додайте хоча б один будинок на вкладці «Електро».
+                    </div>
+                  } @else {
+                    <div>
+                      <label for="ooek-creds-house-select" class="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                        Будинок / Особовий рахунок
+                      </label>
+                      <select
+                        id="ooek-creds-house-select"
+                        [value]="selectedCredsAccountId()"
+                        (change)="onSelectCredsAccount($any($event.target).value)"
+                        class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-xs sm:text-sm font-bold text-slate-900 focus:outline-none focus:border-emerald-500 cursor-pointer"
+                      >
+                        @for (acc of electricityAccounts(); track acc.id) {
+                          <option [value]="acc.id" [selected]="selectedCredsAccountId() === acc.id">
+                            {{ acc.name }}{{ acc.accountNumber ? ' (о/р ' + acc.accountNumber + ')' : '' }}
+                          </option>
+                        }
+                      </select>
+                    </div>
+
+                    @if (selectedCredsAccount(); as credsAcc) {
+                      @if (!credsAcc.accountNumber && !credsAcc.ooekAccountNumber) {
+                        <div class="p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs flex items-start gap-2">
+                          <mat-icon class="text-amber-600 text-base shrink-0 mt-0.5">warning</mat-icon>
+                          <span>У цього будинку ще не вказано особовий рахунок. Вкажіть його в налаштуваннях будинку на вкладці «Електро», щоб отримувати нарахування з ООЕК.</span>
+                        </div>
+                      }
+
+                      @if (credsAcc.ooekCabinetStatus) {
+                        <div class="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700 flex items-start gap-2">
+                          <mat-icon class="text-indigo-600 text-base shrink-0 mt-0.5">info</mat-icon>
+                          <span>{{ credsAcc.ooekCabinetStatus }}</span>
+                        </div>
+                      }
+
+                      <form [formGroup]="ooekCredsForm" (ngSubmit)="saveOoekCredentials()" class="space-y-4">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                          <div>
+                            <label for="settings-ooek-login" class="block text-xs font-bold text-slate-700 mb-1">
+                              Логін ООЕК (Email або телефон)
+                            </label>
+                            <input
+                              id="settings-ooek-login"
+                              type="text"
+                              formControlName="login"
+                              placeholder="user@email.com або +380..."
+                              autocomplete="off"
+                              class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-xs sm:text-sm text-slate-900 font-mono focus:outline-none focus:border-emerald-500"
+                            />
+                          </div>
+
+                          <div>
+                            <label for="settings-ooek-password" class="block text-xs font-bold text-slate-700 mb-1">
+                              Пароль ООЕК {{ credsAcc.hasOoekPassword ? '(збережено)' : '' }}
+                            </label>
+                            <div class="relative">
+                              <input
+                                id="settings-ooek-password"
+                                [type]="showCredsPassword() ? 'text' : 'password'"
+                                formControlName="password"
+                                [placeholder]="credsAcc.hasOoekPassword ? '•••••••• (введіть для зміни)' : 'Введіть пароль кабінету ООЕК'"
+                                autocomplete="new-password"
+                                class="w-full pl-3.5 pr-10 py-2.5 rounded-xl bg-slate-50 border border-slate-300 text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-emerald-500"
+                              />
+                              <button
+                                type="button"
+                                (click)="showCredsPassword.update(v => !v)"
+                                class="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer flex items-center justify-center"
+                                title="Показати / приховати пароль"
+                              >
+                                <mat-icon class="text-base leading-none">{{ showCredsPassword() ? 'visibility_off' : 'visibility' }}</mat-icon>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div class="flex flex-wrap items-center justify-between gap-2.5 pt-2">
+                          <button
+                            type="button"
+                            (click)="goToElectricityTab()"
+                            class="px-3.5 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+                          >
+                            <mat-icon class="text-sm leading-none">bolt</mat-icon>
+                            <span>На вкладку «Електро»</span>
+                          </button>
+
+                          <div class="flex items-center gap-2 flex-wrap">
+                            <button
+                              type="submit"
+                              [disabled]="isSavingCreds() || isTestingOoek()"
+                              class="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-2xs"
+                            >
+                              <mat-icon class="text-sm leading-none">save</mat-icon>
+                              <span>{{ isSavingCreds() ? 'Збереження...' : 'Зберегти' }}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              (click)="saveAndSyncOoekCredentials()"
+                              [disabled]="isSavingCreds() || isTestingOoek()"
+                              class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shadow-2xs"
+                            >
+                              <mat-icon class="text-sm leading-none" [class.animate-spin]="isTestingOoek()">sync</mat-icon>
+                              <span>{{ isTestingOoek() ? 'Перевірка...' : 'Зберегти та оновити з ООЕК' }}</span>
+                            </button>
+                          </div>
+                        </div>
+                      </form>
+                    }
+                  }
                 </div>
               }
 
               <!-- THEME SETTINGS MODAL CONTENT -->
               @if (modalId === 'theme') {
-                <div class="space-y-6">
-                  <div class="p-4 sm:p-5 rounded-2xl bg-indigo-50/70 border border-indigo-200 flex items-start gap-3.5">
-                    <div class="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-sm">
-                      <mat-icon class="text-xl">palette</mat-icon>
-                    </div>
-                    <div class="space-y-1">
-                      <h4 class="text-sm sm:text-base font-bold text-slate-900">
-                        Вибір теми оформлення
+                <div class="space-y-5">
+                  <!-- COLOR THEME (SYSTEM / LIGHT / DARK) -->
+                  <div class="space-y-3">
+                    <div class="flex items-center gap-2 px-1">
+                      <mat-icon class="text-base text-indigo-600 dark:text-indigo-400">palette</mat-icon>
+                      <h4 class="text-xs sm:text-sm font-extrabold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                        Кольорова тема
                       </h4>
-                      <p class="text-xs text-slate-600">
-                        Обрана тема застосовується миттєво для всіх розділів додатка (комбінований графік ДТЕК, таблиці, аналітика, білінг та облікові записи).
-                      </p>
                     </div>
-                  </div>
 
-                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                    <!-- OPTION 1: AUTO (SYSTEM) -->
-                    <button
-                      type="button"
-                      (click)="themeService.setThemeMode('system')"
-                      [class]="themeService.themeMode() === 'system'
-                        ? 'border-indigo-600 ring-2 ring-indigo-500/30 bg-indigo-50/50'
-                        : 'border-slate-200 hover:border-indigo-400 bg-white'"
-                      class="relative p-5 rounded-2xl border-2 text-left transition-all duration-200 cursor-pointer flex flex-col justify-between space-y-4 group"
-                    >
-                      <div class="flex items-center justify-between w-full">
-                        <div class="w-10 h-10 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center">
-                          <mat-icon class="text-xl">contrast</mat-icon>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <!-- OPTION 1: AUTO (SYSTEM) -->
+                      <button
+                        type="button"
+                        (click)="themeService.setThemeMode('system')"
+                        [class]="themeService.themeMode() === 'system'
+                          ? 'border-indigo-600 ring-2 ring-indigo-500/30 bg-indigo-50/50 dark:bg-indigo-950/35'
+                          : 'border-slate-200 dark:border-slate-700 hover:border-indigo-400 bg-white dark:bg-slate-900'"
+                        class="relative p-5 rounded-2xl border-2 text-left transition-all duration-200 cursor-pointer flex flex-col justify-between space-y-4 group"
+                      >
+                        <div class="flex items-center justify-between w-full">
+                          <div class="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 flex items-center justify-center">
+                            <mat-icon class="text-xl">contrast</mat-icon>
+                          </div>
+                          @if (themeService.themeMode() === 'system') {
+                            <span class="w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center">
+                              <mat-icon class="text-xs font-bold">check</mat-icon>
+                            </span>
+                          }
                         </div>
-                        @if (themeService.themeMode() === 'system') {
-                          <span class="w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center">
-                            <mat-icon class="text-xs font-bold">check</mat-icon>
-                          </span>
-                        }
-                      </div>
-                      <div>
-                        <h5 class="text-sm font-black text-slate-900 group-hover:text-indigo-600">
-                          Автоматична (Системна)
-                        </h5>
-                        <p class="text-2xs text-slate-500 mt-1">
-                          Адаптується під системну тему вашого пристрою (Windows, macOS, iOS, Android)
-                        </p>
-                      </div>
-                    </button>
+                        <div>
+                          <h5 class="text-sm font-black text-slate-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400">
+                            Автоматична (Системна)
+                          </h5>
+                          <p class="text-2xs text-slate-500 dark:text-slate-400 mt-1">
+                            Адаптується під системну тему вашого пристрою (Windows, macOS, iOS, Android)
+                          </p>
+                        </div>
+                      </button>
 
-                    <!-- OPTION 2: LIGHT MODE -->
-                    <button
-                      type="button"
-                      (click)="themeService.setThemeMode('light')"
-                      [class]="themeService.themeMode() === 'light'
-                        ? 'border-amber-500 ring-2 ring-amber-500/30 bg-amber-50/50'
-                        : 'border-slate-200 hover:border-amber-400 bg-white'"
-                      class="relative p-5 rounded-2xl border-2 text-left transition-all duration-200 cursor-pointer flex flex-col justify-between space-y-4 group"
-                    >
-                      <div class="flex items-center justify-between w-full">
-                        <div class="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center">
-                          <mat-icon class="text-xl">light_mode</mat-icon>
+                      <!-- OPTION 2: LIGHT MODE -->
+                      <button
+                        type="button"
+                        (click)="themeService.setThemeMode('light')"
+                        [class]="themeService.themeMode() === 'light'
+                          ? 'border-amber-500 ring-2 ring-amber-500/30 bg-amber-50/50 dark:bg-amber-950/30'
+                          : 'border-slate-200 dark:border-slate-700 hover:border-amber-400 bg-white dark:bg-slate-900'"
+                        class="relative p-5 rounded-2xl border-2 text-left transition-all duration-200 cursor-pointer flex flex-col justify-between space-y-4 group"
+                      >
+                        <div class="flex items-center justify-between w-full">
+                          <div class="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400 flex items-center justify-center">
+                            <mat-icon class="text-xl">light_mode</mat-icon>
+                          </div>
+                          @if (themeService.themeMode() === 'light') {
+                            <span class="w-6 h-6 rounded-full bg-amber-500 text-white flex items-center justify-center">
+                              <mat-icon class="text-xs font-bold">check</mat-icon>
+                            </span>
+                          }
                         </div>
-                        @if (themeService.themeMode() === 'light') {
-                          <span class="w-6 h-6 rounded-full bg-amber-500 text-white flex items-center justify-center">
-                            <mat-icon class="text-xs font-bold">check</mat-icon>
-                          </span>
-                        }
-                      </div>
-                      <div>
-                        <h5 class="text-sm font-black text-slate-900 group-hover:text-amber-600">
-                          Світла тема
-                        </h5>
-                        <p class="text-2xs text-slate-500 mt-1">
-                          Класичний світлий інтерфейс з білим тлом та високим контрастом
-                        </p>
-                      </div>
-                    </button>
+                        <div>
+                          <h5 class="text-sm font-black text-slate-900 dark:text-white group-hover:text-amber-600 dark:group-hover:text-amber-400">
+                            Світла тема
+                          </h5>
+                          <p class="text-2xs text-slate-500 dark:text-slate-400 mt-1">
+                            Класичний світлий інтерфейс з білим тлом та високим контрастом
+                          </p>
+                        </div>
+                      </button>
 
-                    <!-- OPTION 3: DARK MODE -->
-                    <button
-                      type="button"
-                      (click)="themeService.setThemeMode('dark')"
-                      [class]="themeService.themeMode() === 'dark'
-                        ? 'border-purple-600 ring-2 ring-purple-500/30 bg-purple-950/20'
-                        : 'border-slate-200 hover:border-purple-400 bg-white'"
-                      class="relative p-5 rounded-2xl border-2 text-left transition-all duration-200 cursor-pointer flex flex-col justify-between space-y-4 group"
-                    >
-                      <div class="flex items-center justify-between w-full">
-                        <div class="w-10 h-10 rounded-xl bg-purple-950 text-purple-300 border border-purple-800 flex items-center justify-center">
-                          <mat-icon class="text-xl">dark_mode</mat-icon>
+                      <!-- OPTION 3: DARK MODE -->
+                      <button
+                        type="button"
+                        (click)="themeService.setThemeMode('dark')"
+                        [class]="themeService.themeMode() === 'dark'
+                          ? 'border-purple-600 ring-2 ring-purple-500/30 bg-purple-950/20'
+                          : 'border-slate-200 dark:border-slate-700 hover:border-purple-400 bg-white dark:bg-slate-900'"
+                        class="relative p-5 rounded-2xl border-2 text-left transition-all duration-200 cursor-pointer flex flex-col justify-between space-y-4 group"
+                      >
+                        <div class="flex items-center justify-between w-full">
+                          <div class="w-10 h-10 rounded-xl bg-purple-950 text-purple-300 border border-purple-800 flex items-center justify-center">
+                            <mat-icon class="text-xl">dark_mode</mat-icon>
+                          </div>
+                          @if (themeService.themeMode() === 'dark') {
+                            <span class="w-6 h-6 rounded-full bg-purple-600 text-white flex items-center justify-center">
+                              <mat-icon class="text-xs font-bold">check</mat-icon>
+                            </span>
+                          }
                         </div>
-                        @if (themeService.themeMode() === 'dark') {
-                          <span class="w-6 h-6 rounded-full bg-purple-600 text-white flex items-center justify-center">
-                            <mat-icon class="text-xs font-bold">check</mat-icon>
-                          </span>
-                        }
-                      </div>
-                      <div>
-                        <h5 class="text-sm font-black text-slate-900 group-hover:text-purple-600">
-                          Темна тема (Dark Mode)
-                        </h5>
-                        <p class="text-2xs text-slate-500 mt-1">
-                          Глибокий темний інтерфейс (Deep Slate) для комфортної роботи ввечері
-                        </p>
-                      </div>
-                    </button>
+                        <div>
+                          <h5 class="text-sm font-black text-slate-900 dark:text-white group-hover:text-purple-600 dark:group-hover:text-purple-400">
+                            Темна тема (Dark Mode)
+                          </h5>
+                          <p class="text-2xs text-slate-500 dark:text-slate-400 mt-1">
+                            Глибокий темний інтерфейс для комфортної роботи ввечері
+                          </p>
+                        </div>
+                      </button>
+                    </div>
                   </div>
 
                   <div class="pt-3 flex justify-end">
                     <button
                       type="button"
                       (click)="closeSettingsModal()"
-                      class="px-5 py-2.5 rounded-xl bg-slate-900 text-white hover:bg-slate-800 text-xs font-bold transition-colors cursor-pointer"
+                      class="px-5 py-2.5 rounded-xl bg-slate-900 dark:bg-indigo-600 text-white hover:bg-slate-800 dark:hover:bg-indigo-500 text-xs font-bold transition-colors cursor-pointer"
                     >
                       Готово
                     </button>
@@ -2612,6 +2843,27 @@ export class SettingsView implements OnInit {
   readonly payments = this.dataService.payments;
   readonly electricityAccounts = this.dataService.electricityAccounts;
 
+  readonly selectedCredsAccountId = signal<string>('');
+  readonly showCredsPassword = signal<boolean>(false);
+  readonly isSavingCreds = signal<boolean>(false);
+  readonly isTestingOoek = signal<boolean>(false);
+
+  readonly ooekCredsForm = new FormGroup({
+    login: new FormControl<string>(''),
+    password: new FormControl<string>(''),
+  });
+
+  readonly selectedCredsAccount = computed<UtilityAccount | null>(() => {
+    const list = this.electricityAccounts();
+    if (list.length === 0) return null;
+    const id = this.selectedCredsAccountId();
+    return list.find((a) => a.id === id) || list[0];
+  });
+
+  readonly ooekConfiguredCount = computed<number>(
+    () => this.electricityAccounts().filter((a) => Boolean(a.ooekLogin || a.hasOoekPassword)).length
+  );
+
   activeTemplateField: 'reminder' | 'renewal' = 'reminder';
 
   readonly outageScheduleVariants = OUTAGE_SCHEDULE_VARIANTS;
@@ -2624,6 +2876,45 @@ export class SettingsView implements OnInit {
       this.outageScheduleVariants.find((v) => v.id === cur) ||
       this.outageScheduleVariants[0]
     );
+  });
+
+  readonly activeDisplayTariffs = computed<UtilityTariffsSettings>(() =>
+    this.activeSettingsCategory() === 'system'
+      ? this.dataService.systemUtilityTariffs()
+      : this.dataService.utilityTariffs()
+  );
+  readonly dtekSyncIntervalMinutes = this.dataService.dtekSyncIntervalMinutes;
+
+  readonly defaultElectricityHouse = computed<UtilityAccount | null>(() => {
+    const accounts = this.electricityAccounts();
+    if (accounts.length === 0) return null;
+    const defaultId = this.dataService.defaultDtekAccountId();
+    if (defaultId) {
+      const found = accounts.find((a) => a.id === defaultId);
+      if (found) return found;
+    }
+    return this.dataService.activeDtekAccount() || accounts[0] || null;
+  });
+
+  readonly defaultElectricityTariffBadgeText = computed<string>(() => {
+    const tariffs = this.activeDisplayTariffs();
+    const today = new Date().toISOString().split('T')[0];
+    const dual = resolveElectricityDualRates(today, tariffs);
+    const seasonLabel = dual.season === 'winter' ? 'Зима' : 'Літо';
+    const house = this.defaultElectricityHouse();
+    if (house?.electricityTariffType === 'single') {
+      const singleRate = resolveElectricitySingleRate(today, tariffs);
+      return `${seasonLabel} · ${singleRate} ₴`;
+    }
+    return `${seasonLabel} · ${dual.dayRate} / ${dual.nightRate} ₴`;
+  });
+
+  readonly defaultElectricityTariffBadgeTooltip = computed<string>(() => {
+    const house = this.defaultElectricityHouse();
+    const houseName = house?.name ? `Будинок за замовчуванням: ${house.name}` : 'Тариф за замовчуванням';
+    const typeLabel =
+      house?.electricityTariffType === 'single' ? 'Однотарифний' : 'Двотарифний (День / Ніч)';
+    return `${houseName} (${typeLabel})`;
   });
 
   getSectionScope(sectionId: SettingsSectionId): SettingScopeType {
@@ -2651,6 +2942,27 @@ export class SettingsView implements OnInit {
     return this.isAdmin() && scope === 'system';
   }
 
+  readonly hiddenHomeTiles = this.dataService.hiddenHomeTiles;
+
+  readonly permittedHomeMenuTiles = computed<HomeMenuTileMeta[]>(() =>
+    HOME_MENU_TILE_OPTIONS.filter((t) => {
+      if (t.id === 'users') return this.isAdmin();
+      return this.dataService.isTabAllowed(t.id);
+    })
+  );
+
+  isHomeTileHidden(tileId: AppTabId): boolean {
+    return this.dataService.isHomeTileHidden(tileId);
+  }
+
+  async toggleHomeTile(tileId: AppTabId): Promise<void> {
+    await this.dataService.toggleHomeTileVisibility(tileId);
+  }
+
+  async resetHiddenHomeTiles(): Promise<void> {
+    await this.dataService.resetHiddenHomeTiles();
+  }
+
   isHouseHidden(acc: UtilityAccount, tab: UtilityServiceTabId): boolean {
     return this.dataService.isHouseHiddenInTab(acc, tab);
   }
@@ -2674,12 +2986,99 @@ export class SettingsView implements OnInit {
       return;
     }
     if (!this.isSectionAllowed(modalId as SettingsSectionId)) return;
-    this.patchFormValues(this.dataService.settings());
+    if (modalId === 'ooek_credentials') {
+      const accounts = this.electricityAccounts();
+      const reqAccId = this.dataService.requestedSettingsAccountId();
+      const target =
+        (reqAccId && accounts.find((a) => a.id === reqAccId)) ||
+        this.dataService.activeDtekAccount() ||
+        accounts[0] ||
+        null;
+      this.dataService.requestedSettingsAccountId.set(null);
+      this.selectedCredsAccountId.set(target?.id || '');
+      this.patchCredsFormsForAccount(target);
+      this.showCredsPassword.set(false);
+    } else {
+      this.patchFormValues(this.dataService.settings());
+      this.form.markAsPristine();
+    }
     this.activeSettingsModal.set(modalId);
+    if (modalId !== 'ooek_credentials' && modalId !== 'theme') {
+      void this.dataService.fetchSettings(true).then(() => {
+        if (this.activeSettingsModal() === modalId && this.form.pristine) {
+          this.patchFormValues(this.dataService.settings());
+          this.form.markAsPristine();
+        }
+      });
+    }
+  }
+
+  onSelectCredsAccount(accountId: string): void {
+    this.selectedCredsAccountId.set(accountId);
+    const acc = this.electricityAccounts().find((a) => a.id === accountId) || null;
+    this.patchCredsFormsForAccount(acc);
+    this.showCredsPassword.set(false);
+  }
+
+  private patchCredsFormsForAccount(acc: UtilityAccount | null): void {
+    this.ooekCredsForm.reset({
+      login: acc?.ooekLogin || '',
+      password: '',
+    });
+  }
+
+  async saveOoekCredentials(): Promise<void> {
+    const acc = this.selectedCredsAccount();
+    if (!acc) return;
+    const val = this.ooekCredsForm.getRawValue();
+    this.isSavingCreds.set(true);
+    try {
+      const saved = await this.dataService.saveCabinetCredentials(acc.id, {
+        ooekLogin: (val.login || '').trim(),
+        ...(val.password ? { ooekPassword: val.password } : {}),
+        ooekAccountNumber: acc.accountNumber,
+      });
+      if (saved) {
+        this.ooekCredsForm.controls.password.setValue('');
+      }
+    } finally {
+      this.isSavingCreds.set(false);
+    }
+  }
+
+  async saveAndSyncOoekCredentials(): Promise<void> {
+    const acc = this.selectedCredsAccount();
+    if (!acc) return;
+    const val = this.ooekCredsForm.getRawValue();
+    this.isTestingOoek.set(true);
+    try {
+      await this.dataService.saveCabinetCredentials(acc.id, {
+        ooekLogin: (val.login || '').trim(),
+        ...(val.password ? { ooekPassword: val.password } : {}),
+        ooekAccountNumber: acc.accountNumber,
+      });
+      const res = await this.dataService.syncOoekCabinet(acc.id, {
+        ooekAccountNumber: acc.accountNumber,
+        ...(val.login?.trim() ? { ooekLogin: val.login.trim() } : {}),
+        ...(val.password ? { ooekPassword: val.password } : {}),
+      });
+      this.ooekCredsForm.controls.password.setValue('');
+      if (res?.success) {
+        this.closeSettingsModal();
+      }
+    } finally {
+      this.isTestingOoek.set(false);
+    }
+  }
+
+  goToElectricityTab(): void {
+    this.closeSettingsModal();
+    this.dataService.requestedAppTab.set('electricity');
   }
 
   closeSettingsModal(): void {
     this.activeSettingsModal.set(null);
+    this.form.markAsPristine();
   }
 
   goToOutageSchedule(): void {
@@ -2715,9 +3114,9 @@ export class SettingsView implements OnInit {
     switch (modalId) {
       case 'theme':
         return {
-          title: 'Тема оформлення додатку',
-          subtitle: 'Світла, темна або автоматична тема за системними налаштуваннями OS',
-          icon: 'dark_mode',
+          title: 'Дизайн та тема оформлення',
+          subtitle: 'Вибір між новим дизайном v6.0 та класичним v5.1, а також світла / темна тема',
+          icon: 'dashboard_customize',
         };
       case 'billing':
         return {
@@ -2739,9 +3138,15 @@ export class SettingsView implements OnInit {
         };
       case 'house_visibility':
         return {
-          title: 'Відображення будинків по вкладках',
-          subtitle: 'Індивідуальний показ або приховування спільних будинків для кожної окремої вкладки',
+          title: 'Відображення плиток меню та будинків',
+          subtitle: 'Показ або приховування плиток головного меню та будинків для кожної окремої вкладки',
           icon: 'visibility',
+        };
+      case 'ooek_credentials':
+        return {
+          title: 'ООЕК — логін та пароль',
+          subtitle: 'Облікові дані особистого кабінету ТОВ «ООЕК» (personal.ooek.od.ua)',
+          icon: 'receipt_long',
         };
       case 'viber':
         return {
@@ -2795,8 +3200,8 @@ export class SettingsView implements OnInit {
   }
 
   async saveAndCloseModal(): Promise<void> {
-    await this.onSubmit();
-    if (!this.form.invalid) {
+    const ok = await this.onSubmit();
+    if (ok) {
       this.closeSettingsModal();
     }
   }
@@ -2852,8 +3257,11 @@ export class SettingsView implements OnInit {
     effect(() => {
       const reqModal = this.dataService.requestedSettingsModal();
       if (reqModal) {
+        if (this.getSectionScope(reqModal as SettingsSectionId) === 'user') {
+          this.activeSettingsCategory.set('user');
+        }
         if (this.isSectionAllowed(reqModal as SettingsSectionId)) {
-          this.activeSettingsModal.set(reqModal as SettingsGroupModalId);
+          this.openSettingsModal(reqModal as SettingsGroupModalId);
         }
         this.dataService.requestedSettingsModal.set(null);
       }
@@ -2861,8 +3269,13 @@ export class SettingsView implements OnInit {
 
     effect(() => {
       const s = this.dataService.settings();
-      if (this.form.pristine) {
+      this.dataService.userPersonalSettings();
+      this.dataService.utilityTariffs();
+      this.dataService.systemUtilityTariffs();
+      this.activeSettingsCategory();
+      if (!this.activeSettingsModal() || this.form.pristine) {
         this.patchFormValues(s);
+        this.form.markAsPristine();
       }
     });
   }
@@ -2985,6 +3398,8 @@ export class SettingsView implements OnInit {
 
   ngOnInit(): void {
     this.patchFormValues(this.dataService.settings());
+    this.form.markAsPristine();
+    void this.dataService.fetchSettings(true);
 
     this.form.valueChanges.subscribe(() => {
       this.reminderTemplateVal.set(this.form.controls.viberReminderMessageTemplate.value || '');
@@ -3032,28 +3447,71 @@ export class SettingsView implements OnInit {
     this.renewalTemplateVal.set(DEFAULT_VIBER_RENEWAL_TEMPLATE);
   }
 
-  async onSubmit(): Promise<void> {
-    if (this.form.invalid) {
+  private isActiveModalFormInvalid(modal: SettingsGroupModalId | null): boolean {
+    const c = this.form.controls;
+    if (modal === 'water_tariffs') {
+      return c.waterPrice.invalid || c.waterMonthlyFee.invalid || c.waterValidFrom.invalid;
+    }
+    if (modal === 'waste_tariffs') {
+      return c.wastePrice.invalid || c.wasteValidFrom.invalid;
+    }
+    if (modal === 'water_waste_tariffs') {
+      return c.waterPrice.invalid || c.waterMonthlyFee.invalid || c.wastePrice.invalid;
+    }
+    if (modal === 'electricity_tariffs') {
+      return (
+        c.elecSingleRate.invalid ||
+        c.elecSingleValidFrom.invalid ||
+        c.elecDualValidFrom.invalid ||
+        c.elecDualSummerDay.invalid ||
+        c.elecDualSummerNight.invalid ||
+        c.elecDualWinterDay.invalid ||
+        c.elecDualWinterNight.invalid ||
+        c.elecDualWinterLimit.invalid
+      );
+    }
+    if (modal === 'outage_sync_interval') {
+      return c.dtekSyncIntervalMinutes.invalid;
+    }
+    if (modal === 'billing') {
+      return c.defaultMonthlyPrice.invalid || c.reminderDaysBefore.invalid;
+    }
+    return this.form.invalid;
+  }
+
+  async onSubmit(): Promise<boolean> {
+    const modal = this.activeSettingsModal();
+    if (this.isActiveModalFormInvalid(modal)) {
       this.form.markAllAsTouched();
-      return;
+      return false;
     }
     this.isSaving.set(true);
     try {
       const val = this.form.getRawValue();
       const current = this.dataService.settings();
+      const isSystemEdit = this.activeSettingsCategory() === 'system' && this.isAdmin();
+      const currentTariffs = isSystemEdit
+        ? this.dataService.systemUtilityTariffs()
+        : this.dataService.utilityTariffs();
 
-      const currentTariffs = current.utilityTariffsSettings;
+      const rawWaterPrice = Number(val.waterPrice);
       const waterPrice =
-        Number(val.waterPrice) > 0 ? Number(val.waterPrice) : (currentTariffs?.water?.price ?? 32);
-      const waterMonthlyFee = Number(val.waterMonthlyFee) >= 0 ? Number(val.waterMonthlyFee) : 0;
-      const waterValidFrom = val.waterValidFrom || currentTariffs?.water?.validFrom || '2026-01-01';
-      const waterValidTo = val.waterValidTo || '';
+        val.waterPrice !== null && val.waterPrice !== undefined && !isNaN(rawWaterPrice) && rawWaterPrice >= 0
+          ? rawWaterPrice
+          : (currentTariffs.water?.price ?? 32);
+      const rawWaterFee = Number(val.waterMonthlyFee);
+      const waterMonthlyFee =
+        val.waterMonthlyFee !== null && val.waterMonthlyFee !== undefined && !isNaN(rawWaterFee) && rawWaterFee >= 0
+          ? rawWaterFee
+          : (currentTariffs.water?.monthlyFee ?? 0);
+      const waterValidFrom = val.waterValidFrom || currentTariffs.water?.validFrom || '2026-01-01';
+      const waterValidTo = val.waterValidTo ?? '';
 
-      let waterHist = [...(currentTariffs?.water?.history || [])];
-      if (waterHist.length === 0 || (waterHist.length === 1 && waterHist[0].id === 'wh_1')) {
+      let waterHist = (currentTariffs.water?.history || []).map((h) => ({ ...h }));
+      if (waterHist.length <= 1) {
         waterHist = [
           {
-            id: 'wh_1',
+            id: waterHist[0]?.id || 'wh_1',
             price: waterPrice,
             monthlyFee: waterMonthlyFee,
             validFrom: waterValidFrom,
@@ -3080,14 +3538,18 @@ export class SettingsView implements OnInit {
       }
       waterHist.sort((a, b) => b.validFrom.localeCompare(a.validFrom));
 
-      const wastePrice = Number(val.wastePrice) > 0 ? Number(val.wastePrice) : 45.0;
-      const wasteValidFrom = val.wasteValidFrom || '2026-01-01';
-      const wasteValidTo = val.wasteValidTo || '';
-      let wasteHist = [...(current.utilityTariffsSettings?.waste?.history || [])];
-      if (wasteHist.length === 0 || (wasteHist.length === 1 && wasteHist[0].id === 'wsh_1')) {
+      const rawWastePrice = Number(val.wastePrice);
+      const wastePrice =
+        val.wastePrice !== null && val.wastePrice !== undefined && !isNaN(rawWastePrice) && rawWastePrice >= 0
+          ? rawWastePrice
+          : (currentTariffs.waste?.price ?? 45.0);
+      const wasteValidFrom = val.wasteValidFrom || currentTariffs.waste?.validFrom || '2026-01-01';
+      const wasteValidTo = val.wasteValidTo ?? '';
+      let wasteHist = (currentTariffs.waste?.history || []).map((h) => ({ ...h }));
+      if (wasteHist.length <= 1) {
         wasteHist = [
           {
-            id: 'wsh_1',
+            id: wasteHist[0]?.id || 'wsh_1',
             price: wastePrice,
             validFrom: wasteValidFrom,
             validTo: wasteValidTo,
@@ -3109,15 +3571,20 @@ export class SettingsView implements OnInit {
           });
         }
       }
+      wasteHist.sort((a, b) => b.validFrom.localeCompare(a.validFrom));
 
-      const elecSingleRate = Number(val.elecSingleRate) > 0 ? Number(val.elecSingleRate) : 4.32;
-      const elecSingleValidFrom = val.elecSingleValidFrom || '2026-06-01';
-      const elecSingleValidTo = val.elecSingleValidTo || '';
-      let elecSingleHist = [...(current.utilityTariffsSettings?.electricitySingle?.history || [])];
-      if (elecSingleHist.length === 0 || (elecSingleHist.length === 1 && elecSingleHist[0].id === 'esh_1')) {
+      const rawElecSingleRate = Number(val.elecSingleRate);
+      const elecSingleRate =
+        val.elecSingleRate !== null && val.elecSingleRate !== undefined && !isNaN(rawElecSingleRate) && rawElecSingleRate >= 0
+          ? rawElecSingleRate
+          : (currentTariffs.electricitySingle?.rate ?? 4.32);
+      const elecSingleValidFrom = val.elecSingleValidFrom || currentTariffs.electricitySingle?.validFrom || '2026-06-01';
+      const elecSingleValidTo = val.elecSingleValidTo ?? '';
+      let elecSingleHist = (currentTariffs.electricitySingle?.history || []).map((h) => ({ ...h }));
+      if (elecSingleHist.length <= 1) {
         elecSingleHist = [
           {
-            id: 'esh_1',
+            id: elecSingleHist[0]?.id || 'esh_1',
             rate: elecSingleRate,
             validFrom: elecSingleValidFrom,
             validTo: elecSingleValidTo,
@@ -3140,18 +3607,18 @@ export class SettingsView implements OnInit {
         }
       }
 
-      const elecDualSummerDay = Number(val.elecDualSummerDay) > 0 ? Number(val.elecDualSummerDay) : 4.32;
-      const elecDualSummerNight = Number(val.elecDualSummerNight) > 0 ? Number(val.elecDualSummerNight) : 2.16;
-      const elecDualWinterDay = Number(val.elecDualWinterDay) > 0 ? Number(val.elecDualWinterDay) : 4.32;
-      const elecDualWinterNight = Number(val.elecDualWinterNight) > 0 ? Number(val.elecDualWinterNight) : 2.16;
-      const elecDualWinterLimit = Number(val.elecDualWinterLimit) > 0 ? Number(val.elecDualWinterLimit) : 2000;
-      const elecDualValidFrom = val.elecDualValidFrom || '2026-06-01';
-      const elecDualValidTo = val.elecDualValidTo || '';
-      let elecDualHist = [...(current.utilityTariffsSettings?.electricityDual?.history || [])];
-      if (elecDualHist.length === 0 || (elecDualHist.length === 1 && elecDualHist[0].id === 'edh_1')) {
+      const elecDualSummerDay = Number(val.elecDualSummerDay) >= 0 ? Number(val.elecDualSummerDay) : (currentTariffs.electricityDual?.summerDay ?? 4.32);
+      const elecDualSummerNight = Number(val.elecDualSummerNight) >= 0 ? Number(val.elecDualSummerNight) : (currentTariffs.electricityDual?.summerNight ?? 2.16);
+      const elecDualWinterDay = Number(val.elecDualWinterDay) >= 0 ? Number(val.elecDualWinterDay) : (currentTariffs.electricityDual?.winterDay ?? 4.32);
+      const elecDualWinterNight = Number(val.elecDualWinterNight) >= 0 ? Number(val.elecDualWinterNight) : (currentTariffs.electricityDual?.winterNight ?? 2.16);
+      const elecDualWinterLimit = Number(val.elecDualWinterLimit) > 0 ? Number(val.elecDualWinterLimit) : (currentTariffs.electricityDual?.winterLimitKwh ?? 2000);
+      const elecDualValidFrom = val.elecDualValidFrom || currentTariffs.electricityDual?.validFrom || '2026-06-01';
+      const elecDualValidTo = val.elecDualValidTo ?? '';
+      let elecDualHist = (currentTariffs.electricityDual?.history || []).map((h) => ({ ...h }));
+      if (elecDualHist.length <= 1) {
         elecDualHist = [
           {
-            id: 'edh_1',
+            id: elecDualHist[0]?.id || 'edh_1',
             validFrom: elecDualValidFrom,
             validTo: elecDualValidTo,
             summerDay: elecDualSummerDay,
@@ -3229,9 +3696,6 @@ export class SettingsView implements OnInit {
         },
       };
 
-      const modal = this.activeSettingsModal();
-      const isSystemEdit = this.activeSettingsCategory() === 'system' && this.isAdmin();
-
       if (modal === 'electricity_tariffs') {
         await this.dataService.updateUtilityTariffs(
           {
@@ -3296,6 +3760,9 @@ export class SettingsView implements OnInit {
       }
       this.patchFormValues(this.dataService.settings());
       this.form.markAsPristine();
+      return true;
+    } catch {
+      return false;
     } finally {
       this.isSaving.set(false);
     }

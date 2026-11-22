@@ -147,9 +147,25 @@ export interface UtilityAccount {
   ooekCabinetStatus?: string; // Статус підключення до ООЕК
   ooekCabinetLastSync?: string; // Час останнього оновлення суми з ООЕК
   ooekBillUpdatedAt?: string | null; // Дата отримання рахунку з сайту ООЕК (span[@class="updated_at"]/a/text())
+  ooekPaymentRequisites?: OoekPaymentRequisites | null; // Реквізити оплати (витягнуті з JSON EasyPay або довідкові)
   devices?: ElectricityDevice[]; // Пристрої моніторингу споживання електроенергії
   createdAt: string;
   updatedAt?: string;
+}
+
+export interface OoekPaymentRequisites {
+  iban?: string | null;
+  edrpou?: string | null;
+  mfo?: string | null;
+  recipientName?: string | null;
+  purpose?: string | null;
+  payerName?: string | null;
+  address?: string | null;
+  matchedAccountNumber?: string | null;
+  source?: 'easypay' | 'fallback' | 'manual';
+  hasEasyPayIban?: boolean;
+  checkedAt?: string | null;
+  rawFields?: Record<string, string>;
 }
 
 export const HIDDEN_TAB_MARKER_PREFIX = '__hidden_tab__:';
@@ -474,7 +490,7 @@ export function isDateInValidityRange(targetDate: string, validFrom?: string, va
 export function resolveWaterRate(dateStr: string, tariffs: UtilityTariffsSettings): number {
   if (!tariffs || !tariffs.water) return DEFAULT_UTILITY_TARIFFS.water.price;
   const configuredPrice =
-    typeof tariffs.water.price === 'number' && !isNaN(tariffs.water.price) && tariffs.water.price > 0
+    typeof tariffs.water.price === 'number' && !isNaN(tariffs.water.price) && tariffs.water.price >= 0
       ? tariffs.water.price
       : undefined;
 
@@ -491,7 +507,8 @@ export function resolveWaterRate(dateStr: string, tariffs: UtilityTariffsSetting
     .filter(
       (h) =>
         typeof h.price === 'number' &&
-        h.price > 0 &&
+        !isNaN(h.price) &&
+        h.price >= 0 &&
         isDateInValidityRange(dateStr, h.validFrom, h.validTo)
     )
     .sort((a, b) => b.validFrom.localeCompare(a.validFrom));
@@ -508,7 +525,10 @@ export function resolveWaterRate(dateStr: string, tariffs: UtilityTariffsSetting
  */
 export function resolveWaterMonthlyFee(dateStr: string, tariffs: UtilityTariffsSettings): number {
   if (!tariffs || !tariffs.water) return DEFAULT_UTILITY_TARIFFS.water.monthlyFee || 0;
-  const configuredFee = typeof tariffs.water.monthlyFee === 'number' ? tariffs.water.monthlyFee : 0;
+  const configuredFee =
+    typeof tariffs.water.monthlyFee === 'number' && !isNaN(tariffs.water.monthlyFee) && tariffs.water.monthlyFee >= 0
+      ? tariffs.water.monthlyFee
+      : 0;
   const validFrom = tariffs.water.validFrom || '1970-01-01';
   const validTo = tariffs.water.validTo || '';
 
@@ -520,6 +540,7 @@ export function resolveWaterMonthlyFee(dateStr: string, tariffs: UtilityTariffsS
     .filter(
       (h) =>
         typeof h.monthlyFee === 'number' &&
+        !isNaN(h.monthlyFee) &&
         isDateInValidityRange(dateStr, h.validFrom, h.validTo)
     )
     .sort((a, b) => b.validFrom.localeCompare(a.validFrom));
@@ -541,7 +562,7 @@ export function applicableHistory(history: TariffHistoryItem[]): TariffHistoryIt
 export function resolveWasteRate(dateStr: string, tariffs: UtilityTariffsSettings): number {
   if (!tariffs || !tariffs.waste) return DEFAULT_UTILITY_TARIFFS.waste.price;
   const configuredPrice =
-    typeof tariffs.waste.price === 'number' && !isNaN(tariffs.waste.price) && tariffs.waste.price > 0
+    typeof tariffs.waste.price === 'number' && !isNaN(tariffs.waste.price) && tariffs.waste.price >= 0
       ? tariffs.waste.price
       : undefined;
 
@@ -553,7 +574,13 @@ export function resolveWasteRate(dateStr: string, tariffs: UtilityTariffsSetting
   }
 
   const history = (tariffs.waste.history || [])
-    .filter((h) => typeof h.price === 'number' && h.price > 0 && isDateInValidityRange(dateStr, h.validFrom, h.validTo))
+    .filter(
+      (h) =>
+        typeof h.price === 'number' &&
+        !isNaN(h.price) &&
+        h.price >= 0 &&
+        isDateInValidityRange(dateStr, h.validFrom, h.validTo)
+    )
     .sort((a, b) => b.validFrom.localeCompare(a.validFrom));
 
   if (history.length > 0 && history[0].price !== undefined) {
@@ -1269,3 +1296,222 @@ export function parseControlReadingNote(
     isHeatingDetected: isHeating,
   };
 }
+
+export interface DtekEmergencyOutageInfo {
+  hasFactOutage: boolean;
+  isActiveNow: boolean;
+  isUpcoming: boolean;
+  isExpired: boolean;
+  isEmergencyKind: boolean;
+  reason: string;
+  typeCode: string;
+  startDate: string;
+  endDate: string;
+  startTimeShort: string;
+  endTimeShort: string;
+  windowLabel: string;
+  remainingText: string;
+  signature: string;
+}
+
+export interface DtekEmergencyOutageSource {
+  startDate?: string | null;
+  endDate?: string | null;
+  subType?: string | null;
+  subStatus?: string | null;
+  emergencyOutageReason?: string | null;
+  emergencyStartDate?: string | null;
+  emergencyEndDate?: string | null;
+  houseData?: Record<string, unknown> | null;
+}
+
+export function parseDtekDateTimeMs(raw?: string | null): number | null {
+  const s = (raw || '').trim();
+  if (!s) return null;
+
+  let day = 0;
+  let month = 0;
+  let year = 0;
+  let hour = 0;
+  let minute = 0;
+
+  const mTimeFirst = s.match(/^(\d{1,2}):(\d{2})\s+(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  const mDateFirst = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/);
+
+  if (mTimeFirst) {
+    hour = Number(mTimeFirst[1]);
+    minute = Number(mTimeFirst[2]);
+    day = Number(mTimeFirst[3]);
+    month = Number(mTimeFirst[4]);
+    year = Number(mTimeFirst[5]);
+  } else if (mDateFirst) {
+    day = Number(mDateFirst[1]);
+    month = Number(mDateFirst[2]);
+    year = Number(mDateFirst[3]);
+    hour = Number(mDateFirst[4]);
+    minute = Number(mDateFirst[5]);
+  } else {
+    const parsed = Date.parse(s);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+
+  if (!year || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59) {
+    return null;
+  }
+
+  const targetUtc = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Kyiv',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date(targetUtc));
+    const getPart = (t: string) => Number(parts.find((p) => p.type === t)?.value || 0);
+    let kyivH = getPart('hour');
+    if (kyivH === 24) kyivH = 0;
+    const kyivAsUtc = Date.UTC(
+      getPart('year'),
+      getPart('month') - 1,
+      getPart('day'),
+      kyivH,
+      getPart('minute'),
+      0,
+      0
+    );
+    const offsetMs = kyivAsUtc - targetUtc;
+    return targetUtc - offsetMs;
+  } catch {
+    return targetUtc - 2 * 3600 * 1000;
+  }
+}
+
+function formatDtekShortTimeAndDateUa(raw: string): { time: string; date: string } {
+  const s = (raw || '').trim();
+  const m1 = s.match(/^(\d{1,2}:\d{2})\s+(\d{2}\.\d{2}\.\d{4})$/);
+  if (m1) return { time: m1[1], date: m1[2] };
+  const m2 = s.match(/^(\d{2}\.\d{2}\.\d{4})\s+(\d{1,2}:\d{2})$/);
+  if (m2) return { time: m2[2], date: m2[1] };
+  return { time: s, date: '' };
+}
+
+function formatDtekRemainingDurationUa(diffMs: number): string {
+  if (diffMs <= 0) return '';
+  const totalMins = Math.max(1, Math.round(diffMs / 60000));
+  const hours = Math.floor(totalMins / 60);
+  const mins = totalMins % 60;
+  if (hours > 0 && mins > 0) return `ще ~${hours} год ${mins} хв`;
+  if (hours > 0) return `ще ~${hours} год`;
+  return `ще ~${mins} хв`;
+}
+
+export function extractDtekEmergencyOutage(
+  info: DtekEmergencyOutageSource | null | undefined,
+  now = new Date()
+): DtekEmergencyOutageInfo {
+  const houseRaw = (info?.houseData || {}) as Record<string, unknown>;
+  const subStatus = String(
+    info?.emergencyOutageReason || info?.subStatus || houseRaw['sub_type'] || ''
+  ).trim();
+  const typeCode = String(info?.subType || houseRaw['type'] || '').trim();
+  const startDate = String(
+    info?.emergencyStartDate || info?.startDate || houseRaw['start_date'] || ''
+  ).trim();
+  const endDate = String(
+    info?.emergencyEndDate || info?.endDate || houseRaw['end_date'] || ''
+  ).trim();
+
+  const hasAnySignal = Boolean(subStatus || startDate || endDate);
+  if (!hasAnySignal) {
+    return {
+      hasFactOutage: false,
+      isActiveNow: false,
+      isUpcoming: false,
+      isExpired: false,
+      isEmergencyKind: false,
+      reason: '',
+      typeCode: '',
+      startDate: '',
+      endDate: '',
+      startTimeShort: '',
+      endTimeShort: '',
+      windowLabel: '',
+      remainingText: '',
+      signature: 'NONE',
+    };
+  }
+
+  const nowMs = now.getTime();
+  const startMs = parseDtekDateTimeMs(startDate);
+  const endMs = parseDtekDateTimeMs(endDate);
+
+  const isExpired = endMs !== null && nowMs > endMs;
+  let isActiveNow = false;
+  if (!isExpired) {
+    if (startMs !== null && endMs !== null) {
+      isActiveNow = nowMs >= startMs && nowMs <= endMs;
+    } else if (startMs !== null) {
+      isActiveNow = nowMs >= startMs && nowMs - startMs < 48 * 3600 * 1000;
+    } else if (endMs !== null) {
+      isActiveNow = nowMs <= endMs;
+    } else if (subStatus) {
+      isActiveNow = true;
+    }
+  }
+
+  const isUpcoming = !isActiveNow && !isExpired && startMs !== null && nowMs < startMs;
+  const hasFactOutage = isActiveNow || isUpcoming;
+
+  const isEmergencyKind =
+    typeCode === '2' ||
+    /аварійн|екстре|позаплан|ремонт/i.test(subStatus) ||
+    (hasFactOutage && !/стабілізаційн/i.test(subStatus));
+
+  const reason =
+    subStatus || (isEmergencyKind ? 'Аварійне відключення електроенергії' : 'Позапланове відключення');
+
+  const sParts = formatDtekShortTimeAndDateUa(startDate);
+  const eParts = formatDtekShortTimeAndDateUa(endDate);
+  let windowLabel = '';
+  if (sParts.time && eParts.time) {
+    if (sParts.date && eParts.date && sParts.date === eParts.date) {
+      windowLabel = `${sParts.time} – ${eParts.time} (${sParts.date})`;
+    } else {
+      windowLabel = `${startDate} – ${endDate}`;
+    }
+  } else if (startDate) {
+    windowLabel = `з ${startDate}`;
+  } else if (endDate) {
+    windowLabel = `до ${endDate}`;
+  }
+
+  const remainingText =
+    isActiveNow && endMs !== null && endMs > nowMs
+      ? formatDtekRemainingDurationUa(endMs - nowMs)
+      : isUpcoming && startMs !== null && startMs > nowMs
+        ? `початок о ${sParts.time || startDate}`
+        : '';
+
+  const signature = hasFactOutage ? `${reason}|${typeCode}|${startDate}|${endDate}` : 'NONE';
+
+  return {
+    hasFactOutage,
+    isActiveNow,
+    isUpcoming,
+    isExpired,
+    isEmergencyKind,
+    reason,
+    typeCode,
+    startDate,
+    endDate,
+    startTimeShort: sParts.time,
+    endTimeShort: eParts.time,
+    windowLabel,
+    remainingText,
+    signature,
+  };
+}
+

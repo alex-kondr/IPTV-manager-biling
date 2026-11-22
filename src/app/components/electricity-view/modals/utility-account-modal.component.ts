@@ -22,7 +22,7 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
                 <mat-icon aria-hidden="true">bolt</mat-icon>
               </div>
               <h3 class="text-base font-bold text-slate-900">
-                {{ editingAccount() ? 'Редагувати рахунок електроенергії' : 'Новий рахунок електроенергії' }}
+                {{ editingAccount() ? 'Редагувати будинок та особовий рахунок' : 'Додати новий будинок' }}
               </h3>
             </div>
             <button
@@ -77,6 +77,15 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
                     class="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-medium text-slate-900 focus:outline-none focus:border-amber-500"
                   />
                 </div>
+              </div>
+
+              <!-- Important Notice about Exact Personal Account Number -->
+              <div class="p-3 rounded-2xl bg-amber-50 border border-amber-300/90 flex items-start gap-2.5">
+                <mat-icon aria-hidden="true" class="text-base leading-none text-amber-600 shrink-0 mt-0.5">warning_amber</mat-icon>
+                <p class="text-2xs sm:text-xs text-amber-950 leading-relaxed">
+                  <span class="font-extrabold">Уважно перевірте особовий рахунок!</span>
+                  Введення вірного особового рахунку є критично важливим — саме за ним автоматично підтягується актуальний рахунок до сплати за електроенергію (ООЕК) та здійснюється коректна передача показів лічильника.
+                </p>
               </div>
 
               <!-- Structured DTEK Address Section -->

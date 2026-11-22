@@ -108,13 +108,29 @@ export async function triggerFirebaseGooglePopup(): Promise<FirebasePopupLoginRe
     return null;
   }
 
-  // 1. Try Firebase Auth popup first if modules load cleanly
+  // 1. Try Firebase Auth popup first if modules and API key are valid
   try {
     await ensureFirebaseClientConfigLoaded();
-    const { initializeApp, getApps, getApp } = await import('firebase/app');
+    if (!FIREBASE_APPLET_CONFIG.apiKey || !FIREBASE_APPLET_CONFIG.apiKey.startsWith('AIza')) {
+      return await triggerGisOAuthPopup();
+    }
+
+    const { initializeApp, getApps, getApp, deleteApp } = await import('firebase/app');
     const { getAuth, GoogleAuthProvider, signInWithPopup } = await import('firebase/auth');
 
-    const app = getApps().length > 0 ? getApp() : initializeApp(FIREBASE_APPLET_CONFIG);
+    let app;
+    if (getApps().length > 0) {
+      const existing = getApp();
+      if (existing.options?.apiKey !== FIREBASE_APPLET_CONFIG.apiKey) {
+        await deleteApp(existing);
+        app = initializeApp(FIREBASE_APPLET_CONFIG);
+      } else {
+        app = existing;
+      }
+    } else {
+      app = initializeApp(FIREBASE_APPLET_CONFIG);
+    }
+
     const auth = getAuth(app);
 
     const provider = new GoogleAuthProvider();
@@ -126,9 +142,12 @@ export async function triggerFirebaseGooglePopup(): Promise<FirebasePopupLoginRe
 
     const result = await signInWithPopup(auth, provider);
     const idToken = await result.user.getIdToken();
+    const oauthCred = GoogleAuthProvider.credentialFromResult(result);
+    const accessToken = oauthCred?.accessToken || undefined;
 
     return {
       idToken,
+      accessToken,
       email: result.user.email || undefined,
       name: result.user.displayName || undefined,
       picture: result.user.photoURL || undefined,
@@ -146,13 +165,19 @@ export async function triggerFirebaseGooglePopup(): Promise<FirebasePopupLoginRe
       throw err;
     }
 
-    // If dynamic chunk loading failed, domain is unauthorized, or internal/iframe init error occurs,
+    // If dynamic chunk loading failed, API key is restricted/invalid on current domain,
+    // domain is unauthorized, or internal/iframe init error occurs,
     // smoothly fall back to Google Identity Services OAuth popup
     if (
       errString.includes('Failed to fetch dynamically imported module') ||
       errString.includes('dynamically imported module') ||
       errString.includes('auth/internal-error') ||
+      errString.includes('auth/invalid-api-key') ||
+      errString.includes('api-key-not-valid') ||
+      errString.includes('API_KEY_INVALID') ||
       code === 'auth/internal-error' ||
+      code === 'auth/invalid-api-key' ||
+      code === 'auth/api-key-not-valid' ||
       code === 'auth/network-request-failed' ||
       code === 'auth/unauthorized-domain' ||
       code === 'auth/operation-not-supported-in-this-environment' ||

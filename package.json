@@ -1,6 +1,6 @@
 {
   "name": "ai-studio-angular-app",
-  "version": "4.2.0",
+  "version": "6.0.0",
   "type": "module",
   "scripts": {
     "ng": "node ./node_modules/@angular/cli/bin/ng.js",

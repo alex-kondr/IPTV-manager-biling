@@ -35,16 +35,16 @@ import {
         <!-- or when user switches to "Список черг ДТЕК")                   -->
         <!-- ============================================================== -->
         @if (!hasHouseWithAddress() || forceShowQueuesMode()) {
-          <div class="p-5 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-4">
+          <div class="p-5 sm:p-6 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200/80 dark:border-indigo-500/25 shadow-sm space-y-4">
             <!-- Header Row -->
-            <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+            <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-4 border-b border-slate-100 dark:border-slate-800">
               <div class="flex items-start sm:items-center gap-3">
-                <div class="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center font-bold shadow-2xs shrink-0">
-                  <mat-icon aria-hidden="true">view_comfy_alt</mat-icon>
+                <div class="w-11 h-11 rounded-2xl bg-indigo-600 text-white flex items-center justify-center font-bold shadow-md shadow-indigo-500/20 shrink-0">
+                  <mat-icon aria-hidden="true">grid_view</mat-icon>
                 </div>
                 <div>
                   <div class="flex items-center gap-2 flex-wrap">
-                    <h3 class="text-sm sm:text-base font-bold text-slate-900">
+                    <h3 class="text-base font-extrabold text-slate-900 dark:text-white">
                       Список черг стабілізаційних відключень ДТЕК
                     </h3>
                     @if (!hasHouseWithAddress()) {
@@ -63,15 +63,6 @@ import {
                       <mat-icon aria-hidden="true" class="text-xs text-emerald-600 leading-none">update</mat-icon>
                       <span>Оновлено ДТЕК: <strong>{{ dtekInfo()?.dtekJsonUpdatedAt || dtekInfo()?.updateFact || '—' }}</strong></span>
                     </span>
-                    @if (dtekInfo()?.lastDtekFetchAt || dtekInfo()?.fetchedAt) {
-                      <span
-                        class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 text-amber-900 border border-amber-200 font-semibold"
-                        [title]="'Графік зберігається у спільній базі даних та оновлюється з сайту ДТЕК кожні ' + (dtekInfo()?.syncIntervalMinutes || dataService.dtekSyncIntervalMinutes()) + ' хвилин'"
-                      >
-                        <mat-icon aria-hidden="true" class="text-xs text-amber-600 leading-none">storage</mat-icon>
-                        <span>Запит у БД: <strong>{{ dtekInfo()?.lastDtekFetchAt || dtekInfo()?.fetchedAt }}</strong> (інтервал {{ dtekInfo()?.syncIntervalMinutes || dataService.dtekSyncIntervalMinutes() }} хв)</span>
-                      </span>
-                    }
                     <span>•</span>
                     <span class="text-indigo-600 font-mono font-bold inline-flex items-center gap-1.5 bg-indigo-50 px-2.5 py-0.5 rounded-lg border border-indigo-200/80 shadow-2xs">
                       <span class="relative flex h-2 w-2">
@@ -110,7 +101,7 @@ import {
                     (click)="forceShowQueuesMode.set(false)"
                     class="px-3.5 py-2 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
                   >
-                    <mat-icon aria-hidden="true" class="text-base leading-none">home_pin</mat-icon>
+                    <mat-icon aria-hidden="true" class="text-base leading-none">home</mat-icon>
                     <span>Графік за адресою будинку</span>
                   </button>
                 } @else if (canEdit()) {
@@ -119,7 +110,7 @@ import {
                     (click)="openAccountModal(currentAccount())"
                     class="px-3.5 py-2 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
                   >
-                    <mat-icon aria-hidden="true" class="text-base leading-none">add_location_alt</mat-icon>
+                    <mat-icon aria-hidden="true" class="text-base leading-none">add_location</mat-icon>
                     <span>{{ currentAccount() ? 'Вказати адресу будинку' : '+ Додати будинок з адресою' }}</span>
                   </button>
                 }
@@ -136,44 +127,52 @@ import {
               </div>
             </div>
 
-            <!-- Quick 10-Variant Switcher Bar inside Queues Card -->
-            <div class="p-3 rounded-xl bg-slate-50 border border-slate-200/80 flex flex-col gap-2">
-              <div class="flex items-center justify-between gap-2 flex-wrap">
-                <div class="flex items-center gap-2">
-                  <mat-icon aria-hidden="true" class="text-sm text-amber-600 leading-none">{{ activeOutageVariantMeta().icon }}</mat-icon>
-                  <span class="text-xs font-bold text-slate-800">
-                    Активний стиль графіку: <span class="text-amber-700">{{ activeOutageVariantMeta().name }}</span>
-                  </span>
+            @if (hasHouseWithAddress() && dtekStatus()?.hasFactOutage) {
+              @let qEm = dtekStatus()!;
+              <div class="p-3.5 rounded-xl bg-rose-50 border border-rose-300 text-rose-950 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div class="flex items-start gap-2.5 min-w-0">
+                  <mat-icon aria-hidden="true" class="text-rose-600 text-lg shrink-0 mt-0.5 leading-none">warning</mat-icon>
+                  <div class="min-w-0 text-xs">
+                    <div class="font-extrabold text-rose-900">
+                      {{ qEm.isFactOutageNow ? 'За адресою будинку діє аварійне відключення:' : 'Заплановані ремонтні роботи за адресою:' }}
+                      <span class="font-semibold">{{ qEm.emergencyReason }}</span>
+                    </div>
+                    <div class="text-rose-800 font-mono tabular-nums mt-0.5">
+                      {{ qEm.emergencyWindowLabel || ((qEm.startDate || '—') + ' – ' + (qEm.endDate || '—')) }}@if (qEm.emergencyRemainingText) { · {{ qEm.emergencyRemainingText }} }
+                    </div>
+                  </div>
                 </div>
                 <button
                   type="button"
-                  (click)="openOutageDisplaySettings()"
-                  class="text-2xs font-bold text-indigo-700 hover:text-indigo-900 inline-flex items-center gap-1 cursor-pointer"
+                  (click)="forceShowQueuesMode.set(false)"
+                  class="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-2xs font-bold transition-colors cursor-pointer shrink-0 self-start sm:self-center"
                 >
-                  <mat-icon aria-hidden="true" class="text-xs leading-none">settings</mat-icon>
-                  <span>Відкрити налаштування вигляду графіку →</span>
+                  Деталі будинку
                 </button>
               </div>
-              <div class="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
-                @for (v of outageScheduleVariants; track v.id) {
-                  @let isSelected = activeOutageVariant() === v.id;
-                  <button
-                    type="button"
-                    (click)="selectOutageVariantInline(v.id)"
-                    class="px-2.5 py-1.5 rounded-lg text-2xs font-bold flex items-center gap-1.5 shrink-0 border transition-all cursor-pointer"
-                    [class.bg-slate-900]="isSelected"
-                    [class.text-white]="isSelected"
-                    [class.border-slate-900]="isSelected"
-                    [class.bg-white]="!isSelected"
-                    [class.text-slate-700]="!isSelected"
-                    [class.border-slate-200]="!isSelected"
-                    [class.hover:border-amber-400]="!isSelected"
-                    [title]="v.description"
-                  >
-                    <mat-icon aria-hidden="true" class="text-xs leading-none" [class.text-amber-400]="isSelected" [class.text-slate-500]="!isSelected">{{ v.icon }}</mat-icon>
-                    <span>{{ v.shortName }}</span>
-                  </button>
-                }
+            }
+
+            <!-- Quick Variant Dropdown Selector inside Queues Card -->
+            <div class="flex items-center gap-2">
+              <div class="relative flex items-center w-full sm:w-auto sm:min-w-[280px] sm:max-w-[380px]">
+                <mat-icon aria-hidden="true" class="text-base text-amber-500 pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 leading-none z-10">
+                  {{ activeOutageVariantMeta().icon }}
+                </mat-icon>
+                <select
+                  aria-label="Вигляд графіку відключень"
+                  [value]="activeOutageVariant()"
+                  (change)="selectOutageVariantInline($any($event.target).value)"
+                  class="h-9 w-full min-w-0 max-w-full appearance-none pl-9 pr-8 rounded-xl bg-slate-100 hover:bg-slate-200/70 border border-slate-200 text-xs font-bold text-slate-900 focus:outline-none focus:border-amber-500 cursor-pointer transition-colors truncate"
+                >
+                  @for (v of outageScheduleVariants; track v.id) {
+                    <option [value]="v.id" [selected]="activeOutageVariant() === v.id">
+                      {{ v.shortName }}
+                    </option>
+                  }
+                </select>
+                <mat-icon aria-hidden="true" class="text-base text-slate-500 pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 leading-none z-10">
+                  expand_more
+                </mat-icon>
               </div>
             </div>
 
@@ -256,12 +255,9 @@ import {
                   </button>
 
                   <!-- Animated Dropdown Content for This Queue -->
+                  @if (isOpen) {
                   <div
-                    class="grid transition-all duration-300 ease-in-out"
-                    [class.grid-rows-[1fr]]="isOpen"
-                    [class.opacity-100]="isOpen"
-                    [class.grid-rows-[0fr]]="!isOpen"
-                    [class.opacity-0]="!isOpen"
+                    class="grid transition-all duration-300 ease-in-out grid-rows-[1fr] opacity-100"
                   >
                     <div class="overflow-hidden">
                       <div class="p-4 border-t border-slate-200 bg-slate-50/70 space-y-3.5">
@@ -659,66 +655,131 @@ import {
                       </div>
                     </div>
                   </div>
+                  }
                 </div>
               }
             </div>
           </div>
         } @else {
-      <!-- DTEK Shutdown Schedule Card (Only when a house with an address is added) -->
-      <div class="p-5 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-4">
-        <!-- Top header row -->
-        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
-          <div class="flex items-center gap-2.5">
-            <div
-              class="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-white shadow-2xs transition-colors shrink-0"
-              [class.bg-emerald-600]="dtekStatus()?.isPowerAvailableNow"
-              [class.bg-rose-600]="!dtekStatus()?.isPowerAvailableNow"
-            >
-              <mat-icon aria-hidden="true" class="text-sm leading-none">{{ dtekStatus()?.isPowerAvailableNow ? 'lightbulb' : 'power_off' }}</mat-icon>
-            </div>
-            <div class="flex items-center gap-2 text-xs font-semibold text-slate-700 flex-wrap">
-              <span>Графік погодинних відключень ДТЕК</span>
-              <span class="text-slate-300">•</span>
-              <div class="flex flex-col sm:flex-row sm:items-center gap-1.5">
-                <span class="text-indigo-600 font-mono font-bold inline-flex items-center gap-1.5 bg-indigo-50 px-2.5 py-0.5 rounded-lg border border-indigo-200/80 shadow-2xs">
-                  <span class="relative flex h-2 w-2">
-                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                    <span class="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                  </span>
-                  <span>Київський час: {{ liveKyivTime() || dtekInfo()?.kyivTime || '—' }}</span>
-                </span>
-                @if (weatherData(); as w) {
+      <!-- DTEK Shutdown Schedule Card (High-Contrast Dark Slate/Indigo Signature Style) -->
+      <div class="rounded-3xl bg-white dark:bg-[#111827] border border-slate-200/80 dark:border-indigo-500/25 shadow-sm overflow-hidden">
+        <!-- High-Contrast Dark Slate/Indigo Status Hero Banner (Full-Width, No Extra Inner Frame) -->
+        <div
+          class="px-4 py-4 sm:px-6 sm:py-6 bg-slate-900 dark:bg-[#131829] text-white space-y-4 transition-colors"
+        >
+          <div
+            class="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 pb-4 border-b border-slate-800"
+          >
+            <div class="flex items-center gap-3.5 min-w-0 flex-1">
+              <div
+                class="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl flex items-center justify-center font-bold border transition-colors shrink-0"
+                [class.bg-emerald-500/15]="dtekStatus()?.isPowerAvailableNow"
+                [class.text-emerald-400]="dtekStatus()?.isPowerAvailableNow"
+                [class.border-emerald-500/30]="dtekStatus()?.isPowerAvailableNow"
+                [class.bg-rose-500/20]="!dtekStatus()?.isPowerAvailableNow"
+                [class.text-rose-400]="!dtekStatus()?.isPowerAvailableNow"
+                [class.border-rose-500/35]="!dtekStatus()?.isPowerAvailableNow"
+              >
+                <mat-icon aria-hidden="true" class="text-2xl sm:text-3xl leading-none">
+                  {{ dtekStatus()?.isPowerAvailableNow ? 'bolt' : 'power_off' }}
+                </mat-icon>
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2 flex-wrap">
                   <span
-                    class="text-sky-700 dark:text-sky-300 font-medium inline-flex items-center gap-1.5 bg-sky-50 dark:bg-slate-800 px-2.5 py-0.5 rounded-lg border border-sky-200/80 dark:border-slate-700 shadow-2xs text-2xs"
-                    [title]="'Погода зараз (' + (w.resolvedLocation || w.city) + '): ' + w.current.condition + ', вітер ' + w.current.windSpeedKmh + ' км/год, вологість ' + w.current.humidityPct + '%'"
+                    class="w-2 h-2 rounded-full animate-ping shrink-0"
+                    [class.bg-emerald-400]="dtekStatus()?.isPowerAvailableNow"
+                    [class.bg-rose-400]="!dtekStatus()?.isPowerAvailableNow"
+                  ></span>
+                  <span
+                    class="text-xs font-bold uppercase tracking-wider"
+                    [class.text-emerald-400]="dtekStatus()?.isPowerAvailableNow"
+                    [class.text-rose-400]="!dtekStatus()?.isPowerAvailableNow"
                   >
-                    <mat-icon aria-hidden="true" class="text-sm text-sky-600 dark:text-sky-400 leading-none">{{ w.current.icon || 'wb_sunny' }}</mat-icon>
-                    <span class="font-bold font-mono text-slate-900 dark:text-white">
-                      {{ w.current.tempC > 0 ? '+' : '' }}{{ w.current.tempC }}°C
-                    </span>
-                    <span class="text-slate-500 dark:text-slate-400">({{ w.current.condition }})</span>
-                    @if (w.resolvedLocation || w.city) {
-                      <span class="hidden md:inline text-slate-400 dark:text-slate-500">• {{ w.resolvedLocation || w.city }}</span>
-                    }
+                    {{ dtekStatus()?.isPowerAvailableNow ? 'Зараз зі світлом' : 'Планове / аварійне відключення' }}
                   </span>
-                }
+                  <span class="text-indigo-200 font-mono font-bold inline-flex items-center gap-1 bg-slate-800/90 px-2 py-0.5 rounded-lg border border-slate-700/80 text-2xs whitespace-nowrap tabular-nums">
+                    <mat-icon aria-hidden="true" class="text-[13px] text-indigo-400 leading-none">schedule</mat-icon>
+                    <span>{{ liveKyivTime() || dtekInfo()?.kyivTime || '—' }}</span>
+                  </span>
+                </div>
+                <h1 class="text-xl sm:text-2xl font-extrabold text-white truncate mt-1">
+                  {{ currentAccount()?.name || 'Енергомережа ДТЕК' }}
+                </h1>
+                <p class="text-xs text-slate-400 truncate mt-0.5">
+                  {{ activeDtekCity() }}, {{ activeDtekStreet() }}@if (activeDtekHouse()) {, буд. {{ activeDtekHouse() }}}
+                </p>
               </div>
             </div>
+
+            @if (weatherData(); as w) {
+              <div class="flex flex-wrap items-center gap-2 shrink-0">
+                <span
+                  class="text-sky-200 font-medium inline-flex items-center gap-1.5 bg-slate-800/80 px-3 py-1.5 rounded-xl border border-slate-700/80 text-xs whitespace-nowrap"
+                  [title]="'Погода зараз (' + (w.resolvedLocation || w.city) + '): ' + w.current.condition + ', вітер ' + w.current.windSpeedKmh + ' км/год, вологість ' + w.current.humidityPct + '%'"
+                >
+                  <mat-icon aria-hidden="true" class="text-sm text-sky-400 leading-none">{{ w.current.icon || 'wb_sunny' }}</mat-icon>
+                  <span class="font-bold font-mono text-white tabular-nums">
+                    {{ w.current.tempC > 0 ? '+' : '' }}{{ w.current.tempC }}°C
+                  </span>
+                  <span class="text-slate-400 hidden sm:inline">({{ w.current.condition }})</span>
+                </span>
+              </div>
+            }
           </div>
 
-          <div class="flex items-center gap-2 shrink-0 self-start sm:self-auto flex-wrap">
-            <button
-              type="button"
-              (click)="forceShowQueuesMode.set(true)"
-              class="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-500 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
-              title="Переглянути графік по всіх чергах ДТЕК (1.1 – 6.2)"
-            >
-              <mat-icon aria-hidden="true" class="text-base text-amber-300 leading-none">view_comfy_alt</mat-icon>
-              <span>Всі черги ДТЕК</span>
-            </button>
-          </div>
+          @if (dtekStatus(); as status) {
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3.5">
+              <div
+                class="p-3.5 sm:p-4 rounded-2xl border w-full"
+                [class.bg-emerald-500/10]="status.isPowerAvailableNow"
+                [class.border-emerald-500/25]="status.isPowerAvailableNow"
+                [class.bg-rose-500/15]="!status.isPowerAvailableNow"
+                [class.border-rose-500/35]="!status.isPowerAvailableNow"
+              >
+                <span
+                  class="text-2xs block uppercase tracking-wider font-semibold"
+                  [class.text-emerald-300]="status.isPowerAvailableNow"
+                  [class.text-rose-300]="!status.isPowerAvailableNow"
+                >
+                  Стан живлення зараз
+                </span>
+                <div
+                  class="text-xl font-extrabold mt-1 leading-snug"
+                  [class.text-emerald-300]="status.isPowerAvailableNow"
+                  [class.text-rose-300]="!status.isPowerAvailableNow"
+                >
+                  {{ status.isPowerAvailableNow ? 'Світло є' : 'Відключення' }}
+                </div>
+                <div class="text-2xs text-slate-300 mt-1 font-mono truncate">
+                  Черга {{ status.queueGroup }}
+                </div>
+              </div>
+
+              <div class="p-3.5 sm:p-4 bg-slate-800/70 rounded-2xl border border-slate-700/80 w-full">
+                <span class="text-2xs text-slate-400 block uppercase tracking-wider font-semibold">Баланс доби ({{ status.scheduleDate || 'Сьогодні' }})</span>
+                <div class="text-xl font-extrabold text-amber-400 mt-1 tabular-nums">
+                  {{ status.totalPowerHours }} год зі світлом
+                </div>
+                <div class="text-2xs text-slate-300 mt-1 tabular-nums">
+                  Без світла за чергою: <span class="font-bold text-white">{{ status.totalOutageHours }} год</span>
+                </div>
+              </div>
+
+              <div class="p-3.5 sm:p-4 bg-slate-800/70 rounded-2xl border border-slate-700/80 w-full">
+                <span class="text-2xs text-slate-400 block uppercase tracking-wider font-semibold">Оновлення ДТЕК</span>
+                <div class="text-xl font-extrabold text-indigo-400 mt-1 font-mono tabular-nums truncate">
+                  {{ dtekInfo()?.dtekJsonUpdatedAt || status.updateFact || '—' }}
+                </div>
+                <div class="text-2xs text-slate-400 mt-1">
+                  Актуальні дані оператора системи
+                </div>
+              </div>
+            </div>
+          }
         </div>
 
+        <div class="p-4 sm:p-6 space-y-5">
         <!-- Address Search & Autocomplete Bar -->
         @if (isCardAddressOpen()) {
           <div class="p-4 rounded-xl bg-slate-50/90 border border-slate-200 space-y-3">
@@ -942,37 +1003,34 @@ import {
             </div>
           </div>
         } @else if (dtekStatus(); as status) {
-          <!-- Fact / Emergency Outage Window if any -->
-          @if (status.startDate || status.endDate) {
-            <div class="p-3.5 rounded-xl bg-amber-50 border border-amber-200 flex flex-col justify-between">
-              <span class="text-3xs font-semibold uppercase tracking-wider text-amber-800 block">Фактичне відключення ДТЕК</span>
-              <div class="mt-1 space-y-0.5">
-                <div class="text-xs text-slate-700">
-                  Початок: <span class="font-bold text-slate-900 font-mono">{{ status.startDate || '—' }}</span> — Кінець: <span class="font-bold text-slate-900 font-mono">{{ status.endDate || '—' }}</span>
-                </div>
-                @if (status.subType || status.subStatus) {
-                  <div class="text-3xs text-amber-800 font-medium truncate" [title]="(status.subType || '') + ' ' + (status.subStatus || '')">
-                    {{ status.subType }} {{ status.subStatus ? '(' + status.subStatus + ')' : '' }}
-                  </div>
-                }
-              </div>
+          @defer (on immediate) {
+            <app-outage-schedule-variants
+              [status]="status"
+              [kyivTime]="liveKyivTime() || dtekInfo()?.kyivTime || ''"
+              [lastUpdated]="dtekInfo()?.dtekJsonUpdatedAt || dtekInfo()?.updateFact || ''"
+              [lastDtekFetchAt]="dtekInfo()?.lastDtekFetchAt || dtekInfo()?.fetchedAt || ''"
+              [minutesUntilNextRefresh]="dtekInfo()?.minutesUntilNextRefresh || 0"
+              [isRefreshing]="isDtekLoading()"
+              (refresh)="refreshDtekSchedule()"
+              (openAllQueues)="forceShowQueuesMode.set(true)"
+            />
+          } @loading (after 200ms; minimum 150ms) {
+            <div class="h-48 rounded-2xl bg-slate-100/70 dark:bg-slate-800/50 animate-pulse"></div>
+          } @error {
+            <div class="p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-center space-y-2">
+              <p class="text-xs font-bold text-slate-700 dark:text-slate-200">Не вдалося завантажити варіанти графіка</p>
+              <button
+                type="button"
+                (click)="reloadPageForChunkRecovery()"
+                class="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold inline-flex items-center gap-1 cursor-pointer border-0"
+              >
+                <mat-icon class="text-sm leading-none">refresh</mat-icon>
+                <span>Оновити</span>
+              </button>
             </div>
           }
-
-          @defer {
-<app-outage-schedule-variants
-            [status]="status"
-            [kyivTime]="liveKyivTime() || dtekInfo()?.kyivTime || ''"
-            [lastUpdated]="dtekInfo()?.dtekJsonUpdatedAt || dtekInfo()?.updateFact || ''"
-            [lastDtekFetchAt]="dtekInfo()?.lastDtekFetchAt || dtekInfo()?.fetchedAt || ''"
-            [minutesUntilNextRefresh]="dtekInfo()?.minutesUntilNextRefresh || 0"
-            [isRefreshing]="isDtekLoading()"
-            (refresh)="refreshDtekSchedule()"
-          />
-} @placeholder {
-  <div class="h-48 rounded-2xl bg-slate-100/70 animate-pulse"></div>
-}
         }
+        </div>
       </div>
         }
   `,
@@ -989,6 +1047,12 @@ export class DtekScheduleSectionComponent {
   readonly manualQueue = signal<string | null>(null);
 
   readonly dtekInfo = this.dataService.dtekShutdownInfo;
+
+  reloadPageForChunkRecovery(): void {
+    if (typeof window !== 'undefined') {
+      window.location.reload();
+    }
+  }
   readonly isDtekLoading = this.dataService.isDtekLoading;
   readonly dtekError = this.dataService.dtekError;
   readonly dtekCities = this.dataService.dtekCities;

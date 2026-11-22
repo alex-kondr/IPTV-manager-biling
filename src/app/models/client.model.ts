@@ -16,6 +16,7 @@ export type AppTabId =
   | 'water'
   | 'waste'
   | 'water_waste'
+  | 'shopping'
   | 'users'
   | 'settings';
 
@@ -25,6 +26,7 @@ export type SettingsSectionId =
   | 'theme'
   | 'outage_display'
   | 'house_visibility'
+  | 'ooek_credentials'
   | 'electricity_tariffs'
   | 'water_tariffs'
   | 'waste_tariffs'
@@ -64,11 +66,19 @@ export const ALL_SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   },
   {
     id: 'house_visibility',
-    label: 'Відображення будинків по вкладках',
-    subtitle: 'Індивідуальний показ або приховування спільних будинків для кожної вкладки',
+    label: 'Відображення плиток меню та будинків',
+    subtitle: 'Налаштування плиток головного меню та показ будинків по вкладках',
     icon: 'visibility',
     defaultScope: 'user',
     dbTable: 'user_settings.hidden_house_tabs',
+  },
+  {
+    id: 'ooek_credentials',
+    label: 'ООЕК',
+    subtitle: 'Логін та пароль особистого кабінету ТОВ «ООЕК»',
+    icon: 'receipt_long',
+    defaultScope: 'user',
+    dbTable: 'utility_accounts (ooek)',
   },
   {
     id: 'electricity_tariffs',
@@ -165,6 +175,7 @@ export const ALL_USER_ASSIGNABLE_TABS: { id: AppTabId; label: string; icon: stri
   { id: 'electricity', label: 'Електроенергія та Графік', icon: 'bolt', badgeColor: 'amber' },
   { id: 'water', label: 'Вода', icon: 'water_drop', badgeColor: 'cyan' },
   { id: 'waste', label: 'Вивіз сміття', icon: 'delete_outline', badgeColor: 'emerald' },
+  { id: 'shopping', label: 'Спільні покупки', icon: 'shopping_cart', badgeColor: 'rose' },
   { id: 'clients', label: 'Клієнти IPTV', icon: 'group', badgeColor: 'emerald' },
   { id: 'payments', label: 'Оплати', icon: 'receipt_long', badgeColor: 'indigo' },
   { id: 'accounts', label: 'Акаунти IPTV', icon: 'dns', badgeColor: 'purple' },
@@ -179,6 +190,7 @@ export const DEFAULT_USER_TABS: AppTabId[] = [
   'water',
   'waste',
   'water_waste',
+  'shopping',
   'settings',
 ];
 export const ALL_ADMIN_TABS: AppTabId[] = [
@@ -192,8 +204,32 @@ export const ALL_ADMIN_TABS: AppTabId[] = [
   'water',
   'waste',
   'water_waste',
+  'shopping',
   'users',
   'settings',
+];
+
+export interface HomeMenuTileMeta {
+  id: AppTabId;
+  label: string;
+  subtitle: string;
+  icon: string;
+  group: 'primary' | 'secondary';
+}
+
+export const HOME_MENU_TILE_OPTIONS: HomeMenuTileMeta[] = [
+  { id: 'outage_schedule', label: 'Графік відключень', subtitle: 'Статус світла та погодинний графік ДТЕК', icon: 'power_settings_new', group: 'primary' },
+  { id: 'electricity', label: 'Електроенергія', subtitle: 'Покази лічильника, пристрої та ООЕК', icon: 'bolt', group: 'primary' },
+  { id: 'water', label: 'Водопостачання', subtitle: 'Лічильник води, абонплата та баланс', icon: 'water_drop', group: 'primary' },
+  { id: 'waste', label: 'Вивіз сміття', subtitle: 'Щомісячні нарахування ТПВ', icon: 'recycling', group: 'primary' },
+  { id: 'shopping', label: 'Спільні покупки', subtitle: 'Списки покупок, бюджет та каталог товарів', icon: 'shopping_cart', group: 'primary' },
+  { id: 'clients', label: 'IPTV Клієнти', subtitle: 'Абоненти та групи підписок', icon: 'group', group: 'secondary' },
+  { id: 'accounts', label: 'IPTV Акаунти', subtitle: 'Лінії та слоти провайдера', icon: 'dns', group: 'secondary' },
+  { id: 'budget', label: 'Бюджет ($ / ₴)', subtitle: 'Баланс провайдера та витрати', icon: 'account_balance_wallet', group: 'secondary' },
+  { id: 'analytics', label: 'Аналітика IPTV', subtitle: 'Статистика доходів та прогноз', icon: 'analytics', group: 'secondary' },
+  { id: 'payments', label: 'Оплати та Viber', subtitle: 'Журнал платежів та нагадування', icon: 'receipt_long', group: 'secondary' },
+  { id: 'users', label: 'Користувачі', subtitle: 'Керування ролями та доступом', icon: 'admin_panel_settings', group: 'secondary' },
+  { id: 'settings', label: 'Налаштування', subtitle: 'Дизайн, тема, тарифи та база даних', icon: 'settings', group: 'secondary' },
 ];
 
 export const SETTINGS_PERMISSION_PREFIX = 'settings:';

@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="uk" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Оселя.Про — Комунальний простір</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'] },
+                    animation: {
+                        'fade-in': 'fadeIn 0.25s ease-out forwards',
+                    },
+                    keyframes: {
+                        fadeIn: {
+                            '0%': { opacity: '0', transform: 'translateY(8px)' },
+                            '100%': { opacity: '1', transform: 'translateY(0)' },
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="min-h-screen bg-[#f4f5f7] dark:bg-[#090d16] text-slate-900 dark:text-slate-100 font-sans transition-colors duration-300 antialiased">
+
+    <!-- Мінімалістична верхня панель -->
+    <header class="sticky top-0 z-40 bg-white/80 dark:bg-[#111827]/80 backdrop-blur-xl border-b border-slate-200/70 dark:border-slate-800/80 transition-colors">
+        <div class="max-w-5xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+            
+            <!-- Логотип -->
+            <button onclick="switchView('home')" class="flex items-center gap-2.5 group focus:outline-none">
+                <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-500 text-white flex items-center justify-center shadow-md shadow-indigo-500/20 group-hover:scale-105 transition-transform">
+                    <i data-lucide="layers" class="w-5 h-5"></i>
+                </div>
+                <span class="font-extrabold text-lg tracking-tight">Оселя<span class="text-indigo-500">.Про</span></span>
+            </button>
+
+            <!-- Кнопки навігації (Головна та демо-вкладка) -->
+            <div class="flex items-center gap-1 bg-slate-100 dark:bg-slate-800/90 p-1 rounded-xl border border-slate-200/50 dark:border-slate-700/50 overflow-x-auto max-w-[60vw] sm:max-w-none">
+                <button onclick="switchView('home')" id="nav-home" class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm shrink-0">
+                    Меню
+                </button>
+                <button onclick="switchView('electricity')" id="nav-electricity" class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white shrink-0">
+                    Світло
+                </button>
+                <button onclick="switchView('water')" id="nav-water" class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white shrink-0">
+                    Вода
+                </button>
+                <button onclick="switchView('waste')" id="nav-waste" class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white shrink-0">
+                    Сміття
+                </button>
+                <button onclick="switchView('outages')" id="nav-outages" class="px-3 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white shrink-0">
+                    Графік
+                </button>
+            </div>
+
+            <!-- Перемикач теми -->
+            <button onclick="toggleTheme()" aria-label="Змінити тему" class="p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-amber-400 hover:bg-slate-200 dark:hover:bg-slate-700 border border-slate-200/60 dark:border-slate-700 transition-all active:scale-95">
+                <i data-lucide="moon" id="theme-icon-dark" class="w-4 h-4 block dark:hidden"></i>
+                <i data-lucide="sun" id="theme-icon-light" class="w-4 h-4 hidden dark:block"></i>
+            </button>
+        </div>
+    </header>
+
+    <main class="max-w-5xl mx-auto px-4 sm:px-6 py-8">
+
+        <!-- =============================================================== -->
+        <!-- ЕКРАН 1: СТАРТОВІ ПЛИТКИ (BENTO GRID)                           -->
+        <!-- =============================================================== -->
+        <section id="view-home" class="animate-fade-in">
+            
+            <!-- Верхній рядок: Адреса + Загальний платіж -->
+            <div class="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
+                <div>
+                    <span class="text-xs font-semibold uppercase tracking-wider text-indigo-600 dark:text-indigo-400">вул. Лесі Українки, 24 • Кв. 12</span>
+                    <h1 class="text-2xl sm:text-3xl font-extrabold tracking-tight mt-1">Комунальний дашборд</h1>
+                </div>
+                <div class="flex items-center gap-3 bg-white dark:bg-[#111827] px-4 py-2.5 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-sm">
+                    <div>
+                        <p class="text-[11px] text-slate-500 dark:text-slate-400 font-medium">До сплати за все:</p>
+                        <p class="text-lg font-extrabold text-slate-900 dark:text-white">1 485.50 ₴</p>
+                    </div>
+                    <button onclick="showToast('Перехід до єдиної квитанції...')" class="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition-colors">
+                        Оплатити
+                    </button>
+                </div>
+            </div>
+
+            <!-- Сітка плиток меню (4 сервіси з різним характером) -->
+            <div class="grid grid-cols-1 md:grid-cols-12 gap-4 sm:gap-5">
+                
+                <!-- Плитка 1: Електроенергія (Активна демо-вкладка, 7 колонок) -->
+                <div onclick="switchView('electricity')" class="md:col-span-7 group cursor-pointer rounded-3xl p-6 bg-gradient-to-br from-amber-50 to-orange-50/60 dark:from-[#1c1917] dark:to-[#171412] border border-amber-200/80 dark:border-amber-500/20 hover:border-amber-400 dark:hover:border-amber-500/50 transition-all duration-300 flex flex-col justify-between min-h-[210px] relative overflow-hidden">
+                    <div class="flex justify-between items-start">
+                        <div class="w-12 h-12 rounded-2xl bg-amber-500 text-white flex items-center justify-center shadow-lg shadow-amber-500/25 group-hover:scale-110 transition-transform">
+                            <i data-lucide="zap" class="w-6 h-6"></i>
+                        </div>
+                        <span class="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold bg-amber-500/15 text-amber-700 dark:text-amber-300">
+                            Відкрити вкладку <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i>
+                        </span>
+                    </div>
+
+                    <div class="mt-6">
+                        <h2 class="text-xl font-bold text-slate-900 dark:text-white">Електроенергія</h2>
+                        <p class="text-sm text-slate-600 dark:text-slate-400 mt-0.5">Двозонний лічильник • Натисніть для перегляду деталей</p>
+                        <div class="mt-4 pt-3 border-t border-amber-200/60 dark:border-slate-800 flex justify-between items-center">
+                            <span class="text-xs font-medium text-slate-500 dark:text-slate-400">Нараховано: <strong class="text-slate-900 dark:text-white text-sm">842.00 ₴</strong></span>
+                            <span class="text-xs font-semibold text-amber-600 dark:text-amber-400">255 кВт·год</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Плитка 2: Графік відключень (5 колонок, контрастний вигляд) -->
+                <div onclick="switchView('outages')" class="md:col-span-5 group cursor-pointer rounded-3xl p-6 bg-slate-900 dark:bg-[#131829] text-white border border-slate-800 dark:border-indigo-500/30 hover:border-indigo-500 transition-all duration-300 flex flex-col justify-between min-h-[210px]">
+                    <div class="flex justify-between items-start">
+                        <div class="w-12 h-12 rounded-2xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 flex items-center justify-center group-hover:scale-110 transition-transform">
+                            <i data-lucide="power" class="w-6 h-6"></i>
+                        </div>
+                        <span class="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 flex items-center gap-1.5">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span> Світло є
+                        </span>
+                    </div>
+
+                    <div class="mt-6">
+                        <h2 class="text-xl font-bold">Графік відключень</h2>
+                        <p class="text-xs text-slate-400 mt-1">Черга 3.1 • Відключення о 16:00</p>
+                        <!-- Міні-шкала годин -->
+                        <div class="grid grid-cols-8 gap-1 mt-4">
+                            <div class="h-2 rounded-full bg-emerald-500"></div>
+                            <div class="h-2 rounded-full bg-emerald-500"></div>
+                            <div class="h-2 rounded-full bg-rose-500"></div>
+                            <div class="h-2 rounded-full bg-rose-500"></div>
+                            <div class="h-2 rounded-full bg-emerald-500"></div>
+                            <div class="h-2 rounded-full bg-emerald-500"></div>
+                            <div class="h-2 rounded-full bg-amber-400"></div>
+                            <div class="h-2 rounded-full bg-emerald-500"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Плитка 3: Водопостачання (6 колонок) -->
+                <div onclick="switchView('water')" class="md:col-span-6 group cursor-pointer rounded-3xl p-6 bg-white dark:bg-[#111827] border border-slate-200/80 dark:border-slate-800 hover:border-sky-400 dark:hover:border-sky-500/50 transition-all duration-300 flex items-center justify-between">
+                    <div class="flex items-center gap-4">
+                        <div class="w-14 h-14 rounded-2xl bg-sky-100 dark:bg-sky-500/15 text-sky-600 dark:text-sky-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                            <i data-lucide="droplets" class="w-7 h-7"></i>
+                        </div>
+                        <div>
+                            <h2 class="text-lg font-bold text-slate-900 dark:text-white">Водопостачання</h2>
+                            <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Холодна (6 м³) та гаряча (3 м³)</p>
+                            <p class="text-sm font-bold text-sky-600 dark:text-sky-400 mt-1.5">518.50 ₴</p>
+                        </div>
+                    </div>
+                    <i data-lucide="chevron-right" class="w-5 h-5 text-slate-400 group-hover:translate-x-1 transition-transform"></i>
+                </div>
+
+                <!-- Плитка 4: Вивіз сміття (6 колонок) -->
+                <div onclick="switchView('waste')" class="md:col-span-6 group cursor-pointer rounded-3xl p-6 bg-white dark:bg-[#111827] border border-slate-200/80 dark:border-slate-800 hover:border-emerald-400 dark:hover:border-emerald-500/50 transition-all duration-300 flex items-center justify-between">
+                    <div class="flex items-center gap-4">
+                        <div class="w-14 h-14 rounded-2xl bg-emerald-100 dark:bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
+                            <i data-lucide="recycle" class="w-7 h-7"></i>
+                        </div>
+                        <div>
+                            <h2 class="text-lg font-bold text-slate-900 dark:text-white">Вивіз сміття</h2>
+                            <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Наступний вивіз: П'ятниця, 08:00</p>
+                            <p class="text-sm font-bold text-emerald-600 dark:text-emerald-400 mt-1.5">125.00 ₴</p>
+                        </div>
+                    </div>
+                    <i data-lucide="chevron-right" class="w-5 h-5 text-slate-400 group-hover:translate-x-1 transition-transform"></i>
+                </div>
+
+            </div>
+        </section>
+
+        <!-- =============================================================== -->
+        <!-- ЕКРАН 2: ВКЛАДКА «ЕЛЕКТРОЕНЕРГІЯ» (Бурштиново-золотий стиль)    -->
+        <!-- =============================================================== -->
+        <section id="view-electricity" class="hidden animate-fade-in">
+            
+            <!-- Навігація назад + статус вкладки -->
+            <div class="flex items-center justify-between mb-6">
+                <button onclick="switchView('home')" class="inline-flex items-center gap-2 text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-amber-600 dark:hover:text-amber-400 transition-colors">
+                    <i data-lucide="arrow-left" class="w-4 h-4"></i> Назад до плиток
+                </button>
+                <span class="px-3 py-1 rounded-full text-xs font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30">
+                    Особовий рахунок № 4092817
+                </span>
+            </div>
+
+            <!-- Картка передачі показників з бурштиновим акцентом -->
+            <div class="rounded-3xl p-6 sm:p-8 bg-white dark:bg-[#111827] border border-amber-200/80 dark:border-amber-500/25 shadow-sm relative overflow-hidden">
+                <div class="absolute top-0 inset-x-0 h-1.5 bg-gradient-to-r from-amber-400 via-orange-500 to-yellow-400"></div>
+                
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                    <div class="flex items-center gap-3">
+                        <div class="w-12 h-12 rounded-2xl bg-amber-500 text-white flex items-center justify-center shadow-md shadow-amber-500/20">
+                            <i data-lucide="zap" class="w-6 h-6"></i>
+                        </div>
+                        <div>
+                            <h1 class="text-2xl font-extrabold text-slate-900 dark:text-white">Електроенергія</h1>
+                            <p class="text-xs text-slate-500 dark:text-slate-400">Двозонний облік: День (4.32 ₴) • Ніч (2.16 ₴)</p>
+                        </div>
+                    </div>
+                    <div class="text-left sm:text-right">
+                        <p class="text-xs text-slate-500 dark:text-slate-400">До сплати за місяць</p>
+                        <p class="text-3xl font-extrabold text-amber-600 dark:text-amber-400" id="elec-total">842.40 ₴</p>
+                    </div>
+                </div>
+
+                <!-- Поля вводу День / Ніч -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div class="p-4 rounded-2xl bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/70 dark:border-amber-500/20">
+                        <div class="flex justify-between text-xs font-semibold mb-2">
+                            <span class="text-amber-800 dark:text-amber-300 flex items-center gap-1.5"><i data-lucide="sun" class="w-4 h-4"></i> Зона Т1 (День)</span>
+                            <span class="text-slate-500">Попередній: 14 210</span>
+                        </div>
+                        <input type="number" id="inp-day" value="14345" oninput="calcElec()" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-500/40 font-bold text-lg focus:outline-none focus:ring-2 focus:ring-amber-500">
+                    </div>
+
+                    <div class="p-4 rounded-2xl bg-slate-100/80 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                        <div class="flex justify-between text-xs font-semibold mb-2">
+                            <span class="text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5"><i data-lucide="moon" class="w-4 h-4"></i> Зона Т2 (Ніч)</span>
+                            <span class="text-slate-500">Попередній: 8 450</span>
+                        </div>
+                        <input type="number" id="inp-night" value="8570" oninput="calcElec()" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 font-bold text-lg focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </div>
+                </div>
+
+                <div class="mt-6 flex flex-col sm:flex-row justify-end gap-3">
+                    <button onclick="showToast('Показники лічильника успішно передано!')" class="px-6 py-3 rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-bold text-sm shadow-lg shadow-amber-500/25 transition-all active:scale-95">
+                        Передати показники
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- =============================================================== -->
+        <!-- ЕКРАН 3: ВКЛАДКА «ВОДОПОСТАЧАННЯ» (Блакитно-кришталевий стиль)  -->
+        <!-- =============================================================== -->
+        <section id="view-water" class="hidden animate-fade-in">
+            <div class="flex items-center justify-between mb-6">
+                <button onclick="switchView('home')" class="inline-flex items-center gap-2 text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-sky-600 dark:hover:text-sky-400 transition-colors">
+                    <i data-lucide="arrow-left" class="w-4 h-4"></i> Назад до плиток
+                </button>
+                <span class="px-3 py-1 rounded-full text-xs font-bold bg-sky-100 dark:bg-sky-500/20 text-sky-800 dark:text-sky-300 border border-sky-200 dark:border-sky-500/30">
+                    Водоканал • Договір № 88412
+                </span>
+            </div>
+
+            <div class="rounded-3xl p-6 sm:p-8 bg-white dark:bg-[#111827] border border-sky-200/80 dark:border-sky-500/25 shadow-sm relative overflow-hidden">
+                <div class="absolute top-0 inset-x-0 h-1.5 bg-gradient-to-r from-sky-400 via-cyan-500 to-blue-500"></div>
+
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+                    <div class="flex items-center gap-3">
+                        <div class="w-12 h-12 rounded-2xl bg-sky-500 text-white flex items-center justify-center shadow-md shadow-sky-500/20">
+                            <i data-lucide="droplets" class="w-6 h-6"></i>
+                        </div>
+                        <div>
+                            <h1 class="text-2xl font-extrabold text-slate-900 dark:text-white">Водопостачання</h1>
+                            <p class="text-xs text-slate-500 dark:text-slate-400">Холодна вода + водовідведення • Гаряча вода</p>
+                        </div>
+                    </div>
+                    <div class="text-left sm:text-right">
+                        <p class="text-xs text-slate-500 dark:text-slate-400">До сплати за воду</p>
+                        <p class="text-3xl font-extrabold text-sky-600 dark:text-sky-400" id="water-total">518.50 ₴</p>
+                    </div>
+                </div>
+
+                <!-- Картки лічильників води -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <!-- Холодна вода -->
+                    <div class="p-4 rounded-2xl bg-sky-50/70 dark:bg-sky-950/20 border border-sky-200/70 dark:border-sky-500/20">
+                        <div class="flex justify-between items-center text-xs font-semibold mb-2">
+                            <span class="text-sky-700 dark:text-sky-300 flex items-center gap-1.5"><i data-lucide="snowflake" class="w-4 h-4"></i> Холодна вода (41.20 ₴/м³)</span>
+                            <span class="text-slate-500">Попередній: 412</span>
+                        </div>
+                        <input type="number" id="inp-cold" value="418" oninput="calcWater()" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-sky-300 dark:border-sky-500/40 font-bold text-lg focus:outline-none focus:ring-2 focus:ring-sky-500">
+                        <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-2 flex items-center gap-1">
+                            <i data-lucide="shield-check" class="w-3.5 h-3.5 text-emerald-500"></i> Повірка лічильника дійсна до 14.08.2028
+                        </p>
+                    </div>
+
+                    <!-- Гаряча вода -->
+                    <div class="p-4 rounded-2xl bg-rose-50/60 dark:bg-rose-950/15 border border-rose-200/70 dark:border-rose-500/20">
+                        <div class="flex justify-between items-center text-xs font-semibold mb-2">
+                            <span class="text-rose-700 dark:text-rose-300 flex items-center gap-1.5"><i data-lucide="flame" class="w-4 h-4"></i> Гаряча вода (90.43 ₴/м³)</span>
+                            <span class="text-slate-500">Попередній: 195</span>
+                        </div>
+                        <input type="number" id="inp-hot" value="198" oninput="calcWater()" class="w-full px-4 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-rose-300 dark:border-rose-500/40 font-bold text-lg focus:outline-none focus:ring-2 focus:ring-rose-500">
+                        <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-2 flex items-center gap-1">
+                            <i data-lucide="shield-check" class="w-3.5 h-3.5 text-emerald-500"></i> Повірка лічильника дійсна до 02.11.2027
+                        </p>
+                    </div>
+                </div>
+
+                <div class="mt-6 flex flex-col sm:flex-row justify-between items-center gap-3 pt-4 border-t border-slate-100 dark:border-slate-800">
+                    <span class="text-xs text-slate-500 dark:text-slate-400">Показники приймаються з 20 по 30 число кожного місяця</span>
+                    <button onclick="showToast('Показники водомірів передано до Водоканалу!')" class="w-full sm:w-auto px-6 py-3 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-bold text-sm shadow-lg shadow-sky-500/25 transition-all active:scale-95">
+                        Передати показники
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- =============================================================== -->
+        <!-- ЕКРАН 4: ВКЛАДКА «ВИВІЗ СМІТТЯ» (Смарагдово-екологічний стиль)  -->
+        <!-- =============================================================== -->
+        <section id="view-waste" class="hidden animate-fade-in">
+            <div class="flex items-center justify-between mb-6">
+                <button onclick="switchView('home')" class="inline-flex items-center gap-2 text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors">
+                    <i data-lucide="arrow-left" class="w-4 h-4"></i> Назад до плиток
+                </button>
+                <span class="px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30">
+                    ЕкоСервіс • Абонентський тариф (3 мешканці)
+                </span>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-12 gap-5">
+                <!-- Основна картка вивозу -->
+                <div class="md:col-span-7 rounded-3xl p-6 sm:p-7 bg-white dark:bg-[#111827] border border-emerald-200/80 dark:border-emerald-500/25 shadow-sm relative overflow-hidden">
+                    <div class="absolute top-0 inset-x-0 h-1.5 bg-gradient-to-r from-emerald-400 via-teal-500 to-green-500"></div>
+
+                    <div class="flex items-center justify-between mb-6">
+                        <div class="flex items-center gap-3">
+                            <div class="w-12 h-12 rounded-2xl bg-emerald-500 text-white flex items-center justify-center shadow-md shadow-emerald-500/20">
+                                <i data-lucide="recycle" class="w-6 h-6"></i>
+                            </div>
+                            <div>
+                                <h1 class="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white">Вивіз побутових відходів</h1>
+                                <p class="text-xs text-slate-500 dark:text-slate-400">Фіксована абонплата • 41.67 ₴ / особа</p>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-2xl font-extrabold text-emerald-600 dark:text-emerald-400">125.00 ₴</p>
+                            <span class="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 px-2 py-0.5 rounded-md">Сплачено</span>
+                        </div>
+                    </div>
+
+                    <!-- Розклад тижня -->
+                    <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Графік заїзду сміттєвозів у двір</h3>
+                    <div class="grid grid-cols-7 gap-1.5 sm:gap-2 text-center">
+                        <div class="p-2.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/60 dark:border-slate-700/60">
+                            <span class="block text-[11px] font-bold text-slate-400">ПН</span>
+                            <i data-lucide="trash-2" class="w-4 h-4 mx-auto mt-1.5 text-slate-600 dark:text-slate-300"></i>
+                            <span class="block text-[10px] mt-1 text-slate-500">08:00</span>
+                        </div>
+                        <div class="p-2.5 rounded-2xl bg-slate-50 dark:bg-slate-800/40 opacity-50">
+                            <span class="block text-[11px] font-bold text-slate-400">ВТ</span>
+                            <span class="block text-xs mt-2">—</span>
+                        </div>
+                        <div class="p-2.5 rounded-2xl bg-emerald-50 dark:bg-emerald-500/15 border border-emerald-300 dark:border-emerald-500/40">
+                            <span class="block text-[11px] font-bold text-emerald-700 dark:text-emerald-300">СР</span>
+                            <i data-lucide="recycle" class="w-4 h-4 mx-auto mt-1.5 text-emerald-600 dark:text-emerald-400"></i>
+                            <span class="block text-[10px] mt-1 font-semibold text-emerald-700 dark:text-emerald-300">Пластик</span>
+                        </div>
+                        <div class="p-2.5 rounded-2xl bg-slate-50 dark:bg-slate-800/40 opacity-50">
+                            <span class="block text-[11px] font-bold text-slate-400">ЧТ</span>
+                            <span class="block text-xs mt-2">—</span>
+                        </div>
+                        <div class="p-2.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/60 dark:border-slate-700/60 ring-2 ring-emerald-500/40">
+                            <span class="block text-[11px] font-bold text-emerald-600 dark:text-emerald-400">ПТ</span>
+                            <i data-lucide="trash-2" class="w-4 h-4 mx-auto mt-1.5 text-slate-700 dark:text-slate-200"></i>
+                            <span class="block text-[10px] mt-1 text-slate-500">08:00</span>
+                        </div>
+                        <div class="p-2.5 rounded-2xl bg-slate-50 dark:bg-slate-800/40 opacity-50">
+                            <span class="block text-[11px] font-bold text-slate-400">СБ</span>
+                            <span class="block text-xs mt-2">—</span>
+                        </div>
+                        <div class="p-2.5 rounded-2xl bg-slate-50 dark:bg-slate-800/40 opacity-50">
+                            <span class="block text-[11px] font-bold text-slate-400">НД</span>
+                            <span class="block text-xs mt-2">—</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Додаткова картка: Замовлення вивозу габаритного сміття -->
+                <div class="md:col-span-5 rounded-3xl p-6 bg-gradient-to-br from-emerald-600 to-teal-700 text-white flex flex-col justify-between shadow-sm">
+                    <div>
+                        <div class="w-10 h-10 rounded-xl bg-white/15 flex items-center justify-center mb-4">
+                            <i data-lucide="truck" class="w-5 h-5"></i>
+                        </div>
+                        <h3 class="text-lg font-bold">Великогабаритні відходи</h3>
+                        <p class="text-xs text-emerald-100 mt-1.5 leading-relaxed">
+                            Плануєте ремонт чи заміну старих меблів? Замовте окремий контейнер або спецтранспорт прямо до під'їзду.
+                        </p>
+                    </div>
+                    <button onclick="showToast('Заявку на вивіз великогабаритного сміття створено!')" class="mt-6 w-full py-3 rounded-xl bg-white text-emerald-800 hover:bg-emerald-50 font-bold text-xs transition-colors shadow-md">
+                        Замовити спецмашину
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- =============================================================== -->
+        <!-- ЕКРАН 5: ВКЛАДКА «ГРАФІК ВІДКЛЮЧЕНЬ» (Темний індиго/неоновий)   -->
+        <!-- =============================================================== -->
+        <section id="view-outages" class="hidden animate-fade-in">
+            <div class="flex items-center justify-between mb-6">
+                <button onclick="switchView('home')" class="inline-flex items-center gap-2 text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors">
+                    <i data-lucide="arrow-left" class="w-4 h-4"></i> Назад до плиток
+                </button>
+                <div class="flex items-center gap-2">
+                    <label for="queue-select" class="text-xs font-medium text-slate-500 dark:text-slate-400">Ваша черга:</label>
+                    <select id="queue-select" onchange="renderOutageGrid()" class="px-3 py-1 rounded-xl text-xs font-bold bg-indigo-100 dark:bg-indigo-500/20 text-indigo-800 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30 focus:outline-none">
+                        <option value="3.1">Черга 3.1 (вул. Лесі Українки)</option>
+                        <option value="1.2">Черга 1.2</option>
+                        <option value="5.1">Черга 5.1</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Статус-банер (завжди контрастний темний блок) -->
+            <div class="rounded-3xl p-6 sm:p-8 bg-slate-900 dark:bg-[#131829] text-white border border-slate-800 dark:border-indigo-500/30 shadow-lg">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-slate-800">
+                    <div class="flex items-center gap-4">
+                        <div class="w-14 h-14 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
+                            <i data-lucide="zap" class="w-7 h-7"></i>
+                        </div>
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                                <span class="text-xs font-bold uppercase tracking-wider text-emerald-400">Зараз зі світлом</span>
+                            </div>
+                            <h1 class="text-xl sm:text-2xl font-extrabold mt-0.5">Стабільне електропостачання</h1>
+                            <p class="text-xs text-slate-400 mt-0.5">Наступне планове відключення за графіком о 16:00 (на 3 години)</p>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-800/80 px-4 py-3 rounded-2xl border border-slate-700/80 text-center sm:text-right">
+                        <span class="block text-[11px] text-slate-400">До зміни статусу</span>
+                        <span class="text-xl font-extrabold font-mono text-indigo-400">02 год 18 хв</span>
+                    </div>
+                </div>
+
+                <!-- Легенда -->
+                <div class="flex flex-wrap items-center justify-between gap-3 mt-6 mb-4">
+                    <h2 class="text-sm font-bold text-slate-200">Погодинний графік на сьогодні (24 години)</h2>
+                    <div class="flex items-center gap-4 text-xs text-slate-400">
+                        <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-emerald-500/80"></span> Є світло</span>
+                        <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-rose-500/90"></span> Відключення</span>
+                        <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded bg-amber-400/90"></span> Можливе (сіра зона)</span>
+                    </div>
+                </div>
+
+                <!-- 24-годинна сітка -->
+                <div id="outage-grid" class="grid grid-cols-4 sm:grid-cols-8 md:grid-cols-12 gap-2"></div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Контейнер для сповіщень -->
+    <div id="toast-box" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2"></div>
+
+    <script>
+        // Перемикання світлої / темної теми
+        function toggleTheme() {
+            const html = document.documentElement;
+            html.classList.toggle('dark');
+            const isDark = html.classList.contains('dark');
+            showToast(isDark ? 'Увімкнено темну тему' : 'Увімкнено світлу тему');
+        }
+
+        // Перемикання між плитками та всіма вкладками
+        function switchView(view) {
+            const views = ['home', 'electricity', 'water', 'waste', 'outages'];
+            const activeClass = 'px-3 py-1.5 rounded-lg text-xs font-semibold transition-all bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm shrink-0';
+            const inactiveClass = 'px-3 py-1.5 rounded-lg text-xs font-semibold transition-all text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white shrink-0';
+
+            views.forEach(v => {
+                document.getElementById(`view-${v}`).classList.toggle('hidden', v !== view);
+                const navBtn = document.getElementById(`nav-${v}`);
+                if (navBtn) navBtn.className = (v === view) ? activeClass : inactiveClass;
+            });
+        }
+
+        // Калькулятор електроенергії
+        function calcElec() {
+            const day = Math.max(0, (parseInt(document.getElementById('inp-day').value) || 0) - 14210);
+            const night = Math.max(0, (parseInt(document.getElementById('inp-night').value) || 0) - 8450);
+            const sum = (day * 4.32 + night * 2.16).toFixed(2);
+            document.getElementById('elec-total').textContent = `${sum} ₴`;
+        }
+
+        // Калькулятор водопостачання
+        function calcWater() {
+            const cold = Math.max(0, (parseInt(document.getElementById('inp-cold').value) || 0) - 412);
+            const hot = Math.max(0, (parseInt(document.getElementById('inp-hot').value) || 0) - 195);
+            const sum = (cold * 41.20 + hot * 90.43).toFixed(2);
+            document.getElementById('water-total').textContent = `${sum} ₴`;
+        }
+
+        // Генерація 24-годинного графіка відключень
+        function renderOutageGrid() {
+            const queue = document.getElementById('queue-select').value;
+            const grid = document.getElementById('outage-grid');
+            grid.innerHTML = '';
+
+            // Різні патерни відключень залежно від обраної черги (1 - є, 0 - немає, 2 - можливе)
+            const schedules = {
+                '3.1': [1,1,1,1, 0,0,0,2, 1,1,1,1, 1,1,1,2, 0,0,0,1, 1,1,1,1],
+                '1.2': [0,0,2,1, 1,1,1,1, 0,0,0,1, 1,1,2,1, 1,1,1,0, 0,0,1,1],
+                '5.1': [1,1,0,0, 0,1,1,1, 1,2,0,0, 0,1,1,1, 1,1,2,0, 0,1,1,1]
+            };
+
+            const hours = schedules[queue] || schedules['3.1'];
+            const currentHour = 14; // Для візуального виділення поточної години
+
+            hours.forEach((status, h) => {
+                const start = String(h).padStart(2, '0') + ':00';
+                const end = String((h + 1) % 24).padStart(2, '0') + ':00';
+                
+                let style = 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300';
+                let icon = 'zap';
+                let label = 'Є';
+
+                if (status === 0) {
+                    style = 'bg-rose-500/20 border-rose-500/40 text-rose-300';
+                    icon = 'zap-off';
+                    label = 'Вимк.';
+                } else if (status === 2) {
+                    style = 'bg-amber-400/20 border-amber-400/40 text-amber-300';
+                    icon = 'alert-circle';
+                    label = 'Можл.';
+                }
+
+                const isNow = h === currentHour ? 'ring-2 ring-white scale-[1.03]' : '';
+
+                const cell = document.createElement('div');
+                cell.className = `p-2.5 rounded-xl border ${style} ${isNow} flex flex-col items-center justify-center text-center transition-transform`;
+                cell.innerHTML = `
+                    <span class="text-[10px] font-mono opacity-80">${start}</span>
+                    <i data-lucide="${icon}" class="w-4 h-4 my-1"></i>
+                    <span class="text-[10px] font-bold">${label}</span>
+                `;
+                grid.appendChild(cell);
+            });
+
+            lucide.createIcons();
+        }
+
+        // Сповіщення
+        function showToast(text) {
+            const box = document.getElementById('toast-box');
+            const el = document.createElement('div');
+            el.className = 'px-4 py-3 rounded-2xl bg-slate-900 dark:bg-slate-800 text-white text-xs sm:text-sm font-medium shadow-xl border border-slate-700 animate-fade-in';
+            el.textContent = text;
+            box.appendChild(el);
+            setTimeout(() => el.remove(), 3000);
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            renderOutageGrid();
+            lucide.createIcons();
+        });
+    </script>
+</body>
+</html>

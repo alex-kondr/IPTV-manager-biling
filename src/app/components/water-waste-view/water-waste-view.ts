@@ -5,6 +5,7 @@ import {
   effect,
   inject,
   input,
+  output,
   signal,
   untracked,
 } from '@angular/core';
@@ -30,6 +31,7 @@ import {
   WaterMonthlySummary,
   WaterStatsKPIs,
 } from './water-chart-wrapper';
+import { resolveYesterdayIsoDate } from '../electricity-view/electricity-reading-calc.util';
 
 type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
 
@@ -38,134 +40,196 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
   imports: [CommonModule, ReactiveFormsModule, MatIconModule, MeterCameraModal, WaterChartComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <div id="water-waste-container" class="space-y-6 max-w-7xl mx-auto">
-      @if (canEdit()) {
-        <div class="flex items-center justify-end">
-          <button
-            type="button"
-            (click)="openAccountModal(null)"
-            class="px-3.5 py-2 rounded-xl text-xs font-semibold bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 hover:text-slate-900 transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
-          >
-            <mat-icon class="text-base leading-none">add_business</mat-icon>
-            <span>Додати будинок</span>
-          </button>
-        </div>
-      }
+    <div id="water-waste-container" class="space-y-5 animate-fade-in">
+      <!-- Top Back Navigation + Signature Tab Badge -->
+      <div class="flex items-center justify-between gap-3 flex-wrap">
+        <button
+          type="button"
+          (click)="backToHome.emit()"
+          [class]="serviceMode() === 'waste'
+            ? 'inline-flex items-center gap-2 text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors cursor-pointer bg-transparent border-0 p-0'
+            : 'inline-flex items-center gap-2 text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-sky-600 dark:hover:text-sky-400 transition-colors cursor-pointer bg-transparent border-0 p-0'"
+        >
+          <mat-icon aria-hidden="true" class="text-base leading-none">arrow_back</mat-icon>
+          <span>Назад до плиток</span>
+        </button>
 
-      <!-- Unified House / Account Selector with Per-Tab Visibility -->
-      @if (visibleAccountsForCurrentTab().length > 0 || hiddenAccountsForCurrentTab().length > 0) {
-        <div class="p-3 sm:p-4 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-2">
-          <div class="flex items-center justify-between gap-1.5 flex-wrap">
-            <div class="flex items-center gap-1.5 min-w-0">
-              <mat-icon class="text-base shrink-0" [class.text-cyan-600]="serviceMode() !== 'waste'" [class.text-emerald-600]="serviceMode() === 'waste'">home_pin</mat-icon>
-              <span class="text-xs font-bold text-slate-800 truncate">
-                Будинок ({{ visibleAccountsForCurrentTab().length }}):
-              </span>
-            </div>
-
-            <div class="flex items-center gap-1.5 flex-wrap justify-end">
-              @if (currentAccount(); as activeAcc) {
-                @if (defaultDtekAccountId() !== activeAcc.id) {
-                  <button
-                    type="button"
-                    (click)="setAsDefaultHouse(activeAcc.id)"
-                    [disabled]="isSavingDefaultHouse()"
-                    class="px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-2xs font-bold inline-flex items-center gap-1 transition-colors cursor-pointer shadow-2xs disabled:opacity-50 shrink-0"
-                    title="Встановити цей будинок за замовчуванням"
-                  >
-                    <mat-icon class="text-xs">star</mat-icon>
-                    <span>{{ isSavingDefaultHouse() ? '...' : 'За замовч.' }}</span>
-                  </button>
-                }
-                @if (canEdit()) {
-                  <button
-                    type="button"
-                    (click)="toggleHideHouseInCurrentTab(activeAcc.id)"
-                    class="px-2 py-1 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-700 border border-slate-200 hover:border-rose-200 text-2xs font-semibold inline-flex items-center gap-1 transition-colors cursor-pointer shrink-0"
-                    title="Приховати цей будинок лише на поточній вкладці, якщо для нього не нараховується ця послуга"
-                  >
-                    <mat-icon class="text-xs">visibility_off</mat-icon>
-                    <span>Сховати</span>
-                  </button>
-                }
+        @if (currentAccount(); as topAcc) {
+          @if (serviceMode() === 'waste') {
+            <span class="px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30">
+              ТПВ • {{ topAcc.residentsCount || 1 }} мешканців
+            </span>
+          } @else {
+            <span class="px-3 py-1 rounded-full text-xs font-bold bg-sky-100 dark:bg-sky-500/20 text-sky-800 dark:text-sky-300 border border-sky-200 dark:border-sky-500/30 font-mono">
+              @if (topAcc.accountNumber) {
+                Водоканал • № {{ topAcc.accountNumber }}
+              } @else {
+                Водопостачання
               }
-              @if (hiddenAccountsForCurrentTab().length > 0) {
-                <button
-                  type="button"
-                  (click)="showHiddenHousesPanel.set(!showHiddenHousesPanel())"
-                  class="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-2xs font-semibold inline-flex items-center gap-1 transition-colors cursor-pointer shrink-0"
-                  title="Показати або сховати список прихованих будинків на цій вкладці"
-                >
-                  <mat-icon class="text-xs text-slate-500">{{ showHiddenHousesPanel() ? 'visibility' : 'visibility_off' }}</mat-icon>
-                  <span>Приховані ({{ hiddenAccountsForCurrentTab().length }})</span>
-                </button>
+            </span>
+          }
+        }
+      </div>
+
+      <!-- Unified House / Account Selector with Default House Persistence & Per-Tab Visibility -->
+      @if (visibleAccountsForCurrentTab().length > 0 || hiddenAccountsForCurrentTab().length > 0) {
+        <div class="p-3 sm:p-4 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-2.5 relative">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div class="flex items-center gap-2 min-w-0 flex-1">
+              @if (visibleAccountsForCurrentTab().length > 0) {
+                <div class="relative flex items-center sm:w-auto sm:min-w-[240px] sm:max-w-[380px] flex-1 min-w-0">
+                  <select
+                    aria-label="Вибір будинку"
+                    [value]="currentAccount()?.id || ''"
+                    (change)="selectAccount($any($event.target).value)"
+                    [class.focus:border-sky-500]="serviceMode() !== 'waste'"
+                    [class.focus:border-emerald-500]="serviceMode() === 'waste'"
+                    class="h-9 w-full min-w-0 max-w-full appearance-none pl-3.5 pr-8 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200/70 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-white focus:outline-none cursor-pointer transition-colors truncate"
+                  >
+                    @for (acc of visibleAccountsForCurrentTab(); track acc.id) {
+                      <option [value]="acc.id" [selected]="currentAccount()?.id === acc.id">
+                        {{ defaultDtekAccountId() === acc.id ? '★ ' : '' }}{{ acc.name }}
+                      </option>
+                    }
+                  </select>
+                  <mat-icon aria-hidden="true" class="text-base text-slate-500 pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 leading-none z-10">
+                    expand_more
+                  </mat-icon>
+                </div>
+              }
+
+              @if (canEdit() || hiddenAccountsForCurrentTab().length > 0 || (currentAccount() && defaultDtekAccountId() !== currentAccount()?.id)) {
+                <div class="relative shrink-0">
+                  <button
+                    type="button"
+                    (click)="isHouseActionsMenuOpen.set(!isHouseActionsMenuOpen())"
+                    aria-label="Налаштування списку будинків"
+                    title="Дії з будинками (додати, редагувати, видалити, сховати, показати, за замовчуванням)"
+                    class="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 inline-flex items-center justify-center transition-colors shadow-2xs cursor-pointer relative"
+                    [class.bg-amber-500]="isHouseActionsMenuOpen()"
+                    [class.text-white]="isHouseActionsMenuOpen()"
+                    [class.border-amber-500]="isHouseActionsMenuOpen()"
+                  >
+                    <mat-icon aria-hidden="true" class="text-base leading-none">settings</mat-icon>
+                    @if (hiddenAccountsForCurrentTab().length > 0 && !isHouseActionsMenuOpen()) {
+                      <span class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-amber-500 text-white text-[9px] font-extrabold flex items-center justify-center border border-white dark:border-slate-900">
+                        {{ hiddenAccountsForCurrentTab().length }}
+                      </span>
+                    }
+                  </button>
+
+                  @if (isHouseActionsMenuOpen()) {
+                    <div
+                      class="fixed inset-0 z-40"
+                      (click)="isHouseActionsMenuOpen.set(false)"
+                    ></div>
+                    <div
+                      class="absolute right-0 sm:left-0 sm:right-auto top-full mt-2 w-60 max-w-[calc(100vw-2rem)] rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl z-50 p-1.5 space-y-1"
+                    >
+                      @if (currentAccount(); as activeAcc) {
+                        @if (defaultDtekAccountId() !== activeAcc.id) {
+                          <button
+                            type="button"
+                            (click)="isHouseActionsMenuOpen.set(false); setAsDefaultHouse(activeAcc.id)"
+                            [disabled]="isSavingDefaultHouse()"
+                            class="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/50 flex items-center gap-2 transition-colors cursor-pointer disabled:opacity-50"
+                            title="Встановити цей будинок за замовчуванням"
+                          >
+                            <mat-icon aria-hidden="true" class="text-base text-amber-500 leading-none">star</mat-icon>
+                            <span>{{ isSavingDefaultHouse() ? '...' : 'За замовчуванням' }}</span>
+                          </button>
+                        }
+                      }
+
+                      @if (canEdit()) {
+                        <button
+                          type="button"
+                          (click)="isHouseActionsMenuOpen.set(false); openAccountModal(null)"
+                          class="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 flex items-center gap-2 transition-colors cursor-pointer"
+                        >
+                          <mat-icon aria-hidden="true" class="text-base leading-none">add_circle_outline</mat-icon>
+                          <span>Додати будинок</span>
+                        </button>
+
+                        @if (currentAccount(); as activeAcc) {
+                          <button
+                            type="button"
+                            (click)="isHouseActionsMenuOpen.set(false); openAccountModal(activeAcc)"
+                            class="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 transition-colors cursor-pointer"
+                          >
+                            <mat-icon aria-hidden="true" class="text-base text-amber-500 leading-none">edit</mat-icon>
+                            <span>Редагувати будинок</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            (click)="isHouseActionsMenuOpen.set(false); toggleHideHouseInCurrentTab(activeAcc.id)"
+                            class="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 transition-colors cursor-pointer"
+                          >
+                            <mat-icon aria-hidden="true" class="text-base text-slate-500 leading-none">visibility_off</mat-icon>
+                            <span>Сховати поточний</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            (click)="isHouseActionsMenuOpen.set(false); confirmDeleteAccount(activeAcc)"
+                            class="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 flex items-center gap-2 transition-colors cursor-pointer"
+                          >
+                            <mat-icon aria-hidden="true" class="text-base leading-none">delete</mat-icon>
+                            <span>Видалити будинок</span>
+                          </button>
+                        }
+                      }
+
+                      @if (hiddenAccountsForCurrentTab().length > 0) {
+                        <div class="pt-1 mt-1 border-t border-slate-100 dark:border-slate-800 space-y-0.5">
+                          <button
+                            type="button"
+                            (click)="showHiddenHousesPanel.set(!showHiddenHousesPanel()); isHouseActionsMenuOpen.set(false)"
+                            class="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 flex items-center justify-between gap-2 transition-colors cursor-pointer"
+                          >
+                            <span class="inline-flex items-center gap-2">
+                              <mat-icon aria-hidden="true" class="text-base leading-none">visibility</mat-icon>
+                              <span>Показати приховані ({{ hiddenAccountsForCurrentTab().length }})</span>
+                            </span>
+                          </button>
+                          @for (hAcc of hiddenAccountsForCurrentTab(); track hAcc.id) {
+                            <button
+                              type="button"
+                              (click)="toggleHideHouseInCurrentTab(hAcc.id); isHouseActionsMenuOpen.set(false)"
+                              class="w-full px-3 py-1.5 rounded-lg text-left text-2xs font-medium text-slate-600 dark:text-slate-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 hover:text-emerald-700 dark:hover:text-emerald-300 flex items-center justify-between gap-2 transition-colors cursor-pointer"
+                            >
+                              <span class="truncate">• {{ hAcc.name }}</span>
+                              <span class="text-3xs font-bold text-emerald-600 dark:text-emerald-400 shrink-0">Показати</span>
+                            </button>
+                          }
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
               }
             </div>
           </div>
 
-          @if (visibleAccountsForCurrentTab().length > 0) {
-            <div class="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin">
-              @for (acc of visibleAccountsForCurrentTab(); track acc.id) {
-                <button
-                  type="button"
-                  (click)="selectAccount(acc.id)"
-                  [class.bg-slate-900]="currentAccount()?.id === acc.id"
-                  [class.text-white]="currentAccount()?.id === acc.id"
-                  [class.border-slate-900]="currentAccount()?.id === acc.id"
-                  [class.bg-slate-50]="currentAccount()?.id !== acc.id"
-                  [class.text-slate-700]="currentAccount()?.id !== acc.id"
-                  [class.border-slate-200]="currentAccount()?.id !== acc.id"
-                  class="px-3.5 py-2 rounded-xl border text-xs font-semibold flex items-center gap-2.5 shrink-0 transition-all shadow-2xs cursor-pointer hover:border-slate-400"
-                >
-                  <mat-icon class="text-base" [class.text-cyan-400]="currentAccount()?.id === acc.id" [class.text-cyan-600]="currentAccount()?.id !== acc.id">
-                    {{ defaultDtekAccountId() === acc.id ? 'star' : 'home' }}
-                  </mat-icon>
-                  <div class="text-left">
-                    <div class="font-bold leading-tight flex items-center gap-1.5">
-                      <span>{{ acc.name }}</span>
-                      @if (defaultDtekAccountId() === acc.id) {
-                        <span
-                          class="px-1.5 py-0.2 rounded text-3xs font-extrabold uppercase"
-                          [class.bg-amber-400]="currentAccount()?.id === acc.id"
-                          [class.text-slate-950]="currentAccount()?.id === acc.id"
-                          [class.bg-amber-100]="currentAccount()?.id !== acc.id"
-                          [class.text-amber-900]="currentAccount()?.id !== acc.id"
-                        >
-                          За замовч.
-                        </span>
-                      }
-                    </div>
-                    <div class="text-3xs opacity-80">
-                      @if (acc.accountNumber) {
-                        № {{ acc.accountNumber }}
-                      }
-                      @if (acc.address || (acc.city && acc.street)) {
-                        • {{ acc.address || (acc.city + ', ' + acc.street + (acc.houseNum ? ', ' + acc.houseNum : '')) }}
-                      }
-                    </div>
-                  </div>
-                </button>
-              }
-            </div>
-          } @else {
+          @if (visibleAccountsForCurrentTab().length === 0) {
             <div class="p-3 rounded-xl bg-amber-50/70 border border-amber-200 text-xs text-amber-900 flex items-center justify-between gap-2 flex-wrap">
-              <span>Всі будинки приховано на цій вкладці. Натисніть «Повернути», щоб знову відобразити потрібний будинок.</span>
+              <span>Всі будинки приховано на цій вкладці. Натисніть «Показати», щоб знову відобразити потрібний будинок.</span>
             </div>
           }
 
           @if (hiddenAccountsForCurrentTab().length > 0 && (showHiddenHousesPanel() || visibleAccountsForCurrentTab().length === 0)) {
             <div class="pt-2 border-t border-slate-100 flex items-center gap-2 flex-wrap">
-              <span class="text-2xs font-bold text-slate-500">Приховані будинки:</span>
               @for (hAcc of hiddenAccountsForCurrentTab(); track hAcc.id) {
                 <button
                   type="button"
                   (click)="toggleHideHouseInCurrentTab(hAcc.id)"
                   class="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-800 border border-slate-200 hover:border-emerald-300 text-2xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer"
-                  title="Повернути будинок на цю вкладку"
+                  title="Показати будинок на цій вкладці"
                 >
-                  <mat-icon class="text-xs text-emerald-600">visibility</mat-icon>
+                  <mat-icon aria-hidden="true" class="text-xs text-emerald-600">visibility</mat-icon>
                   <span>{{ hAcc.name }}</span>
-                  <span class="text-3xs text-emerald-700 font-bold">(Повернути)</span>
+                  <span class="text-3xs text-emerald-700 font-bold">(Показати)</span>
                 </button>
               }
             </div>
@@ -173,226 +237,148 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
         </div>
       } @else {
         <!-- Empty State -->
-        <div class="p-8 text-center bg-white rounded-2xl border border-slate-200 shadow-2xs">
-          <div class="w-14 h-14 rounded-2xl bg-cyan-50 text-cyan-600 flex items-center justify-center mx-auto mb-3">
-            <mat-icon class="text-3xl">{{ serviceMode() === 'waste' ? 'delete_outline' : 'water_drop' }}</mat-icon>
+        <div class="p-8 text-center bg-white dark:bg-[#111827] rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm relative overflow-hidden">
+          <div
+            class="absolute top-0 inset-x-0 h-1.5"
+            [class.bg-gradient-to-r]="true"
+            [class.from-sky-400]="serviceMode() !== 'waste'"
+            [class.via-cyan-500]="serviceMode() !== 'waste'"
+            [class.to-blue-500]="serviceMode() !== 'waste'"
+            [class.from-emerald-400]="serviceMode() === 'waste'"
+            [class.via-teal-500]="serviceMode() === 'waste'"
+            [class.to-green-500]="serviceMode() === 'waste'"
+          ></div>
+          <div
+            class="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-3"
+            [class.bg-sky-100]="serviceMode() !== 'waste'"
+            [class.dark:bg-sky-500/15]="serviceMode() !== 'waste'"
+            [class.text-sky-600]="serviceMode() !== 'waste'"
+            [class.dark:text-sky-400]="serviceMode() !== 'waste'"
+            [class.bg-emerald-100]="serviceMode() === 'waste'"
+            [class.dark:bg-emerald-500/15]="serviceMode() === 'waste'"
+            [class.text-emerald-600]="serviceMode() === 'waste'"
+            [class.dark:text-emerald-400]="serviceMode() === 'waste'"
+          >
+            <mat-icon class="text-3xl">{{ serviceMode() === 'waste' ? 'recycling' : 'water_drop' }}</mat-icon>
           </div>
-          <h3 class="text-base font-bold text-slate-900">Немає доданих будинків</h3>
-          <p class="text-xs text-slate-500 max-w-md mx-auto mt-1 mb-4">
-            Додайте будинок, щоб вести облік показів лічильника води та нарахувань за вивіз сміття.
+          <h3 class="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">Ще не додано жодного будинку</h3>
+          <p class="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto mt-1 mb-4 leading-relaxed">
+            Додайте свій перший будинок, щоб вести облік показів лічильника води та нарахувань за вивіз сміття.
           </p>
+          <div class="max-w-md mx-auto mb-5 rounded-2xl bg-amber-50/90 dark:bg-amber-500/10 border border-amber-200/90 dark:border-amber-500/25 p-3 flex items-start gap-2 text-left">
+            <mat-icon class="text-base leading-none text-amber-600 dark:text-amber-400 shrink-0 mt-0.5">bolt</mat-icon>
+            <p class="text-2xs sm:text-xs text-amber-950 dark:text-amber-100/90 leading-relaxed">
+              <span class="font-extrabold">Важливо:</span> вказуйте вірний особовий рахунок — це необхідно для отримання актуального рахунку та коректної передачі показів, зокрема за електроенергію.
+            </p>
+          </div>
           @if (canEdit()) {
             <button
               type="button"
               (click)="openAccountModal(null)"
-              class="px-4 py-2.5 rounded-xl text-xs font-semibold bg-cyan-600 hover:bg-cyan-700 text-white transition-colors inline-flex items-center gap-2 cursor-pointer shadow-sm shadow-cyan-600/20"
+              [class]="serviceMode() === 'waste'
+                ? 'px-5 py-2.5 rounded-2xl text-xs sm:text-sm font-bold bg-emerald-500 hover:bg-emerald-600 text-white transition-all inline-flex items-center gap-2 cursor-pointer border-0 shadow-lg shadow-emerald-500/25'
+                : 'px-5 py-2.5 rounded-2xl text-xs sm:text-sm font-bold bg-sky-500 hover:bg-sky-600 text-white transition-all inline-flex items-center gap-2 cursor-pointer border-0 shadow-lg shadow-sky-500/25'"
             >
-              <mat-icon class="text-base">add_business</mat-icon>
-              <span>Додати будинок</span>
+              <mat-icon class="text-lg leading-none">add_home</mat-icon>
+              <span>Додати новий будинок</span>
             </button>
           }
         </div>
       }
 
       @if (currentAccount(); as acc) {
-        <!-- Active Account Details Card -->
-        <div class="p-5 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-4">
-          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
-            <div>
-              <div class="flex items-center gap-2 flex-wrap">
-                <h3 class="text-base font-bold text-slate-900">{{ acc.name }}</h3>
-                @if (acc.accountNumber) {
-                  <span class="text-2xs text-slate-500 font-mono bg-slate-100 px-2 py-0.5 rounded">
-                    Особовий № {{ acc.accountNumber }}
-                  </span>
-                }
-                @if (serviceMode() !== 'waste' && acc.meterNumber) {
-                  <span class="text-2xs text-cyan-700 font-mono bg-cyan-50 px-2 py-0.5 rounded border border-cyan-200/60">
-                    Лічильник: {{ acc.meterNumber }}
-                  </span>
-                }
-              </div>
-              <p class="text-xs text-slate-500 mt-0.5">
-                Кількість зареєстрованих осіб: <span class="font-semibold text-slate-700">{{ acc.residentsCount || 1 }}</span>
-                @if (acc.address || (acc.city && acc.street)) {
-                  • <span class="text-slate-600">{{ acc.address || (acc.city + ', ' + acc.street + (acc.houseNum ? ', буд. ' + acc.houseNum : '')) }}</span>
-                }
-              </p>
-            </div>
+        @if (serviceMode() === 'water') {
+          <!-- Water Account Card (Signature Sky/Cyan Style) -->
+          @if (waterPrediction(); as pred) {
+            <div class="rounded-3xl p-6 sm:p-7 bg-white dark:bg-[#111827] border border-sky-200/80 dark:border-sky-500/25 shadow-sm relative overflow-hidden space-y-6">
+              <div class="absolute top-0 inset-x-0 h-1.5 bg-gradient-to-r from-sky-400 via-cyan-500 to-blue-500"></div>
 
-            @if (canEdit()) {
-              <div class="flex items-center gap-2 flex-wrap">
-                @if (serviceMode() === 'waste') {
-                  <button
-                    type="button"
-                    (click)="openWasteAccrualModal()"
-                    class="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
-                  >
-                    <mat-icon class="text-sm">delete_outline</mat-icon>
-                    <span>+ Нарахувати сміття</span>
-                  </button>
-                }
-                <button
-                  type="button"
-                  (click)="openAccountModal(acc)"
-                  class="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-100 border border-slate-200 flex items-center gap-1 transition-colors cursor-pointer"
-                >
-                  <mat-icon class="text-sm">edit</mat-icon>
-                  <span>Редагувати будинок</span>
-                </button>
-                <button
-                  type="button"
-                  (click)="confirmDeleteAccount(acc)"
-                  class="px-3 py-1.5 rounded-lg text-xs font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 flex items-center gap-1 transition-colors cursor-pointer"
-                >
-                  <mat-icon class="text-sm">delete</mat-icon>
-                  <span>Видалити</span>
-                </button>
-              </div>
-            }
-          </div>
-
-          <!-- Stat Overview Cards -->
-          @if (serviceMode() === 'water') {
-            <!-- Balance and predictions are cleanly handled by the dedicated banner below -->
-          } @else if (serviceMode() === 'waste') {
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
-              <!-- Residents Count -->
-              <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
-                <span class="text-3xs font-semibold uppercase tracking-wider text-slate-500 block">Зареєстровано мешканців</span>
-                <div class="text-base font-extrabold text-slate-900 mt-1">
-                  {{ acc.residentsCount || 1 }} <span class="text-xs font-normal text-slate-500">осіб</span>
-                </div>
-                <span class="text-3xs text-slate-400 block mt-0.5">
-                  Використовується для розрахунку ТПВ
-                </span>
-              </div>
-
-              <!-- Waste Monthly Charge -->
-              <div class="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200/80">
-                <span class="text-3xs font-semibold uppercase tracking-wider text-emerald-800 block">Вивіз сміття (місяць)</span>
-                <div class="text-base font-extrabold text-emerald-950 mt-1">
-                  {{ monthlyWasteCharge() }} <span class="text-xs font-normal text-emerald-700">грн/міс</span>
-                </div>
-                <span class="text-3xs text-emerald-700 block mt-0.5">
-                  {{ acc.residentsCount || 1 }} осіб × {{ currentWasteRate() }} грн
-                </span>
-              </div>
-
-              <!-- Waste Rate & Effective Date -->
-              <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
-                <span class="text-3xs font-semibold uppercase tracking-wider text-slate-500 block">Тариф на сміття</span>
-                <div class="text-base font-extrabold text-slate-900 mt-1">
-                  {{ currentWasteRate() }} <span class="text-xs font-normal text-slate-500">грн/особа/міс</span>
-                </div>
-                <span class="text-3xs text-slate-400 block mt-0.5">
-                  Діє з {{ formatDate(wasteTariffValidFrom()) }}
-                  @if (wasteTariffValidTo()) {
-                    до {{ formatDate(wasteTariffValidTo()) }}
-                  }
-                </span>
-              </div>
-            </div>
-          } @else {
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
-              <!-- Waste Monthly Charge -->
-              <div class="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200/80">
-                <span class="text-3xs font-semibold uppercase tracking-wider text-emerald-800 block">Вивіз сміття (місяць)</span>
-                <div class="text-base font-extrabold text-emerald-950 mt-1">
-                  {{ monthlyWasteCharge() }} <span class="text-xs font-normal text-emerald-700">грн/міс</span>
-                </div>
-                <span class="text-3xs text-emerald-700 block mt-0.5">
-                  {{ acc.residentsCount || 1 }} осіб × {{ currentWasteRate() }} грн
-                </span>
-              </div>
-
-              <!-- Waste Rate & Effective Date -->
-              <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
-                <span class="text-3xs font-semibold uppercase tracking-wider text-slate-500 block">Тариф на сміття</span>
-                <div class="text-base font-extrabold text-slate-900 mt-1">
-                  {{ currentWasteRate() }} <span class="text-xs font-normal text-slate-500">грн/міс</span>
-                </div>
-                <span class="text-3xs text-slate-400 block mt-0.5">
-                  Діє з {{ formatDate(wasteTariffValidFrom()) }}
-                  @if (wasteTariffValidTo()) {
-                    до {{ formatDate(wasteTariffValidTo()) }}
-                  }
-                </span>
-              </div>
-            </div>
-          }
-
-          <!-- Water Account Balance Prediction Banner (only on Water or All mode) -->
-          @if (serviceMode() !== 'waste' && waterPrediction(); as pred) {
-            <div class="p-4 rounded-2xl bg-gradient-to-r from-slate-900 via-cyan-950 to-slate-900 text-white shadow-md border border-cyan-800/60 space-y-3">
-              <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-cyan-800/60">
-                <div class="flex items-center gap-2.5">
-                  <div class="w-9 h-9 rounded-xl bg-cyan-500/20 text-cyan-300 flex items-center justify-center border border-cyan-400/30">
-                    <mat-icon>insights</mat-icon>
+              <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-slate-100 dark:border-slate-800">
+                <div class="flex items-start sm:items-center gap-3.5 min-w-0">
+                  <div class="w-12 h-12 rounded-2xl bg-sky-500 text-white flex items-center justify-center shadow-md shadow-sky-500/20 shrink-0">
+                    <mat-icon class="text-2xl leading-none">water_drop</mat-icon>
                   </div>
-                  <div>
-                    <h4 class="text-sm font-bold text-white flex items-center gap-2">
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-2 flex-wrap">
+                      <h1 class="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight">
+                        {{ acc.name }}
+                      </h1>
+                      @if (acc.meterNumber) {
+                        <span class="text-xs text-sky-700 dark:text-sky-300 bg-sky-50 dark:bg-sky-500/15 px-2 py-0.5 rounded-lg border border-sky-200/70 dark:border-sky-500/25 font-mono">
+                          Лічильник {{ acc.meterNumber }}
+                        </span>
+                      }
+                    </div>
+                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                      @if (acc.address || (acc.city && acc.street)) {
+                        {{ acc.address || (acc.city + ', ' + acc.street + (acc.houseNum ? ', буд. ' + acc.houseNum : '')) }} •
+                      }
                       Прогноз залишку коштів та показів лічильника
-                    </h4>
-                    <p class="text-3xs text-cyan-200">
-                      Динамічний відрахунок щомісячної абоноплати та вартості використаної води від залишку
                     </p>
                   </div>
                 </div>
-                @if (canEdit()) {
-                  <button
-                    type="button"
-                    (click)="openQuickBalanceModal()"
-                    class="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition-colors inline-flex items-center gap-1.5 cursor-pointer shadow-sm shrink-0 self-start sm:self-auto"
-                  >
-                    <mat-icon class="text-sm">account_balance_wallet</mat-icon>
-                    <span>Змінити залишок ({{ (acc.balanceUah || 0).toFixed(2) }} грн)</span>
-                  </button>
-                }
+                <div class="flex items-center sm:flex-col sm:items-end justify-between gap-2 shrink-0">
+                  <div class="text-left sm:text-right">
+                    <p class="text-xs text-slate-500 dark:text-slate-400">Поточний залишок</p>
+                    <p class="text-2xl sm:text-3xl font-extrabold text-sky-600 dark:text-sky-400 tabular-nums">
+                      {{ pred.balanceUah.toFixed(2) }} ₴
+                    </p>
+                  </div>
+                  @if (canEdit()) {
+                    <button
+                      type="button"
+                      (click)="openQuickBalanceModal()"
+                      class="px-3.5 py-2 rounded-xl text-xs font-bold bg-sky-500 hover:bg-sky-600 text-white transition-all inline-flex items-center gap-1.5 cursor-pointer shadow-md shadow-sky-500/20 active:scale-95"
+                    >
+                      <mat-icon class="text-sm leading-none">account_balance_wallet</mat-icon>
+                      <span>Змінити залишок</span>
+                    </button>
+                  }
+                </div>
               </div>
 
-              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
-                <div class="p-3 bg-white/5 rounded-xl border border-white/10">
-                  <span class="text-3xs text-cyan-200 block uppercase tracking-wider font-semibold">Баланс рахунку</span>
-                  <div class="text-lg font-extrabold text-emerald-300 mt-0.5">
-                    {{ pred.balanceUah.toFixed(2) }} грн
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div class="p-4 rounded-2xl bg-sky-50/70 dark:bg-sky-950/20 border border-sky-200/70 dark:border-sky-500/20">
+                  <span class="text-2xs text-sky-700 dark:text-sky-300 block uppercase tracking-wider font-bold">Баланс рахунку</span>
+                  <div class="text-xl font-extrabold text-slate-900 dark:text-white mt-1 tabular-nums">
+                    {{ pred.balanceUah.toFixed(2) }} ₴
                   </div>
-                  <div class="text-3xs text-slate-300 mt-1">
-                    Абонплата: <span class="font-bold text-cyan-200">{{ pred.monthlyFee }} грн/міс</span>
+                  <div class="text-2xs text-slate-500 dark:text-slate-400 mt-1">
+                    Абонплата: <span class="font-semibold text-sky-700 dark:text-sky-300">{{ pred.monthlyFee }} ₴/міс</span>
                   </div>
                 </div>
 
-                <div class="p-3 bg-cyan-500/10 rounded-xl border border-cyan-400/30">
-                  <span class="text-3xs text-cyan-200 block uppercase tracking-wider font-semibold">Доступно води</span>
-                  <div class="text-lg font-extrabold text-cyan-300 mt-0.5">
+                <div class="p-4 rounded-2xl bg-cyan-50/60 dark:bg-cyan-950/20 border border-cyan-200/70 dark:border-cyan-500/20">
+                  <span class="text-2xs text-cyan-700 dark:text-cyan-300 block uppercase tracking-wider font-bold">Доступно води</span>
+                  <div class="text-xl font-extrabold text-sky-600 dark:text-sky-400 mt-1 tabular-nums">
                     +{{ pred.availableM3 }} м³
                   </div>
-                  <div class="text-3xs text-cyan-200 mt-1">
-                    Після абонплати ({{ pred.usableBalanceForWater.toFixed(2) }} грн)
+                  <div class="text-2xs text-slate-500 dark:text-slate-400 mt-1">
+                    Після абонплати ({{ pred.usableBalanceForWater.toFixed(2) }} ₴)
                   </div>
                 </div>
 
-                <div class="p-3 bg-emerald-500/10 rounded-xl border border-emerald-400/30">
-                  <span class="text-3xs text-emerald-200 block uppercase tracking-wider font-semibold">Вистачить до показника</span>
-                  <div class="text-xl font-black text-emerald-300 mt-0.5 font-mono">
+                <div class="p-4 rounded-2xl bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-200/70 dark:border-emerald-500/20">
+                  <span class="text-2xs text-emerald-700 dark:text-emerald-300 block uppercase tracking-wider font-bold">Вистачить до показника</span>
+                  <div class="text-xl font-extrabold text-emerald-600 dark:text-emerald-400 mt-1 font-mono tabular-nums">
                     {{ pred.predictedReadingM3 }} м³
                   </div>
-                  <div class="text-3xs text-emerald-200 mt-1 font-medium">
-                    (поточні покази: <span class="font-mono font-bold text-white">{{ pred.currentReadingM3 }} м³</span>)
+                  <div class="text-2xs text-slate-500 dark:text-slate-400 mt-1 font-medium">
+                    Поточні покази: <span class="font-mono font-bold text-slate-800 dark:text-slate-200">{{ pred.currentReadingM3 }} м³</span>
                   </div>
                 </div>
               </div>
 
               @if (pred.estimatedDaysCovered && pred.estimatedDaysCovered > 0) {
-                <div class="p-2.5 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between text-2xs text-cyan-100 flex-wrap gap-2">
+                <div class="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-700/70 flex items-center justify-between text-xs text-slate-600 dark:text-slate-300 flex-wrap gap-2">
                   <div class="flex items-center gap-2">
-                    <mat-icon class="text-cyan-400 text-sm">schedule</mat-icon>
+                    <mat-icon class="text-sky-500 text-base leading-none">schedule</mat-icon>
                     <span>
-                      Орієнтовно залишку вистачить ще на <strong>~{{ pred.estimatedDaysCovered }} днів</strong> (до {{ formatDate(pred.estimatedDate) }}).
+                      Орієнтовно залишку вистачить ще на <strong class="text-slate-900 dark:text-white">~{{ pred.estimatedDaysCovered }} днів</strong> (до {{ formatDate(pred.estimatedDate) }}).
                     </span>
                   </div>
                   @if (pred.dailyAvgM3) {
-                    <span class="text-3xs text-slate-300 font-mono">
+                    <span class="text-2xs text-slate-500 dark:text-slate-400 font-mono font-semibold">
                       Середній темп: {{ Math.round((pred.dailyAvgM3 * 1000)) }} л/день
                     </span>
                   }
@@ -400,45 +386,215 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
               }
             </div>
           }
-        </div>
+        } @else {
+          <!-- Waste / Combined Account Details Card (Signature Emerald/Eco Style) -->
+          <div class="rounded-3xl p-6 sm:p-7 bg-white dark:bg-[#111827] border border-emerald-200/80 dark:border-emerald-500/25 shadow-sm relative overflow-hidden space-y-6">
+            <div class="absolute top-0 inset-x-0 h-1.5 bg-gradient-to-r from-emerald-400 via-teal-500 to-green-500"></div>
+
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-slate-100 dark:border-slate-800">
+              <div class="flex items-start sm:items-center gap-3.5 min-w-0">
+                <div class="w-12 h-12 rounded-2xl bg-emerald-500 text-white flex items-center justify-center shadow-md shadow-emerald-500/20 shrink-0">
+                  <mat-icon class="text-2xl leading-none">recycling</mat-icon>
+                </div>
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <h1 class="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight">
+                      Вивіз побутових відходів · {{ acc.name }}
+                    </h1>
+                  </div>
+                  <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    Абонентський тариф • {{ acc.residentsCount || 1 }} мешканців
+                    @if (acc.address || (acc.city && acc.street)) {
+                      • {{ acc.address || (acc.city + ', ' + acc.street + (acc.houseNum ? ', буд. ' + acc.houseNum : '')) }}
+                    }
+                  </p>
+                </div>
+              </div>
+
+              <div class="flex items-center sm:flex-col sm:items-end justify-between gap-2 shrink-0">
+                <div class="text-left sm:text-right">
+                  <p class="text-xs text-slate-500 dark:text-slate-400">Нарахування за місяць</p>
+                  <p class="text-2xl sm:text-3xl font-extrabold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                    {{ monthlyWasteCharge() }} ₴
+                  </p>
+                </div>
+                @if (canEdit() && serviceMode() === 'waste') {
+                  <button
+                    type="button"
+                    (click)="openWasteAccrualModal()"
+                    class="px-4 py-2 rounded-xl text-xs font-bold bg-emerald-500 hover:bg-emerald-600 text-white transition-all inline-flex items-center gap-1.5 cursor-pointer shadow-md shadow-emerald-500/20 active:scale-95"
+                  >
+                    <mat-icon class="text-sm leading-none">add</mat-icon>
+                    <span>Нарахувати сміття</span>
+                  </button>
+                }
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <!-- Residents Count -->
+              <div class="p-4 rounded-2xl bg-slate-50/90 dark:bg-slate-800/50 border border-slate-200/80 dark:border-slate-700/70">
+                <span class="text-2xs text-slate-500 dark:text-slate-400 block uppercase tracking-wider font-bold">Зареєстровано мешканців</span>
+                <div class="text-xl font-extrabold text-slate-900 dark:text-white mt-1 tabular-nums">
+                  {{ acc.residentsCount || 1 }} <span class="text-xs font-semibold text-slate-500 dark:text-slate-400">осіб</span>
+                </div>
+                <div class="text-2xs text-slate-500 dark:text-slate-400 mt-1">
+                  Використовується для розрахунку ТПВ
+                </div>
+              </div>
+
+              <!-- Waste Monthly Charge -->
+              <div class="p-4 rounded-2xl bg-emerald-50/70 dark:bg-emerald-950/20 border border-emerald-200/70 dark:border-emerald-500/20">
+                <span class="text-2xs text-emerald-700 dark:text-emerald-300 block uppercase tracking-wider font-bold">Вивіз сміття (місяць)</span>
+                <div class="text-xl font-extrabold text-emerald-600 dark:text-emerald-400 mt-1 tabular-nums">
+                  {{ monthlyWasteCharge() }} <span class="text-xs font-semibold">₴/міс</span>
+                </div>
+                <div class="text-2xs text-slate-500 dark:text-slate-400 mt-1 tabular-nums">
+                  {{ acc.residentsCount || 1 }} осіб × {{ currentWasteRate() }} ₴
+                </div>
+              </div>
+
+              <!-- Waste Rate & Effective Date -->
+              <div class="p-4 rounded-2xl bg-teal-50/60 dark:bg-teal-950/20 border border-teal-200/70 dark:border-teal-500/20">
+                <span class="text-2xs text-teal-700 dark:text-teal-300 block uppercase tracking-wider font-bold">Тариф на сміття</span>
+                <div class="text-xl font-extrabold text-teal-600 dark:text-teal-400 mt-1 font-mono tabular-nums">
+                  {{ currentWasteRate() }} <span class="text-xs font-semibold">₴/особа</span>
+                </div>
+                <div class="text-2xs text-slate-500 dark:text-slate-400 mt-1">
+                  Діє з {{ formatDate(wasteTariffValidFrom()) }}
+                  @if (wasteTariffValidTo()) {
+                    до {{ formatDate(wasteTariffValidTo()) }}
+                  }
+                </div>
+              </div>
+            </div>
+
+            <!-- Water Account Balance Prediction Banner (Combined mode) -->
+            @if (serviceMode() !== 'waste' && waterPrediction(); as pred) {
+              <div class="p-5 rounded-2xl bg-sky-50/70 dark:bg-sky-950/20 border border-sky-200/70 dark:border-sky-500/25 space-y-3">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-sky-200/60 dark:border-sky-500/20">
+                  <div class="flex items-center gap-2.5">
+                    <div class="w-9 h-9 rounded-xl bg-sky-500 text-white flex items-center justify-center shadow-sm">
+                      <mat-icon>insights</mat-icon>
+                    </div>
+                    <div>
+                      <h4 class="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                        Прогноз залишку коштів та показів лічильника
+                      </h4>
+                      <p class="text-2xs text-slate-500 dark:text-slate-400">
+                        Динамічний відрахунок щомісячної абоноплати та вартості використаної води від залишку
+                      </p>
+                    </div>
+                  </div>
+                  @if (canEdit()) {
+                    <button
+                      type="button"
+                      (click)="openQuickBalanceModal()"
+                      class="px-3.5 py-2 rounded-xl text-xs font-bold bg-sky-500 hover:bg-sky-600 text-white transition-colors inline-flex items-center gap-1.5 cursor-pointer shadow-sm shrink-0 self-start sm:self-auto"
+                    >
+                      <mat-icon class="text-sm">account_balance_wallet</mat-icon>
+                      <span>Змінити залишок ({{ (acc.balanceUah || 0).toFixed(2) }} ₴)</span>
+                    </button>
+                  }
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                  <div class="p-3 bg-white dark:bg-[#111827] rounded-xl border border-sky-200/60 dark:border-slate-800">
+                    <span class="text-2xs text-sky-700 dark:text-sky-300 block uppercase tracking-wider font-semibold">Баланс рахунку</span>
+                    <div class="text-lg font-extrabold text-emerald-300 mt-0.5">
+                      {{ pred.balanceUah.toFixed(2) }} грн
+                    </div>
+                    <div class="text-3xs text-slate-300 mt-1">
+                      Абонплата: <span class="font-bold text-cyan-200">{{ pred.monthlyFee }} грн/міс</span>
+                    </div>
+                  </div>
+
+                  <div class="p-3 bg-cyan-500/10 rounded-xl border border-cyan-400/30">
+                    <span class="text-3xs text-cyan-200 block uppercase tracking-wider font-semibold">Доступно води</span>
+                    <div class="text-lg font-extrabold text-cyan-300 mt-0.5">
+                      +{{ pred.availableM3 }} м³
+                    </div>
+                    <div class="text-3xs text-cyan-200 mt-1">
+                      Після абонплати ({{ pred.usableBalanceForWater.toFixed(2) }} грн)
+                    </div>
+                  </div>
+
+                  <div class="p-3 bg-emerald-500/10 rounded-xl border border-emerald-400/30">
+                    <span class="text-3xs text-emerald-200 block uppercase tracking-wider font-semibold">Вистачить до показника</span>
+                    <div class="text-xl font-black text-emerald-300 mt-0.5 font-mono">
+                      {{ pred.predictedReadingM3 }} м³
+                    </div>
+                    <div class="text-3xs text-emerald-200 mt-1 font-medium">
+                      (поточні покази: <span class="font-mono font-bold text-white">{{ pred.currentReadingM3 }} м³</span>)
+                    </div>
+                  </div>
+                </div>
+
+                @if (pred.estimatedDaysCovered && pred.estimatedDaysCovered > 0) {
+                  <div class="p-2.5 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between text-2xs text-cyan-100 flex-wrap gap-2">
+                    <div class="flex items-center gap-2">
+                      <mat-icon class="text-cyan-400 text-sm">schedule</mat-icon>
+                      <span>
+                        Орієнтовно залишку вистачить ще на <strong>~{{ pred.estimatedDaysCovered }} днів</strong> (до {{ formatDate(pred.estimatedDate) }}).
+                      </span>
+                    </div>
+                    @if (pred.dailyAvgM3) {
+                      <span class="text-3xs text-slate-300 font-mono">
+                        Середній темп: {{ Math.round((pred.dailyAvgM3 * 1000)) }} л/день
+                      </span>
+                    }
+                  </div>
+                }
+              </div>
+            }
+          </div>
+        }
 
         <!-- Mode Switcher: Table History vs Analytics (only when not in waste-only mode) -->
         @if (serviceMode() !== 'waste') {
-          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-2.5 rounded-2xl border border-slate-200/90 shadow-2xs">
-            <div class="inline-flex rounded-xl bg-slate-100 p-1 text-xs font-semibold">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-[#111827] p-3 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm">
+            <div class="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 text-xs font-semibold">
               <button
                 type="button"
                 (click)="activeMode.set('table')"
                 [class.bg-white]="activeMode() === 'table'"
+                [class.dark:bg-slate-700]="activeMode() === 'table'"
                 [class.text-slate-900]="activeMode() === 'table'"
+                [class.dark:text-white]="activeMode() === 'table'"
                 [class.shadow-2xs]="activeMode() === 'table'"
                 [class.text-slate-600]="activeMode() !== 'table'"
+                [class.dark:text-slate-400]="activeMode() !== 'table'"
                 class="px-3.5 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer"
               >
-                <mat-icon class="text-base text-cyan-600">table_chart</mat-icon>
+                <mat-icon class="text-base text-sky-600 dark:text-sky-400">table_chart</mat-icon>
                 <span>Журнал показів води ({{ accountReadings().length }})</span>
               </button>
               <button
                 type="button"
                 (click)="activeMode.set('analytics')"
                 [class.bg-white]="activeMode() === 'analytics'"
+                [class.dark:bg-slate-700]="activeMode() === 'analytics'"
                 [class.text-slate-900]="activeMode() === 'analytics'"
+                [class.dark:text-white]="activeMode() === 'analytics'"
                 [class.shadow-2xs]="activeMode() === 'analytics'"
                 [class.text-slate-600]="activeMode() !== 'analytics'"
+                [class.dark:text-slate-400]="activeMode() !== 'analytics'"
                 class="px-3.5 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer"
               >
-                <mat-icon class="text-base text-indigo-600">query_stats</mat-icon>
-                <span>Графіки та статистика споживання</span>
+                <mat-icon class="text-base text-indigo-600 dark:text-indigo-400">query_stats</mat-icon>
+                <span>Графіки та статистика</span>
               </button>
             </div>
 
             @if (activeMode() === 'table') {
-              <div class="flex items-center bg-slate-100 p-0.5 rounded-xl text-xs font-semibold text-slate-600 overflow-x-auto">
+              <div class="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-400 overflow-x-auto">
                 <button
                   type="button"
                   (click)="filterType.set('all')"
                   [class.bg-white]="filterType() === 'all'"
+                  [class.dark:bg-slate-700]="filterType() === 'all'"
                   [class.text-slate-900]="filterType() === 'all'"
+                  [class.dark:text-white]="filterType() === 'all'"
                   [class.shadow-2xs]="filterType() === 'all'"
                   class="px-2.5 py-1 rounded-lg cursor-pointer transition-all"
                 >
@@ -448,22 +604,26 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
                   type="button"
                   (click)="filterType.set('water')"
                   [class.bg-white]="filterType() === 'water'"
-                  [class.text-cyan-900]="filterType() === 'water'"
+                  [class.dark:bg-slate-700]="filterType() === 'water'"
+                  [class.text-sky-700]="filterType() === 'water'"
+                  [class.dark:text-sky-300]="filterType() === 'water'"
                   [class.shadow-2xs]="filterType() === 'water'"
                   class="px-2.5 py-1 rounded-lg cursor-pointer transition-all flex items-center gap-1"
                 >
-                  <mat-icon class="text-xs leading-none text-cyan-600">water_drop</mat-icon>
+                  <mat-icon class="text-xs leading-none text-sky-600 dark:text-sky-400">water_drop</mat-icon>
                   Розрахункові
                 </button>
                 <button
                   type="button"
                   (click)="filterType.set('water_control')"
                   [class.bg-white]="filterType() === 'water_control'"
-                  [class.text-indigo-900]="filterType() === 'water_control'"
+                  [class.dark:bg-slate-700]="filterType() === 'water_control'"
+                  [class.text-indigo-700]="filterType() === 'water_control'"
+                  [class.dark:text-indigo-300]="filterType() === 'water_control'"
                   [class.shadow-2xs]="filterType() === 'water_control'"
                   class="px-2.5 py-1 rounded-lg cursor-pointer transition-all flex items-center gap-1"
                 >
-                  <mat-icon class="text-xs leading-none text-indigo-600">visibility</mat-icon>
+                  <mat-icon class="text-xs leading-none text-indigo-600 dark:text-indigo-400">visibility</mat-icon>
                   Контрольні
                 </button>
                 @if (serviceMode() === 'all') {
@@ -471,11 +631,13 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
                     type="button"
                     (click)="filterType.set('waste')"
                     [class.bg-white]="filterType() === 'waste'"
+                    [class.dark:bg-slate-700]="filterType() === 'waste'"
                     [class.text-slate-900]="filterType() === 'waste'"
+                    [class.dark:text-white]="filterType() === 'waste'"
                     [class.shadow-2xs]="filterType() === 'waste'"
                     class="px-2.5 py-1 rounded-lg cursor-pointer transition-all flex items-center gap-1"
                   >
-                    <mat-icon class="text-xs leading-none text-emerald-600">delete_outline</mat-icon>
+                    <mat-icon class="text-xs leading-none text-emerald-600 dark:text-emerald-400">recycling</mat-icon>
                     Сміття
                   </button>
                 }
@@ -486,14 +648,14 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
 
         @if (serviceMode() !== 'waste' && activeMode() === 'analytics') {
           <!-- Water Statistics & Trends Charts -->
-          <div class="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-4">
-            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+          <div class="p-5 sm:p-6 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-4">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
               <div>
-                <h3 class="text-base font-bold text-slate-900 flex items-center gap-2">
-                  <mat-icon class="text-cyan-600">query_stats</mat-icon>
+                <h3 class="text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <mat-icon class="text-sky-600 dark:text-sky-400">query_stats</mat-icon>
                   <span>Аналітика споживання води та тенденцій</span>
                 </h3>
-                <p class="text-xs text-slate-500">
+                <p class="text-xs text-slate-500 dark:text-slate-400">
                   Середньодобове споживання води в літрах, місячні витрати та динаміка контрольних замірів
                 </p>
               </div>
@@ -501,9 +663,9 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
                 <button
                   type="button"
                   (click)="openWaterReadingModal(true)"
-                  class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                  class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-indigo-50 dark:bg-indigo-500/15 border border-indigo-200 dark:border-indigo-500/30 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-500/25 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
                 >
-                  <mat-icon class="text-sm text-indigo-600">visibility</mat-icon>
+                  <mat-icon class="text-sm text-indigo-600 dark:text-indigo-400">visibility</mat-icon>
                   <span>+ Контрольний замір води</span>
                 </button>
               }
@@ -517,7 +679,7 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
           </div>
         } @else {
           <!-- History Records Table -->
-          <div class="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-4">
+          <div class="p-5 sm:p-6 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-4">
             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <h3 class="text-base font-bold text-slate-900">
@@ -553,10 +715,10 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
                         type="button"
                         (click)="openCameraModal()"
                         class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-cyan-50 border border-cyan-300 text-cyan-900 hover:bg-cyan-100 transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer shrink-0"
-                        title="Сфотографувати лічильник води та розпізнати покази"
+                        title="Розпізнати покази лічильника води"
                       >
                         <mat-icon class="text-base text-cyan-600 leading-none">photo_camera</mat-icon>
-                        <span>Зробити фото</span>
+                        <span>Розпізнати покази</span>
                       </button>
                     }
                     @if (serviceMode() !== 'water') {
@@ -579,7 +741,7 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
               <!-- Mobile Card List -->
               <div class="md:hidden space-y-2.5">
                 @for (r of filteredReadings(); track r.id) {
-                  <div class="p-3.5 rounded-2xl border border-slate-200 bg-white shadow-2xs space-y-2.5">
+                  <div class="cv-water-row p-3.5 rounded-2xl border border-slate-200 bg-white shadow-2xs space-y-2.5">
                     <div class="flex items-start justify-between gap-2">
                       <div class="min-w-0">
                         <div class="flex items-center gap-1.5 flex-wrap">
@@ -724,7 +886,7 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
                   </thead>
                   <tbody class="divide-y divide-slate-100 text-slate-800">
                     @for (r of filteredReadings(); track r.id) {
-                      <tr class="hover:bg-slate-50/80 transition-colors">
+                      <tr class="cv-reading-row hover:bg-slate-50/80 transition-colors">
                         <!-- Date -->
                         <td class="py-3 px-3.5 whitespace-nowrap">
                           <div class="flex items-center gap-1.5">
@@ -892,7 +1054,7 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
                       class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-cyan-50 border border-cyan-300 text-cyan-900 hover:bg-cyan-100 transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
                     >
                       <mat-icon class="text-base text-cyan-600 leading-none">photo_camera</mat-icon>
-                      <span>Зробити фото</span>
+                      <span>Розпізнати покази</span>
                     </button>
                   </div>
                 }
@@ -974,6 +1136,14 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
                     class="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-medium text-slate-900 focus:outline-none focus:border-cyan-600"
                   />
                 </div>
+              </div>
+
+              <div class="p-3 rounded-2xl bg-amber-50 border border-amber-300/90 flex items-start gap-2.5">
+                <mat-icon class="text-base leading-none text-amber-600 shrink-0 mt-0.5">warning_amber</mat-icon>
+                <p class="text-2xs sm:text-xs text-amber-950 leading-relaxed">
+                  <span class="font-extrabold">Важливо: введіть вірний особовий рахунок.</span>
+                  Це потрібно для отримання актуального рахунку до сплати та коректної передачі показів (зокрема за електроенергію).
+                </p>
               </div>
 
               <!-- Address & Residents -->
@@ -1242,10 +1412,10 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
                     type="button"
                     (click)="openCameraModal()"
                     class="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-cyan-50 hover:bg-cyan-100 text-cyan-900 border border-cyan-300 transition-colors cursor-pointer shadow-2xs"
-                    title="Сфотографувати лічильник води для автоматичного заповнення"
+                    title="Розпізнати покази лічильника води для автоматичного заповнення"
                   >
                     <mat-icon class="text-sm text-cyan-600 leading-none">photo_camera</mat-icon>
-                    <span>Зробити фото</span>
+                    <span>Розпізнати покази</span>
                   </button>
                 </div>
                 <input
@@ -1595,6 +1765,7 @@ type SubFilterType = 'all' | 'water' | 'water_control' | 'waste';
 export class WaterWasteView {
   readonly dataService = inject(IptvData);
   readonly serviceMode = input<'water' | 'waste' | 'all'>('all');
+  readonly backToHome = output<void>();
   protected readonly Math = Math;
 
   readonly canEdit = this.dataService.canEdit;
@@ -1623,6 +1794,7 @@ export class WaterWasteView {
     return list[0]?.id || '';
   });
   readonly showHiddenHousesPanel = signal<boolean>(false);
+  readonly isHouseActionsMenuOpen = signal<boolean>(false);
   readonly utilityTariffs = this.dataService.utilityTariffs;
 
   readonly selectedAccountId = signal<string>('');
@@ -1662,7 +1834,7 @@ export class WaterWasteView {
   });
 
   readonly waterForm = new FormGroup({
-    date: new FormControl(new Date().toISOString().split('T')[0], [Validators.required]),
+    date: new FormControl(resolveYesterdayIsoDate(), [Validators.required]),
     reading: new FormControl<number | null>(null, [Validators.required]),
     isControlOnly: new FormControl<boolean>(false),
     isPaid: new FormControl<boolean>(false),
@@ -1670,8 +1842,8 @@ export class WaterWasteView {
   });
 
   readonly wasteForm = new FormGroup({
-    month: new FormControl(new Date().toISOString().substring(0, 7), [Validators.required]),
-    date: new FormControl(new Date().toISOString().split('T')[0], [Validators.required]),
+    month: new FormControl(resolveYesterdayIsoDate().substring(0, 7), [Validators.required]),
+    date: new FormControl(resolveYesterdayIsoDate(), [Validators.required]),
     isPaid: new FormControl<boolean>(false),
     note: new FormControl(''),
   });
@@ -1692,6 +1864,15 @@ export class WaterWasteView {
       if (defAcc && list.some((a) => a.id === defAcc.id) && (!currSelected || !list.some((a) => a.id === currSelected))) {
         untracked(() => {
           this.selectedAccountId.set(defAcc.id);
+        });
+      }
+    });
+
+    effect(() => {
+      if (this.dataService.pendingOpenAddHouseModal() && this.canEdit()) {
+        untracked(() => {
+          this.dataService.pendingOpenAddHouseModal.set(false);
+          this.openAccountModal(null);
         });
       }
     });
@@ -2146,7 +2327,7 @@ export class WaterWasteView {
 
     this.editingReadingId.set(null);
     this.waterForm.reset({
-      date: new Date().toISOString().split('T')[0],
+      date: resolveYesterdayIsoDate(),
       reading: null,
       isControlOnly: isControl,
       isPaid: false,
@@ -2189,7 +2370,7 @@ export class WaterWasteView {
     if (!acc) return;
 
     this.waterForm.patchValue({
-      date: new Date().toISOString().split('T')[0],
+      date: resolveYesterdayIsoDate(),
       reading: applied.readingWater !== undefined ? applied.readingWater : null,
       isControlOnly: false,
       isPaid: false,
@@ -2293,10 +2474,10 @@ export class WaterWasteView {
 
   openWasteAccrualModal(): void {
     this.editingReadingId.set(null);
-    const now = new Date();
+    const yesterday = resolveYesterdayIsoDate();
     this.wasteForm.reset({
-      month: now.toISOString().substring(0, 7),
-      date: now.toISOString().split('T')[0],
+      month: yesterday.substring(0, 7),
+      date: yesterday,
       isPaid: false,
       note: '',
     });
@@ -2374,9 +2555,13 @@ export class WaterWasteView {
   }
 
   async deleteReading(id: string): Promise<void> {
+    const target = this.accountReadings().find((r) => r.id === id);
+    const dateLabel = target?.date ? this.formatDate(target.date) : '';
+    const typeLabel =
+      target?.utilityType === 'waste' ? 'нарахування за вивіз сміття' : 'показів водопостачання';
     const ok = await this.dataService.openConfirmDialog({
       title: 'Видалити запис?',
-      message: 'Ви дійсно бажаєте видалити цей запис? Цю дію неможливо скасувати.',
+      message: `Ви дійсно бажаєте видалити запис ${typeLabel}${dateLabel ? ' від ' + dateLabel : ''}? Цю дію неможливо скасувати.`,
       confirmText: 'Видалити',
       cancelText: 'Скасувати',
       tone: 'danger',

@@ -1,14 +1,17 @@
 import { Injectable, signal, computed } from '@angular/core';
 
 export type ThemeMode = 'system' | 'light' | 'dark';
+export type DesignVersion = 'v5';
 
 const STORAGE_KEY = 'homehub_theme_mode_v2';
+const DESIGN_STORAGE_KEY = 'homehub_design_version_v1';
 
 @Injectable({
   providedIn: 'root',
 })
 export class ThemeService {
   readonly themeMode = signal<ThemeMode>('light');
+  readonly designVersion = signal<DesignVersion>('v5');
   readonly systemPrefersDark = signal<boolean>(false);
 
   readonly isDark = computed<boolean>(() => {
@@ -17,6 +20,8 @@ export class ThemeService {
     if (mode === 'light') return false;
     return this.systemPrefersDark();
   });
+
+  readonly isClassicDesign = computed<boolean>(() => true);
 
   constructor() {
     if (typeof window !== 'undefined') {
@@ -27,6 +32,10 @@ export class ThemeService {
       } else {
         this.themeMode.set('light');
       }
+
+      // 1b. Classic style is the sole active interface style
+      this.designVersion.set('v5');
+      localStorage.setItem(DESIGN_STORAGE_KEY, 'v5');
 
       // 2. Read system color scheme preference
       const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
@@ -58,6 +67,14 @@ export class ThemeService {
     }
   }
 
+  setDesignVersion(_version?: DesignVersion): void {
+    this.designVersion.set('v5');
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(DESIGN_STORAGE_KEY, 'v5');
+      this.applyDOMTheme();
+    }
+  }
+
   toggleTheme(): void {
     const current = this.effectiveMode();
     const next: ThemeMode = current === 'dark' ? 'light' : 'dark';
@@ -81,5 +98,7 @@ export class ThemeService {
       root.classList.remove('dark');
       root.style.colorScheme = 'light';
     }
+
+    root.classList.add('design-v5');
   }
 }

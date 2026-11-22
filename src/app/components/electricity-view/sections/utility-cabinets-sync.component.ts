@@ -4,11 +4,17 @@ import { MatIconModule } from "@angular/material/icon";
 import { UtilityAccount, UtilityReading } from "../../../models/utility.model";
 import { DtekMeterCheckResult } from "../../../services/iptv-data";
 import { formatDateUa } from "../../../models/client.model";
-import { getSeasonForDate, resolveElectricityDualRates, resolveElectricitySingleRate } from "../../../models/utility.model";
+import {
+  calculateElectricityCost,
+  getSeasonForDate,
+  resolveElectricityDualRates,
+  resolveElectricitySingleRate,
+} from "../../../models/utility.model";
 import { FormatDateUaPipe } from "../electricity-pipes";
 import {
   getEstimatedKwhFromOoekBalanceHelper,
   hasHouseAccountNumberHelper,
+  resolveBillingMonthLastDayIsoDate,
   resolveOoekBillDate,
 } from "../electricity-reading-calc.util";
 import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
@@ -31,10 +37,6 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
                     <h4 class="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
                       Особисті кабінети будинку: ДТЕК ОЕМ та ТОВ «ООЕК»
                     </h4>
-                    <span class="px-2 py-0.5 rounded-full text-3xs font-bold bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-700 inline-flex items-center gap-1">
-                      <mat-icon aria-hidden="true" class="text-3xs leading-none">enhanced_encryption</mat-icon>
-                      <span>AES-256-GCM шифрування</span>
-                    </span>
                     @if (acc.ooekBalanceUah !== undefined && acc.ooekBalanceUah !== null) {
                       <span class="px-2.5 py-0.5 rounded-full text-2xs font-extrabold bg-amber-100 dark:bg-amber-950/80 text-amber-900 dark:text-amber-300 border border-amber-300 dark:border-amber-700 inline-flex items-center gap-1.5 flex-wrap">
                         <span>ООЕК до сплати: {{ acc.ooekBalanceUah.toFixed(2) }} грн</span>
@@ -46,9 +48,6 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
                       </span>
                     }
                   </div>
-                  <p class="text-2xs text-slate-600 dark:text-slate-300 mt-0.5">
-                    Безпечне збереження облікових даних для <span class="font-mono text-slate-800 dark:text-slate-200">auth.my.dtek-oem.com.ua</span> (показники) та <span class="font-mono text-slate-800 dark:text-slate-200">personal.ooek.od.ua</span> (нарахована сума до сплати)
-                  </p>
                 </div>
               </div>
 
@@ -258,8 +257,11 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
                   }
                 </div>
 
-                <!-- Right Card: DTEK OEM Direct Reading Submission (In development...) -->
-                <div class="p-4 rounded-xl bg-slate-100 dark:bg-slate-900/90 border border-slate-300 dark:border-slate-700 shadow-2xs space-y-3.5 flex flex-col justify-between">
+                <!-- Right Card: DTEK OEM Direct Reading Submission -->
+                <div
+                  id="dtek-oem-reading-submission-card"
+                  class="p-4 rounded-xl bg-slate-100 dark:bg-slate-900/90 border border-slate-300 dark:border-slate-700 shadow-2xs space-y-3.5 flex flex-col justify-between"
+                >
                   <div class="space-y-3">
                     <div class="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-200 dark:border-slate-800">
                       <div>
@@ -407,62 +409,72 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
 
                       <!-- Meter Reading Inputs (1 field for single-zone, 2 fields for dual-zone) -->
                       @if (acc.electricityTariffType === 'dual') {
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 opacity-70">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                           <div>
-                            <label class="block text-3xs font-bold text-slate-500 uppercase mb-1">
-                              Покази День (Т2), кВт·год
+                            <label class="block text-3xs font-bold text-slate-600 dark:text-slate-300 uppercase mb-1">
+                              Покази День (Т2), кВт·год *
                             </label>
                             <input
                               type="number"
-                              disabled
-                              [placeholder]="latestAnyReading()?.readingT1 || 0"
-                              class="w-full px-3 py-2 rounded-lg bg-slate-200/70 dark:bg-slate-800/70 border border-slate-300 dark:border-slate-700 text-xs text-slate-500 font-mono cursor-not-allowed"
+                              inputmode="decimal"
+                              step="0.1"
+                              min="0"
+                              [value]="dtekReadingT1()"
+                              (input)="dtekReadingT1.set($any($event.target).value)"
+                              [placeholder]="'Попер.: ' + (latestAnyReading()?.readingT1 || 0)"
+                              class="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white font-mono font-bold focus:outline-none focus:border-amber-500"
                             />
                           </div>
                           <div>
-                            <label class="block text-3xs font-bold text-slate-500 uppercase mb-1">
-                              Покази Ніч (Т1), кВт·год
+                            <label class="block text-3xs font-bold text-slate-600 dark:text-slate-300 uppercase mb-1">
+                              Покази Ніч (Т1), кВт·год *
                             </label>
                             <input
                               type="number"
-                              disabled
-                              [placeholder]="latestAnyReading()?.readingT2 || 0"
-                              class="w-full px-3 py-2 rounded-lg bg-slate-200/70 dark:bg-slate-800/70 border border-slate-300 dark:border-slate-700 text-xs text-slate-500 font-mono cursor-not-allowed"
+                              inputmode="decimal"
+                              step="0.1"
+                              min="0"
+                              [value]="dtekReadingT2()"
+                              (input)="dtekReadingT2.set($any($event.target).value)"
+                              [placeholder]="'Попер.: ' + (latestAnyReading()?.readingT2 || 0)"
+                              class="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white font-mono font-bold focus:outline-none focus:border-amber-500"
                             />
                           </div>
                         </div>
                       } @else {
-                        <div class="opacity-70">
-                          <label class="block text-3xs font-bold text-slate-500 uppercase mb-1">
-                            Покази лічильника (Загальний Т1, кВт·год)
+                        <div>
+                          <label class="block text-3xs font-bold text-slate-600 dark:text-slate-300 uppercase mb-1">
+                            Покази лічильника (Загальний Т1, кВт·год) *
                           </label>
                           <input
                             type="number"
-                            disabled
-                            [placeholder]="latestAnyReading()?.readingT1 || 0"
-                            class="w-full px-3 py-2 rounded-lg bg-slate-200/70 dark:bg-slate-800/70 border border-slate-300 dark:border-slate-700 text-xs text-slate-500 font-mono cursor-not-allowed"
+                            inputmode="decimal"
+                            step="0.1"
+                            min="0"
+                            [value]="dtekReadingT1()"
+                            (input)="dtekReadingT1.set($any($event.target).value)"
+                            [placeholder]="'Попер.: ' + (latestAnyReading()?.readingT1 || 0)"
+                            class="w-full px-3 py-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-xs text-slate-900 dark:text-white font-mono font-bold focus:outline-none focus:border-amber-500"
                           />
                         </div>
                       }
-
-                      <div class="p-2.5 rounded-lg bg-slate-200/60 dark:bg-slate-800/60 border border-slate-300/80 dark:border-slate-700/80 text-2xs text-slate-600 dark:text-slate-400 flex items-center gap-2">
-                        <mat-icon aria-hidden="true" class="text-sm text-slate-500 shrink-0">hourglass_top</mat-icon>
-                        <span>В розробці... Крок 1 (перевірка адреси та лічильника) виконано кнопкою «Хочу передати покази». Крок 2 (відправка нових показів) буде підключено на наступному етапі.</span>
-                      </div>
                     }
                   </div>
 
                   @if (hasHouseAccountNumber(acc)) {
                     <div class="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2 flex-wrap">
-                      <span class="text-3xs text-slate-400">Крок 2: Відправка показів</span>
+                      <span class="text-3xs text-slate-500 dark:text-slate-400">
+                        Крок 2: Відправка та фіксація на <strong class="font-mono text-slate-700 dark:text-slate-200">{{ getTargetBillingDateInfo().displayDate }}</strong>
+                      </span>
                       <button
                         type="button"
-                        disabled
-                        class="px-3.5 py-2 rounded-xl bg-slate-400 text-white text-xs font-bold flex items-center gap-1.5 cursor-not-allowed opacity-80"
-                        title="Буде активовано на наступному кроці розробки"
+                        (click)="onSubmitDtekReadings(acc)"
+                        [disabled]="isSubmitting() || !canSubmitDtekReadings(acc)"
+                        class="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:bg-slate-400 text-slate-950 disabled:text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer disabled:cursor-not-allowed disabled:opacity-70 shadow-2xs transition-colors"
+                        title="Передати покази та автоматично зберегти в Історію передачі показів та розрахунків з датою останнього дня місяця"
                       >
                         <mat-icon aria-hidden="true" class="text-sm leading-none">send</mat-icon>
-                        <span>Відправити покази</span>
+                        <span>{{ isSubmitting() ? 'Збереження...' : 'Відправити покази' }}</span>
                       </button>
                     </div>
                   }
@@ -481,7 +493,7 @@ export class UtilityCabinetsSyncComponent {
   readonly latestAnyReading = this.ctx.latestAnyReading;
 
   readonly isSubmitting = signal<boolean>(false);
-  readonly isCabinetPanelOpen = signal<boolean>(false);
+  readonly isCabinetPanelOpen = this.ctx.isCabinetPanelOpen;
   readonly cabinetDtekLogin = signal<string>("");
   readonly cabinetDtekPassword = signal<string>("");
   readonly cabinetOoekLogin = signal<string>("");
@@ -495,6 +507,8 @@ export class UtilityCabinetsSyncComponent {
   readonly dtekMeterCheckError = signal<string | null>(null);
   readonly dtekMeterRawResponse = signal<Record<string, unknown> | null>(null);
   readonly showDtekMeterRawJson = signal<boolean>(false);
+  readonly dtekReadingT1 = signal<string>("");
+  readonly dtekReadingT2 = signal<string>("");
 
   constructor() {
     effect(() => {
@@ -505,8 +519,114 @@ export class UtilityCabinetsSyncComponent {
         this.cabinetOoekLogin.set(acc?.ooekLogin || "");
         this.cabinetOoekPassword.set("");
         this.cabinetOoekAccountNumber.set(acc?.ooekAccountNumber || acc?.accountNumber || "");
+        this.dtekReadingT1.set("");
+        this.dtekReadingT2.set("");
       });
     });
+  }
+
+  getTargetBillingDateInfo() {
+    return resolveBillingMonthLastDayIsoDate();
+  }
+
+  canSubmitDtekReadings(acc: UtilityAccount): boolean {
+    const rawT1 = this.dtekReadingT1().toString().trim();
+    if (!rawT1 || isNaN(Number(rawT1)) || Number(rawT1) < 0) return false;
+    if (acc.electricityTariffType === "dual") {
+      const rawT2 = this.dtekReadingT2().toString().trim();
+      if (!rawT2 || isNaN(Number(rawT2)) || Number(rawT2) < 0) return false;
+    }
+    return true;
+  }
+
+  async onSubmitDtekReadings(acc: UtilityAccount): Promise<void> {
+    if (!acc || !this.canSubmitDtekReadings(acc)) return;
+
+    this.isSubmitting.set(true);
+    try {
+      const billingDateInfo = resolveBillingMonthLastDayIsoDate();
+      const date = billingDateInfo.isoDate; // e.g. 2026-11-30 when submitted in 29.11–03.12
+      const periodMonth = billingDateInfo.periodMonth;
+      const tariffs = this.ctx.utilityTariffs();
+
+      const existingSameDateBilling = this.ctx.accountReadings().find(
+        (r) => !r.isControlOnly && r.date === date
+      );
+
+      const prev = this.ctx.getEffectivePrevReading(
+        false,
+        date,
+        existingSameDateBilling?.id || null
+      );
+
+      const t1Val = Math.round(Number(this.dtekReadingT1()) * 10) / 10;
+      const diff1 = Math.max(0, Math.round((t1Val - prev.t1) * 10) / 10);
+
+      let t2Val: number | undefined;
+      let diff2: number | undefined;
+      if (acc.electricityTariffType === "dual") {
+        t2Val = Math.round(Number(this.dtekReadingT2()) * 10) / 10;
+        diff2 = Math.max(0, Math.round((t2Val - prev.t2) * 10) / 10);
+      }
+
+      let daysSinceLast = 0;
+      let dailyAvg = 0;
+      const totalDiff = acc.electricityTariffType === "dual" ? diff1 + (diff2 || 0) : diff1;
+      if (prev.prevDate) {
+        const curMs = new Date(date).getTime();
+        const prevMs = new Date(prev.prevDate).getTime();
+        daysSinceLast = Math.max(1, Math.round((curMs - prevMs) / (1000 * 60 * 60 * 24)));
+        dailyAvg = Math.round((totalDiff / daysSinceLast) * 10) / 10;
+      } else if (totalDiff > 0) {
+        daysSinceLast = 30;
+        dailyAvg = Math.round((totalDiff / 30) * 10) / 10;
+      }
+
+      const calc = calculateElectricityCost(
+        date,
+        diff1,
+        diff2,
+        acc.electricityTariffType,
+        tariffs
+      );
+      const season = getSeasonForDate(date);
+
+      const formattedOr = this.getFormattedDtekAccountNumber(acc.accountNumber);
+      const noteText = `Передано покази ДТЕК ОЕМ за ${billingDateInfo.monthLabelUa} (о/р ${formattedOr || acc.accountNumber})`;
+
+      const readingPayload: Partial<UtilityReading> = {
+        ...(existingSameDateBilling ? { id: existingSameDateBilling.id } : {}),
+        accountId: acc.id,
+        utilityType: "electricity",
+        date,
+        periodMonth,
+        readingT1: t1Val,
+        readingT2: t2Val,
+        consumptionT1: diff1,
+        consumptionT2: diff2,
+        rateT1: calc.rate1,
+        rateT2: calc.rate2,
+        totalCost: calc.totalCost,
+        season,
+        isPaid: existingSameDateBilling ? Boolean(existingSameDateBilling.isPaid) : false,
+        note: noteText,
+        isControlOnly: false,
+        readingPurpose: "billing",
+        daysSinceLastReading: daysSinceLast,
+        dailyAvgConsumption: dailyAvg,
+      };
+
+      await this.dataService.saveUtilityReading(readingPayload);
+      this.dtekReadingT1.set("");
+      this.dtekReadingT2.set("");
+      this.ctx.activeTab.set("table");
+      this.ctx.isHistoryTableExpanded.set(true);
+      if (this.ctx.filterPurpose() === "control") {
+        this.ctx.filterPurpose.set("all");
+      }
+    } finally {
+      this.isSubmitting.set(false);
+    }
   }
 
   formatDate(dateStr: string): string {

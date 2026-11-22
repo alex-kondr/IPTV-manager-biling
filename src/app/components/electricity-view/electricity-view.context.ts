@@ -44,11 +44,18 @@ export interface ElectricityViewContext {
 
   readonly activeTab: WritableSignal<'table' | 'devices' | 'analytics'>;
   readonly filterPurpose: WritableSignal<'all' | 'billing' | 'control'>;
-  readonly isAccountCardExpanded: WritableSignal<boolean>;
+  readonly isCabinetPanelOpen: WritableSignal<boolean>;
   readonly isHistoryTableExpanded: WritableSignal<boolean>;
   readonly isAnalyticsChartExpanded: WritableSignal<boolean>;
   readonly deviceSelectedMonth: WritableSignal<string>;
   readonly customMonthHouseKwh: WritableSignal<number | null>;
+  readonly isHouseInfoModalOpen: WritableSignal<boolean>;
+  openHouseInfoModal(): void;
+  closeHouseInfoModal(): void;
+  readonly isDtekSubmitModalOpen: WritableSignal<boolean>;
+  openDtekReadingSubmissionBlock(): void;
+  openDtekSubmitModal(): void;
+  closeDtekSubmitModal(): void;
 
   // Modal signals & open/close actions
   readonly isAccountModalOpen: WritableSignal<boolean>;

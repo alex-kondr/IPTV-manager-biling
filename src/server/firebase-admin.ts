@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import bundledFirebaseConfig from '../../firebase-applet-config.json';
 
 export interface ServerFirebaseConfig {
   projectId: string;
@@ -14,43 +15,65 @@ export interface ServerFirebaseConfig {
   recaptchaSiteKey: string;
 }
 
+const cleanStr = (val: unknown): string => {
+  if (typeof val !== 'string') return '';
+  return val.trim().replace(/^["']+|["']+$/g, '').trim();
+};
+
+const isValidFirebaseApiKey = (val: string): boolean => {
+  return val.startsWith('AIza') && val.length >= 30;
+};
+
 let cachedDiskFirebaseConfig: Partial<ServerFirebaseConfig> | null = null;
 
 function readDiskFirebaseConfig(): Partial<ServerFirebaseConfig> {
   if (cachedDiskFirebaseConfig) return cachedDiskFirebaseConfig;
+  const base: Partial<ServerFirebaseConfig> = {
+    ...(bundledFirebaseConfig as Partial<ServerFirebaseConfig>),
+  };
   try {
     const cfgPath = resolve(process.cwd(), 'firebase-applet-config.json');
     if (existsSync(cfgPath)) {
-      cachedDiskFirebaseConfig = JSON.parse(readFileSync(cfgPath, 'utf8')) as Partial<ServerFirebaseConfig>;
+      const disk = JSON.parse(readFileSync(cfgPath, 'utf8')) as Partial<ServerFirebaseConfig>;
+      cachedDiskFirebaseConfig = { ...base, ...disk };
       return cachedDiskFirebaseConfig;
     }
   } catch {
-    // Ignore file read errors
+    // Ignore file read errors and use bundled config
   }
-  cachedDiskFirebaseConfig = {};
+  cachedDiskFirebaseConfig = base;
   return cachedDiskFirebaseConfig;
 }
 
 export function getServerFirebaseConfig(): ServerFirebaseConfig {
   const disk = readDiskFirebaseConfig();
+  const envApiKey = cleanStr(process.env['FIREBASE_API_KEY']);
+  const diskApiKey = cleanStr(disk.apiKey);
+
   return {
-    projectId: process.env['FIREBASE_PROJECT_ID']?.trim() || disk.projectId || '',
-    appId: process.env['FIREBASE_APP_ID']?.trim() || disk.appId || '',
-    apiKey: process.env['FIREBASE_API_KEY']?.trim() || disk.apiKey || '',
-    authDomain: process.env['FIREBASE_AUTH_DOMAIN']?.trim() || disk.authDomain || '',
+    projectId: cleanStr(process.env['FIREBASE_PROJECT_ID']) || cleanStr(disk.projectId) || '',
+    appId: cleanStr(process.env['FIREBASE_APP_ID']) || cleanStr(disk.appId) || '',
+    apiKey: isValidFirebaseApiKey(envApiKey) ? envApiKey : diskApiKey,
+    authDomain: cleanStr(process.env['FIREBASE_AUTH_DOMAIN']) || cleanStr(disk.authDomain) || '',
     firestoreDatabaseId:
-      process.env['FIREBASE_FIRESTORE_DATABASE_ID']?.trim() || disk.firestoreDatabaseId || '',
-    storageBucket: process.env['FIREBASE_STORAGE_BUCKET']?.trim() || disk.storageBucket || '',
+      cleanStr(process.env['FIREBASE_FIRESTORE_DATABASE_ID']) ||
+      cleanStr(disk.firestoreDatabaseId) ||
+      '',
+    storageBucket:
+      cleanStr(process.env['FIREBASE_STORAGE_BUCKET']) || cleanStr(disk.storageBucket) || '',
     messagingSenderId:
-      process.env['FIREBASE_MESSAGING_SENDER_ID']?.trim() || disk.messagingSenderId || '',
-    measurementId: process.env['FIREBASE_MEASUREMENT_ID']?.trim() || disk.measurementId || '',
+      cleanStr(process.env['FIREBASE_MESSAGING_SENDER_ID']) ||
+      cleanStr(disk.messagingSenderId) ||
+      '',
+    measurementId:
+      cleanStr(process.env['FIREBASE_MEASUREMENT_ID']) || cleanStr(disk.measurementId) || '',
     oAuthClientId:
-      process.env['FIREBASE_OAUTH_CLIENT_ID']?.trim() ||
-      process.env['GOOGLE_CLIENT_ID']?.trim() ||
-      disk.oAuthClientId ||
+      cleanStr(process.env['FIREBASE_OAUTH_CLIENT_ID']) ||
+      cleanStr(process.env['GOOGLE_CLIENT_ID']) ||
+      cleanStr(disk.oAuthClientId) ||
       '',
     recaptchaSiteKey:
-      process.env['FIREBASE_RECAPTCHA_SITE_KEY']?.trim() || disk.recaptchaSiteKey || '',
+      cleanStr(process.env['FIREBASE_RECAPTCHA_SITE_KEY']) || cleanStr(disk.recaptchaSiteKey) || '',
   };
 }
 
@@ -61,17 +84,18 @@ export interface VerifiedGoogleTokenPayload {
   uid?: string;
 }
 
-function getAllowedGoogleClientIds(): string[] {
+function getAllowedGoogleClientIds(includeProjectId = false): string[] {
   const cfg = getServerFirebaseConfig();
   const candidates = [
     process.env['GOOGLE_CLIENT_ID'],
     process.env['FIREBASE_OAUTH_CLIENT_ID'],
     cfg.oAuthClientId,
+    ...(includeProjectId ? [process.env['FIREBASE_PROJECT_ID'], cfg.projectId] : []),
   ];
   return Array.from(
     new Set(
       candidates
-        .map((c) => (typeof c === 'string' ? c.trim() : ''))
+        .map((c) => cleanStr(c))
         .filter((c) => c.length > 0)
     )
   );
@@ -96,16 +120,23 @@ export async function verifyFirebaseTokenSafe(
   }
 
   // 1. Verify Firebase Auth ID token via Firebase Identity Toolkit accounts:lookup
-  const apiKey = getServerFirebaseConfig().apiKey;
+  const cfg = getServerFirebaseConfig();
+  const apiKey = cfg.apiKey;
   if (apiKey) {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 5000);
+      const refererOrigin = cfg.authDomain
+        ? `https://${cfg.authDomain}/`
+        : 'https://modern-realm-9nm8c.firebaseapp.com/';
       const resp = await fetch(
         `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            Referer: refererOrigin,
+          },
           body: JSON.stringify({ idToken }),
           signal: controller.signal,
         }
@@ -136,8 +167,8 @@ export async function verifyFirebaseTokenSafe(
     }
   }
 
-  // 2. Verify Google ID token via Google OAuth2 tokeninfo endpoint + aud/azp validation
-  const allowedClientIds = getAllowedGoogleClientIds();
+  // 2. Verify Google/Firebase ID token via Google OAuth2 tokeninfo endpoint + aud/azp validation
+  const allowedClientIds = getAllowedGoogleClientIds(true);
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);

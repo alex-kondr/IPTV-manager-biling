@@ -1,7 +1,9 @@
 {
   "name": "HomeHub — Комунальні послуги та IPTV Білінг",
   "description": "Управління показами лічильників електроенергії та води, графіками відключень ДТЕК, мобільним додатком клієнта та IPTV білінгом",
-  "request_frame_permissions": [],
+  "requestFramePermissions": ["camera"],
+  "request_frame_permissions": ["camera"],
   "prompt": "",
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"],
   "major_capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

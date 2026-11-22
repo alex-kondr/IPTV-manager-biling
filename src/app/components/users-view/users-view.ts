@@ -1762,7 +1762,17 @@ export class UsersView {
   }
 
   async removeInvite(id: string): Promise<void> {
-    await this.dataService.deleteHouseholdInvite(id);
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Видалити запрошення?',
+      message: 'Ви дійсно бажаєте видалити це посилання-запрошення до спільного будинку?',
+      confirmText: 'Видалити',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'delete',
+    });
+    if (ok) {
+      await this.dataService.deleteHouseholdInvite(id);
+    }
   }
 
   setModalAccessLevel(level: HouseholdAccessLevel): void {

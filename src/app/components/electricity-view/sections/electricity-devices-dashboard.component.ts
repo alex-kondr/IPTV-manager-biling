@@ -28,7 +28,7 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
           <!-- ======================================================== -->
           <div class="space-y-5">
             <!-- Top Overview Banner & KPIs -->
-            <div class="p-4 sm:p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-2xs space-y-4">
+            <div class="p-4 sm:p-6 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-4">
               <div
                 class="flex flex-col lg:flex-row lg:items-center justify-between gap-3"
                 [class.border-b]="isOverviewKpiExpanded()"
@@ -57,10 +57,6 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
                       </h3>
                       <span class="px-2 py-0.5 rounded-md text-3xs font-bold uppercase tracking-wider bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
                         Станом на {{ dSummary.referenceDate | formatDateUa }} (день {{ dSummary.daysElapsed }} з {{ dSummary.daysInMonth }})
-                      </span>
-                      <span class="px-2 py-0.5 rounded-md text-3xs font-bold bg-indigo-100 dark:bg-indigo-950/80 text-indigo-800 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 inline-flex items-center gap-1">
-                        <mat-icon aria-hidden="true" class="text-3xs leading-none">home_pin</mat-icon>
-                        <span>Будинок: {{ acc.name }} • Прилади будинку</span>
                       </span>
                     </div>
                     @if (isOverviewKpiExpanded()) {
@@ -386,13 +382,6 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
                     <span>•</span>
                     <span>Прогноз за погодою: <strong class="font-mono text-amber-800 dark:text-amber-300">~{{ dSummary.weatherProjectedHouseMonthKwh.toFixed(0) }} кВт·г</strong> (~{{ dSummary.weatherProjectedHouseMonthCostUah.toFixed(0) }} грн)</span>
                   </div>
-                  <button
-                    type="button"
-                    (click)="isOverviewKpiExpanded.set(true)"
-                    class="text-3xs text-emerald-600 dark:text-emerald-400 hover:underline font-semibold cursor-pointer"
-                  >
-                    Розгорнути блок
-                  </button>
                 </div>
               }
             </div>
@@ -436,18 +425,6 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
                     </div>
                   </div>
 
-                  <div class="flex items-center gap-2 shrink-0 self-end sm:self-center">
-                    <button
-                      type="button"
-                      (click)="isUsageWarningExpanded.update(v => !v)"
-                      class="p-1.5 rounded-xl bg-white/80 dark:bg-slate-800 hover:bg-white dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-amber-200 dark:border-slate-700 transition-colors cursor-pointer"
-                      [title]="isUsageWarningExpanded() ? 'Згорнути попередження' : 'Розгорнути попередження'"
-                    >
-                      <mat-icon aria-hidden="true" class="text-base leading-none">
-                        {{ isUsageWarningExpanded() ? 'expand_less' : 'expand_more' }}
-                      </mat-icon>
-                    </button>
-                  </div>
                 </div>
 
                 @if (isUsageWarningExpanded()) {
@@ -565,14 +542,6 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
                           <p class="text-2xs text-slate-600 dark:text-slate-300 leading-snug">
                             {{ warn.recommendation }}
                           </p>
-                          <button
-                            type="button"
-                            (click)="focusAndExpandDeviceFromWarning(warn.deviceId)"
-                            class="px-2.5 py-1 rounded-lg text-2xs font-bold bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-800 dark:text-slate-100 transition-colors shrink-0 flex items-center gap-1 cursor-pointer"
-                          >
-                            <mat-icon aria-hidden="true" class="text-xs leading-none">visibility</mat-icon>
-                            <span>Деталі</span>
-                          </button>
                         </div>
                       </div>
                     }
@@ -655,26 +624,6 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
                   </div>
 
                   @if (canEdit()) {
-                    <button
-                      type="button"
-                      (click)="openAddDeviceLogModal()"
-                      class="px-2.5 py-1.5 rounded-xl text-2xs font-bold bg-amber-500 hover:bg-amber-600 text-white transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
-                      title="Внести споживання для приладу"
-                    >
-                      <mat-icon aria-hidden="true" class="text-xs leading-none">add</mat-icon>
-                      <span>+ Запис кВт·г</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      (click)="openScreenshotModal()"
-                      class="px-2.5 py-1.5 rounded-xl text-2xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
-                      title="Завантажити скріншот з розетки"
-                    >
-                      <mat-icon aria-hidden="true" class="text-xs leading-none">add_photo_alternate</mat-icon>
-                      <span>Скріншот (ШІ)</span>
-                    </button>
-
                     <button
                       type="button"
                       (click)="openDeviceModal()"
@@ -1715,17 +1664,6 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
                         </p>
                       </div>
                     </div>
-
-                    <button
-                      type="button"
-                      (click)="isChartsSectionExpanded.update(v => !v)"
-                      class="p-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer"
-                      [title]="isChartsSectionExpanded() ? 'Згорнути' : 'Розгорнути'"
-                    >
-                      <mat-icon aria-hidden="true" class="text-base leading-none">
-                        {{ isChartsSectionExpanded() ? 'expand_less' : 'expand_more' }}
-                      </mat-icon>
-                    </button>
                   </div>
 
                   @if (isChartsSectionExpanded()) {
@@ -1907,13 +1845,6 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
                   } @else {
                     <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-2xs text-slate-600 dark:text-slate-300 flex items-center justify-between gap-2">
                       <span>Розподіл: прилади {{ dSummary.totalDevicesKwh.toFixed(1) }} кВт·г ({{ dSummary.devicesSharePercent.toFixed(0) }}%) vs інші {{ dSummary.untrackedKwh.toFixed(1) }} кВт·г</span>
-                      <button
-                        type="button"
-                        (click)="isChartsSectionExpanded.set(true)"
-                        class="text-3xs font-semibold text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer"
-                      >
-                        Розгорнути графік
-                      </button>
                     </div>
                   }
                 </div>
@@ -1946,17 +1877,6 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
                           </p>
                         </div>
                       </div>
-
-                      <button
-                        type="button"
-                        (click)="isInsightsSectionExpanded.update(v => !v)"
-                        class="p-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer"
-                        [title]="isInsightsSectionExpanded() ? 'Згорнути' : 'Розгорнути'"
-                      >
-                        <mat-icon aria-hidden="true" class="text-base leading-none">
-                          {{ isInsightsSectionExpanded() ? 'expand_less' : 'expand_more' }}
-                        </mat-icon>
-                      </button>
                     </div>
 
                     @if (isInsightsSectionExpanded()) {
@@ -2009,34 +1929,9 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
                     } @else {
                       <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-2xs text-slate-600 dark:text-slate-300 flex items-center justify-between gap-2">
                         <span>{{ dSummary.insights.length }} AI-інсайтів сформовано для цього будинку</span>
-                        <button
-                          type="button"
-                          (click)="isInsightsSectionExpanded.set(true)"
-                          class="text-3xs font-semibold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
-                        >
-                          Розгорнути інсайти
-                        </button>
                       </div>
                     }
                   </div>
-
-                  <!-- Quick CTA to upload screenshot -->
-                  @if (canEdit()) {
-                    <div class="p-3.5 rounded-xl bg-gradient-to-r from-emerald-500/10 via-teal-500/10 to-transparent border border-emerald-500/20 flex items-center justify-between gap-3">
-                      <div class="text-2xs text-slate-700 dark:text-slate-300">
-                        <span class="font-bold text-slate-900 dark:text-white block">Маєте скріншот з додатка розумної розетки?</span>
-                        Завантажте фото та додайте коментар — ШІ сам порахує кВт·год і додасть до приладу.
-                      </div>
-                      <button
-                        type="button"
-                        (click)="openScreenshotModal()"
-                        class="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-2xs font-bold flex items-center gap-1 shrink-0 cursor-pointer shadow-2xs"
-                      >
-                        <mat-icon aria-hidden="true" class="text-sm leading-none">add_photo_alternate</mat-icon>
-                        <span>Аналіз фото</span>
-                      </button>
-                    </div>
-                  }
                 </div>
               </div>
             }
@@ -2058,12 +1953,12 @@ export class ElectricityDevicesDashboardComponent {
   readonly customMonthHouseKwh = this.ctx.customMonthHouseKwh;
   readonly deviceAnalyticsSummary = this.ctx.deviceAnalyticsSummary;
 
-  readonly isWeatherSectionExpanded = signal<boolean>(true);
-  readonly isOverviewKpiExpanded = signal<boolean>(true);
-  readonly isUsageWarningExpanded = signal<boolean>(true);
-  readonly isDevicesSectionExpanded = signal<boolean>(true);
-  readonly isChartsSectionExpanded = signal<boolean>(true);
-  readonly isInsightsSectionExpanded = signal<boolean>(true);
+  readonly isWeatherSectionExpanded = signal<boolean>(false);
+  readonly isOverviewKpiExpanded = signal<boolean>(false);
+  readonly isUsageWarningExpanded = signal<boolean>(false);
+  readonly isDevicesSectionExpanded = signal<boolean>(false);
+  readonly isChartsSectionExpanded = signal<boolean>(false);
+  readonly isInsightsSectionExpanded = signal<boolean>(false);
 
   readonly deviceViewLayout = signal<"cards" | "list">("cards");
   readonly devicePowerStates = signal<Record<string, boolean>>({});

@@ -8,6 +8,7 @@ import {
   forwardRef,
   inject,
   input,
+  output,
   signal,
   untracked,
 } from '@angular/core';
@@ -43,16 +44,15 @@ import {
   getWeatherForDateFromResponse,
 } from './electricity-device-analytics.util';
 import {
-  CleanReadingNotePipe,
   cleanReadingNoteText,
-  FormatCostPipe,
   formatCostValue,
-  FormatDateUaPipe,
 } from './electricity-pipes';
 import {
   buildElectricityMonthlyData,
   buildElectricityStatsKPIs,
   buildElectricityTimelineData,
+  CollapsedConsumptionSummary,
+  computeCollapsedConsumptionSummaryHelper,
   EnrichedUtilityReading,
   enrichReadingRow,
   getAccountFormattedAddressHelper,
@@ -60,6 +60,7 @@ import {
   getEffectivePrevReadingHelper,
   getHouseDueInfoHelper,
   hasAccountAddressHelper,
+  hasHouseAccountNumberHelper,
   isReadingPaidHelper,
   isWinterLimitExceededReadingHelper,
   totalConsumedKwhHelper,
@@ -71,27 +72,27 @@ import {
 import { DeviceEditModalComponent } from './modals/device-edit-modal.component';
 import { DeviceLogModalComponent } from './modals/device-log-modal.component';
 import { DeviceScreenshotAiModalComponent } from './modals/device-screenshot-ai-modal.component';
+import { DtekReadingSubmitModalComponent } from './modals/dtek-reading-submit-modal.component';
+import { HouseInfoModalComponent } from './modals/house-info-modal.component';
 import { MeterReadingModalComponent } from './modals/meter-reading-modal.component';
 import { ReadingBreakdownModalComponent } from './modals/reading-breakdown-modal.component';
 import { UtilityAccountModalComponent } from './modals/utility-account-modal.component';
+import { resolveInitialPortmoneParams } from './portmone-ooek.util';
 import { DtekScheduleSectionComponent } from './sections/dtek-schedule-section.component';
 import { ElectricityDevicesDashboardComponent } from './sections/electricity-devices-dashboard.component';
-import { UtilityCabinetsSyncComponent } from './sections/utility-cabinets-sync.component';
 
 @Component({
   selector: 'app-electricity-view',
   imports: [
     CommonModule,
     MatIconModule,
-    FormatDateUaPipe,
-    CleanReadingNotePipe,
-    FormatCostPipe,
     ElectricityChartComponent,
     MeterCameraModal,
     DtekScheduleSectionComponent,
-    UtilityCabinetsSyncComponent,
     ElectricityDevicesDashboardComponent,
     UtilityAccountModalComponent,
+    HouseInfoModalComponent,
+    DtekReadingSubmitModalComponent,
     MeterReadingModalComponent,
     ReadingBreakdownModalComponent,
     DeviceEditModalComponent,
@@ -111,6 +112,7 @@ export class ElectricityView implements ElectricityViewContext {
   private readonly destroyRef = inject(DestroyRef);
   readonly dataService = inject(IptvData);
   readonly viewMode = input<'all' | 'schedule' | 'readings'>('all');
+  readonly backToHome = output<void>();
   readonly liveKyivTime = signal<string>('');
   readonly canEdit = this.dataService.canEdit;
   readonly electricityAccounts = this.dataService.electricityAccounts;
@@ -119,13 +121,18 @@ export class ElectricityView implements ElectricityViewContext {
   readonly isSavingDefaultHouse = this.dataService.isSavingDefaultHouse;
 
   readonly showHiddenHousesPanel = signal<boolean>(false);
+  readonly isHouseActionsMenuOpen = signal<boolean>(false);
   readonly selectedAccountId = signal<string>('');
   readonly activeTab = signal<'table' | 'devices' | 'analytics'>('table');
   readonly filterPurpose = signal<'all' | 'billing' | 'control'>('all');
 
-  readonly isAccountCardExpanded = signal<boolean>(true);
+  readonly isCabinetPanelOpen = signal<boolean>(false);
+  readonly isHouseInfoModalOpen = signal<boolean>(false);
+  readonly isDtekSubmitModalOpen = signal<boolean>(false);
+  readonly isSyncingOoek = signal<boolean>(false);
+  readonly portmoneQuickUrl = signal<string>('');
   readonly isHistoryTableExpanded = signal<boolean>(true);
-  readonly isAnalyticsChartExpanded = signal<boolean>(true);
+  readonly isAnalyticsChartExpanded = signal<boolean>(false);
 
   readonly deviceSelectedMonth = signal<string>(new Date().toISOString().slice(0, 7));
   readonly customMonthHouseKwh = signal<number | null>(null);
@@ -259,6 +266,10 @@ export class ElectricityView implements ElectricityViewContext {
     )
   );
 
+  readonly collapsedConsumptionSummary = computed<CollapsedConsumptionSummary>(() =>
+    computeCollapsedConsumptionSummaryHelper(this.accountReadings(), this.currentAccount())
+  );
+
   readonly deviceAnalyticsSummary = computed<DeviceAnalyticsSummaryResult>(() => {
     if (this.viewMode() === 'schedule' || this.activeTab() !== 'devices') {
       return EMPTY_DEVICE_ANALYTICS_SUMMARY;
@@ -281,7 +292,6 @@ export class ElectricityView implements ElectricityViewContext {
     if (typeof window !== 'undefined') {
       const clockTimer = setInterval(() => this.updateLiveKyivTime(), 15_000);
       this.destroyRef.onDestroy(() => clearInterval(clockTimer));
-      this.dataService.fetchDtekCatalog();
     }
 
     const activeDefault = this.dataService.activeDtekAccount();
@@ -304,41 +314,89 @@ export class ElectricityView implements ElectricityViewContext {
     });
 
     effect(() => {
+      if (this.dataService.pendingOpenAddHouseModal() && this.canEdit()) {
+        untracked(() => {
+          this.dataService.pendingOpenAddHouseModal.set(false);
+          this.openAccountModal(null);
+        });
+      }
+    });
+
+    effect(() => {
+      const mode = this.viewMode();
+      if (mode === 'readings') return;
       const acc = this.currentAccount();
       const city = acc?.city || 'с-ще Окни';
       const street = acc?.street || 'вул. Шкільна';
       const house = acc?.houseNum || '11';
       untracked(() => {
         if (typeof window !== 'undefined') {
-          this.dataService.fetchDtekCatalog(city);
-          this.dataService.fetchDtekShutdowns(city, street, house);
+          void this.dataService.fetchDtekCatalog(city);
+          const existing = this.dataService.dtekShutdownInfo();
+          const fetchedAtMs = existing?.fetchedAt ? Date.parse(existing.fetchedAt) : 0;
+          const isSameFresh =
+            existing &&
+            existing.city === city &&
+            existing.street === street &&
+            existing.houseNum === house &&
+            fetchedAtMs > 0 &&
+            Date.now() - fetchedAtMs < 60_000;
+          if (!isSameFresh) {
+            void this.dataService.fetchDtekShutdowns(city, street, house);
+          }
         }
       });
     });
 
     effect(() => {
+      const mode = this.viewMode();
+      const tab = this.activeTab();
+      if (mode === 'schedule' || tab !== 'devices') return;
       const selMonth = this.deviceSelectedMonth();
       const acc = this.currentAccount();
-      const mode = this.viewMode();
       const city = acc?.city || 'с-ще Окни';
       untracked(() => {
-        if (typeof window !== 'undefined' && selMonth && mode !== 'schedule') {
+        if (typeof window !== 'undefined' && selMonth) {
           void this.loadWeatherForCurrentAccount(city, selMonth);
         }
+      });
+    });
+
+    // Prefetch direct Portmone OOEK link whenever active house or due amount changes
+    effect(() => {
+      const mode = this.viewMode();
+      if (mode === 'schedule') return;
+      const acc = this.currentAccount();
+      const due = acc ? this.getHouseDueInfo(acc) : null;
+      const dueAmount = due && due.hasDue && !due.isZeroOrPaid ? due.amount : 0;
+      untracked(() => {
+        if (typeof window === 'undefined' || !acc || !this.hasHouseAccountNumber(acc)) {
+          this.portmoneQuickUrl.set('');
+          return;
+        }
+        void this.prefetchPortmoneQuickLink(acc, dueAmount);
       });
     });
   }
 
   private updateLiveKyivTime(): void {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden' && this.liveKyivTime()) {
+      return;
+    }
     try {
       const timeStr = new Intl.DateTimeFormat('uk-UA', {
         timeZone: 'Europe/Kyiv',
         hour: '2-digit',
         minute: '2-digit',
       }).format(new Date());
-      this.liveKyivTime.set(timeStr);
+      if (this.liveKyivTime() !== timeStr) {
+        this.liveKyivTime.set(timeStr);
+      }
     } catch {
-      this.liveKyivTime.set(new Date().toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' }));
+      const fallback = new Date().toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
+      if (this.liveKyivTime() !== fallback) {
+        this.liveKyivTime.set(fallback);
+      }
     }
   }
 
@@ -360,6 +418,10 @@ export class ElectricityView implements ElectricityViewContext {
 
   hasAccountAddress(acc: UtilityAccount | null | undefined): boolean {
     return hasAccountAddressHelper(acc);
+  }
+
+  hasHouseAccountNumber(acc?: UtilityAccount | null): boolean {
+    return hasHouseAccountNumberHelper(acc || this.currentAccount());
   }
 
   getAccountFormattedAddress(acc: UtilityAccount | null | undefined): string {
@@ -448,6 +510,78 @@ export class ElectricityView implements ElectricityViewContext {
     this.editingAccount.set(null);
   }
 
+  openHouseInfoModal(): void {
+    this.isHouseInfoModalOpen.set(true);
+  }
+
+  closeHouseInfoModal(): void {
+    this.isHouseInfoModalOpen.set(false);
+  }
+
+  openDtekSubmitModal(): void {
+    this.isDtekSubmitModalOpen.set(true);
+  }
+
+  closeDtekSubmitModal(): void {
+    this.isDtekSubmitModalOpen.set(false);
+  }
+
+  openDtekReadingSubmissionBlock(): void {
+    this.openDtekSubmitModal();
+  }
+
+  async syncOoekForCurrentAccount(): Promise<void> {
+    const acc = this.currentAccount();
+    if (!acc || this.isSyncingOoek()) return;
+    if (!this.hasHouseAccountNumber(acc)) {
+      this.openAccountModal(acc);
+      return;
+    }
+    this.isSyncingOoek.set(true);
+    try {
+      await this.dataService.syncOoekCabinet(acc.id, {
+        ooekAccountNumber: acc.ooekAccountNumber || acc.accountNumber,
+      });
+    } finally {
+      this.isSyncingOoek.set(false);
+    }
+  }
+
+  private portmoneQuickSeq = 0;
+
+  private async prefetchPortmoneQuickLink(acc: UtilityAccount, dueAmountUah: number): Promise<void> {
+    const seq = ++this.portmoneQuickSeq;
+    const init = resolveInitialPortmoneParams(acc, dueAmountUah);
+    if (!init.description) {
+      this.portmoneQuickUrl.set('');
+      return;
+    }
+    const res = await this.dataService.getOoekPortmonePaymentLink(acc.id, {
+      description: init.description,
+      amountUah: init.amountUah,
+      payeeId: init.payeeId,
+      attribute3: init.attribute3,
+      address: init.address,
+      tryOndo: false,
+    });
+    if (seq !== this.portmoneQuickSeq) return;
+    if (res.success && res.paymentLink) {
+      this.portmoneQuickUrl.set(res.paymentLink);
+    } else {
+      this.portmoneQuickUrl.set('');
+    }
+  }
+
+  handlePayFallbackClick(acc: UtilityAccount): void {
+    if (!this.hasHouseAccountNumber(acc)) {
+      this.openAccountModal(acc);
+      return;
+    }
+    const due = this.getHouseDueInfo(acc);
+    const dueAmount = due.hasDue && !due.isZeroOrPaid ? due.amount : 0;
+    void this.prefetchPortmoneQuickLink(acc, dueAmount);
+  }
+
   async confirmDeleteAccount(acc: UtilityAccount): Promise<void> {
     const ok = await this.dataService.openConfirmDialog({
       title: 'Видалити особовий рахунок?',
@@ -503,7 +637,9 @@ export class ElectricityView implements ElectricityViewContext {
   onCameraReadingApplied(applied: AppliedMeterReading): void {
     if (!this.currentAccount()) return;
     this.appliedCameraReading.set(applied);
-    this.isReadingModalOpen.set(true);
+    if (!this.isDtekSubmitModalOpen()) {
+      this.isReadingModalOpen.set(true);
+    }
   }
 
   showReadingBreakdown(r: UtilityReading): void {
@@ -515,9 +651,14 @@ export class ElectricityView implements ElectricityViewContext {
   }
 
   async deleteReading(id: string): Promise<void> {
+    const target = this.accountReadings().find((r) => r.id === id);
+    const dateLabel = target?.date ? this.formatDate(target.date) : '';
+    const details = target
+      ? ` від ${dateLabel} (${target.consumptionT1 || 0}${target.consumptionT2 ? ' / ' + target.consumptionT2 : ''} кВт·год)`
+      : '';
     const ok = await this.dataService.openConfirmDialog({
-      title: 'Видалити показник?',
-      message: 'Ви дійсно бажаєте видалити цей запис показів лічильника?',
+      title: 'Видалити запис показів?',
+      message: `Ви дійсно бажаєте видалити запис показів лічильника${details}? Цю дію неможливо скасувати.`,
       confirmText: 'Видалити',
       cancelText: 'Скасувати',
       tone: 'danger',
@@ -611,6 +752,21 @@ export class ElectricityView implements ElectricityViewContext {
   async deleteDeviceLog(deviceId: string, logId: string): Promise<void> {
     const acc = this.currentAccount();
     if (!acc) return;
+    const device = this.accountDevices().find((d) => d.id === deviceId);
+    const log = device?.logs?.find((l) => l.id === logId);
+    const logDetails = log
+      ? ` (${log.consumedKwh} кВт·год за ${this.formatDate(log.date)})`
+      : '';
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Видалити запис споживання?',
+      message: `Ви дійсно бажаєте видалити запис споживання пристрою${device ? ' «' + device.name + '»' : ''}${logDetails}?`,
+      confirmText: 'Видалити',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'delete',
+    });
+    if (!ok) return;
+
     const nextList = this.accountDevices().map((d) =>
       d.id === deviceId
         ? {
@@ -630,5 +786,11 @@ export class ElectricityView implements ElectricityViewContext {
 
   closeScreenshotModal(): void {
     this.isScreenshotModalOpen.set(false);
+  }
+
+  reloadPageForChunkRecovery(): void {
+    if (typeof window !== 'undefined') {
+      window.location.reload();
+    }
   }
 }

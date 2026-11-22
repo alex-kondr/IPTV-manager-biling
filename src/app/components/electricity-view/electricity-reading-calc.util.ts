@@ -2,10 +2,13 @@ import { formatDateUa } from "../../models/client.model";
 import {
   calculateElectricityCost,
   ControlReadingNoteAnalysis,
+  DtekEmergencyOutageInfo,
   ElectricityCostResult,
   ElectricityDevice,
+  extractDtekEmergencyOutage,
   getSeasonForDate,
   parseControlReadingNote,
+  parseDtekDateTimeMs,
   resolveElectricityDualRates,
   resolveElectricitySingleRate,
   UtilityAccount,
@@ -84,6 +87,110 @@ export function resolveOoekBillDate(acc: UtilityAccount): string {
   return new Date().toISOString().split('T')[0];
 }
 
+const UA_MONTH_NAMES_GENITIVE: Record<number, string> = {
+  1: 'січень',
+  2: 'лютий',
+  3: 'березень',
+  4: 'квітень',
+  5: 'травень',
+  6: 'червень',
+  7: 'липень',
+  8: 'серпень',
+  9: 'вересень',
+  10: 'жовтень',
+  11: 'листопад',
+  12: 'грудень',
+};
+
+/**
+ * Повертає дату останнього дня місяця, за який передаються покази.
+ * Наприклад, у період 29.11 – 03.12 передаються покази за листопад,
+ * тому дата збереження становитиме 30.11 (2026-11-30).
+ */
+export function resolveBillingMonthLastDayIsoDate(referenceDate: Date = new Date()): {
+  isoDate: string;
+  displayDate: string;
+  periodMonth: string;
+  monthLabelUa: string;
+} {
+  let year = referenceDate.getFullYear();
+  let month = referenceDate.getMonth() + 1; // 1..12
+  let day = referenceDate.getDate(); // 1..31
+
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Kyiv',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(referenceDate);
+    const y = Number(parts.find((p) => p.type === 'year')?.value);
+    const m = Number(parts.find((p) => p.type === 'month')?.value);
+    const d = Number(parts.find((p) => p.type === 'day')?.value);
+    if (y > 2000 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      year = y;
+      month = m;
+      day = d;
+    }
+  } catch {
+    // Fallback to local system time
+  }
+
+  // З 1 по 3 число поточного місяця покази подаються за попередній місяць
+  let targetYear = year;
+  let targetMonth = month;
+  if (day >= 1 && day <= 3) {
+    targetYear = month === 1 ? year - 1 : year;
+    targetMonth = month === 1 ? 12 : month - 1;
+  }
+
+  const lastDay = new Date(targetYear, targetMonth, 0).getDate();
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const isoDate = `${targetYear}-${pad(targetMonth)}-${pad(lastDay)}`;
+  const displayDate = `${pad(lastDay)}.${pad(targetMonth)}.${targetYear}`;
+  const periodMonth = `${targetYear}-${pad(targetMonth)}`;
+  const monthLabelUa = `${UA_MONTH_NAMES_GENITIVE[targetMonth] || ''} ${targetYear}`.trim();
+
+  return {
+    isoDate,
+    displayDate,
+    periodMonth,
+    monthLabelUa,
+  };
+}
+
+/**
+ * Повертає попередню дату від поточної (вчорашній день) у форматі YYYY-MM-DD (за часом Europe/Kyiv).
+ */
+export function resolveYesterdayIsoDate(referenceDate: Date = new Date()): string {
+  let year = referenceDate.getFullYear();
+  let month = referenceDate.getMonth() + 1;
+  let day = referenceDate.getDate();
+
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Kyiv',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(referenceDate);
+    const y = Number(parts.find((p) => p.type === 'year')?.value);
+    const m = Number(parts.find((p) => p.type === 'month')?.value);
+    const d = Number(parts.find((p) => p.type === 'day')?.value);
+    if (y > 2000 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      year = y;
+      month = m;
+      day = d;
+    }
+  } catch {
+    // Fallback to local system time
+  }
+
+  const yesterdayUtc = new Date(Date.UTC(year, month - 1, day - 1));
+  return yesterdayUtc.toISOString().split('T')[0];
+}
+
+
 export function getHouseDueInfoHelper(
   acc: UtilityAccount | null | undefined,
   readings: UtilityReading[]
@@ -155,6 +262,242 @@ export function totalConsumedKwhHelper(r: UtilityReading): number {
   const t1 = Number(r.consumptionT1) || 0;
   const t2 = Number(r.consumptionT2) || 0;
   return Math.round((t1 + t2) * 10) / 10;
+}
+
+export interface CollapsedConsumptionSummary {
+  hasCurrentMonthReadings: boolean;
+  label: string;
+  hasData: boolean;
+  monthKey: string | null;
+  consumedKwh: number;
+  dailyRate: number;
+  prevMonthDailyRate: number | null;
+  diffPercent: number | null;
+}
+
+function getKyivCurrentYearMonth(referenceDate: Date = new Date()): {
+  year: number;
+  month: number;
+  day: number;
+  monthKey: string;
+} {
+  let year = referenceDate.getFullYear();
+  let month = referenceDate.getMonth() + 1;
+  let day = referenceDate.getDate();
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Kyiv',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(referenceDate);
+    const y = Number(parts.find((p) => p.type === 'year')?.value);
+    const m = Number(parts.find((p) => p.type === 'month')?.value);
+    const d = Number(parts.find((p) => p.type === 'day')?.value);
+    if (y > 2000 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+      year = y;
+      month = m;
+      day = d;
+    }
+  } catch {
+    // Fallback to local time
+  }
+  return {
+    year,
+    month,
+    day,
+    monthKey: `${year}-${String(month).padStart(2, '0')}`,
+  };
+}
+
+function getReadingMonthKey(r: UtilityReading): string {
+  if (r.periodMonth && /^\d{4}-\d{2}$/.test(r.periodMonth)) {
+    return r.periodMonth;
+  }
+  return (r.date || '').slice(0, 7);
+}
+
+function computeMonthConsumptionMetrics(
+  sortedAsc: UtilityReading[],
+  monthKey: string,
+  acc: UtilityAccount | null | undefined,
+  currentKyiv: { year: number; month: number; day: number; monthKey: string }
+): { kwh: number; dailyRate: number; days: number } | null {
+  const inMonth = sortedAsc.filter((r) => getReadingMonthKey(r) === monthKey);
+  if (inMonth.length === 0) return null;
+
+  const isDual = acc?.electricityTariffType === 'dual';
+  const latestInMonth = inMonth[inMonth.length - 1];
+  const beforeMonth = sortedAsc.filter((r) => getReadingMonthKey(r) < monthKey);
+  const baseline = beforeMonth.length > 0 ? beforeMonth[beforeMonth.length - 1] : null;
+
+  let kwh = 0;
+  let days = 0;
+
+  if (baseline) {
+    const baseT1 = Number(baseline.readingT1) || 0;
+    const baseT2 = Number(baseline.readingT2) || 0;
+    const curT1 = Number(latestInMonth.readingT1) || 0;
+    const curT2 = Number(latestInMonth.readingT2) || 0;
+
+    if (curT1 >= baseT1 && (!isDual || curT2 >= baseT2)) {
+      const d1 = curT1 - baseT1;
+      const d2 = isDual ? curT2 - baseT2 : 0;
+      kwh = Math.round((d1 + d2) * 10) / 10;
+    } else {
+      const billingInMonth = inMonth.filter((r) => !r.isControlOnly);
+      const sourceList = billingInMonth.length > 0 ? billingInMonth : inMonth;
+      kwh = Math.round(sourceList.reduce((sum, r) => sum + totalConsumedKwhHelper(r), 0) * 10) / 10;
+    }
+
+    if (latestInMonth.date && baseline.date) {
+      const curMs = new Date(latestInMonth.date).getTime();
+      const baseMs = new Date(baseline.date).getTime();
+      if (!Number.isNaN(curMs) && !Number.isNaN(baseMs)) {
+        days = Math.max(1, Math.round((curMs - baseMs) / (1000 * 60 * 60 * 24)));
+      }
+    }
+  } else {
+    const billingInMonth = inMonth.filter((r) => !r.isControlOnly);
+    if (billingInMonth.length > 0) {
+      kwh = Math.round(billingInMonth.reduce((sum, r) => sum + totalConsumedKwhHelper(r), 0) * 10) / 10;
+      const lastBilling = billingInMonth[billingInMonth.length - 1];
+      if (latestInMonth.date > lastBilling.date) {
+        const extra1 = Math.max(0, (Number(latestInMonth.readingT1) || 0) - (Number(lastBilling.readingT1) || 0));
+        const extra2 = isDual
+          ? Math.max(0, (Number(latestInMonth.readingT2) || 0) - (Number(lastBilling.readingT2) || 0))
+          : 0;
+        kwh = Math.round((kwh + extra1 + extra2) * 10) / 10;
+      }
+    } else {
+      const init1 = Number(acc?.initialReadingT1) || 0;
+      const init2 = Number(acc?.initialReadingT2) || 0;
+      const cur1 = Number(latestInMonth.readingT1) || 0;
+      const cur2 = Number(latestInMonth.readingT2) || 0;
+      if (cur1 > init1 || (isDual && cur2 > init2)) {
+        kwh = Math.round(((cur1 - init1) + (isDual ? Math.max(0, cur2 - init2) : 0)) * 10) / 10;
+      } else {
+        kwh = Math.round(inMonth.reduce((sum, r) => sum + totalConsumedKwhHelper(r), 0) * 10) / 10;
+      }
+    }
+
+    if (latestInMonth.daysSinceLastReading && latestInMonth.daysSinceLastReading > 0) {
+      days = latestInMonth.daysSinceLastReading;
+    } else if (inMonth.length > 1 && inMonth[0].date && latestInMonth.date) {
+      const span = Math.round(
+        (new Date(latestInMonth.date).getTime() - new Date(inMonth[0].date).getTime()) /
+          (1000 * 60 * 60 * 24)
+      );
+      if (span > 0) days = span;
+    }
+  }
+
+  if (days <= 0) {
+    if (monthKey === currentKyiv.monthKey) {
+      days = Math.max(1, currentKyiv.day);
+    } else {
+      const [yStr, mStr] = monthKey.split('-');
+      const yNum = Number(yStr);
+      const mNum = Number(mStr);
+      days = yNum > 2000 && mNum >= 1 && mNum <= 12 ? new Date(yNum, mNum, 0).getDate() : 30;
+    }
+  }
+
+  let dailyRate = days > 0 ? Math.round((kwh / days) * 10) / 10 : 0;
+  if (dailyRate <= 0 && latestInMonth.dailyAvgConsumption && latestInMonth.dailyAvgConsumption > 0 && inMonth.length === 1) {
+    dailyRate = Math.round(Number(latestInMonth.dailyAvgConsumption) * 10) / 10;
+  }
+
+  return { kwh, dailyRate, days };
+}
+
+export function computeCollapsedConsumptionSummaryHelper(
+  accountReadings: UtilityReading[],
+  acc: UtilityAccount | null | undefined
+): CollapsedConsumptionSummary {
+  const currentKyiv = getKyivCurrentYearMonth();
+  const currentMonthKey = currentKyiv.monthKey;
+
+  const sortedAsc = [...accountReadings]
+    .filter((r) => Boolean(r.date))
+    .sort(
+      (a, b) =>
+        (a.date || '').localeCompare(b.date || '') ||
+        (a.createdAt || '').localeCompare(b.createdAt || '')
+    );
+
+  const hasCurrentMonthReadings = sortedAsc.some((r) => getReadingMonthKey(r) === currentMonthKey);
+  const label = hasCurrentMonthReadings
+    ? 'Спожито в цьому місяці:'
+    : 'Спожито в минулому місяці:';
+
+  const distinctMonthsAsc = Array.from(
+    new Set(sortedAsc.map((r) => getReadingMonthKey(r)).filter((k) => /^\d{4}-\d{2}$/.test(k)))
+  ).sort();
+
+  let targetMonthKey: string | null = null;
+  if (hasCurrentMonthReadings) {
+    targetMonthKey = currentMonthKey;
+  } else {
+    const priorMonths = distinctMonthsAsc.filter((m) => m < currentMonthKey);
+    if (priorMonths.length > 0) {
+      targetMonthKey = priorMonths[priorMonths.length - 1];
+    }
+  }
+
+  if (!targetMonthKey) {
+    return {
+      hasCurrentMonthReadings,
+      label,
+      hasData: false,
+      monthKey: null,
+      consumedKwh: 0,
+      dailyRate: 0,
+      prevMonthDailyRate: null,
+      diffPercent: null,
+    };
+  }
+
+  const targetMetrics = computeMonthConsumptionMetrics(sortedAsc, targetMonthKey, acc, currentKyiv);
+  if (!targetMetrics) {
+    return {
+      hasCurrentMonthReadings,
+      label,
+      hasData: false,
+      monthKey: targetMonthKey,
+      consumedKwh: 0,
+      dailyRate: 0,
+      prevMonthDailyRate: null,
+      diffPercent: null,
+    };
+  }
+
+  const earlierMonths = distinctMonthsAsc.filter((m) => m < targetMonthKey!);
+  let prevMonthDailyRate: number | null = null;
+  for (let i = earlierMonths.length - 1; i >= 0; i--) {
+    const pm = computeMonthConsumptionMetrics(sortedAsc, earlierMonths[i], acc, currentKyiv);
+    if (pm && pm.dailyRate > 0) {
+      prevMonthDailyRate = pm.dailyRate;
+      break;
+    }
+  }
+
+  let diffPercent: number | null = null;
+  if (prevMonthDailyRate !== null && prevMonthDailyRate > 0 && targetMetrics.dailyRate >= 0) {
+    const rawPct = ((targetMetrics.dailyRate - prevMonthDailyRate) / prevMonthDailyRate) * 100;
+    diffPercent = Math.abs(rawPct) >= 1 ? Math.round(rawPct) : Math.round(rawPct * 10) / 10;
+  }
+
+  return {
+    hasCurrentMonthReadings,
+    label,
+    hasData: true,
+    monthKey: targetMonthKey,
+    consumedKwh: targetMetrics.kwh,
+    dailyRate: targetMetrics.dailyRate,
+    prevMonthDailyRate,
+    diffPercent,
+  };
 }
 
 export function isWinterLimitExceededReadingHelper(
@@ -454,19 +797,46 @@ export function buildElectricityStatsKPIs(
   };
 }
 
+export type { DtekEmergencyOutageInfo };
+export { parseDtekDateTimeMs };
+
+function getKyivHourMinute(now: Date): { hourNumber: number; minute: number } {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Kyiv',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(now);
+    let h = Number(parts.find((p) => p.type === 'hour')?.value);
+    const m = Number(parts.find((p) => p.type === 'minute')?.value);
+    if (h === 24) h = 0;
+    if (!Number.isNaN(h) && !Number.isNaN(m)) {
+      return { hourNumber: h + 1, minute: m };
+    }
+  } catch {
+    // Fallback to local time
+  }
+  return { hourNumber: now.getHours() + 1, minute: now.getMinutes() };
+}
+
+export function extractDtekEmergencyOutageHelper(
+  info: DtekShutdownInfo | null | undefined,
+  now = new Date()
+): DtekEmergencyOutageInfo {
+  return extractDtekEmergencyOutage(info, now);
+}
+
 export function computeDtekStatusSummary(info: DtekShutdownInfo | null, manualQueue: string | null) {
   if (!info) return null;
 
   const now = new Date();
-  const currentHourNumber = info.currentKyivHour || now.getHours() + 1;
-  const currentMinute = now.getMinutes();
+  const kyivNow = getKyivHourMinute(now);
+  const currentHourNumber = info.currentKyivHour || kyivNow.hourNumber;
+  const currentMinute = kyivNow.minute;
 
-  let isFactOutageNow = false;
-  if (info.startDate && info.endDate) {
-    const start = new Date(info.startDate);
-    const end = new Date(info.endDate);
-    isFactOutageNow = now >= start && now <= end;
-  }
+  const emergency = extractDtekEmergencyOutageHelper(info, now);
+  const isFactOutageNow = emergency.isActiveNow;
 
   const chosenQueue = manualQueue || (info.queueGroup ? info.queueGroup.replace('GPV', '') : '3.1');
   const matchedQueue = (info.allQueuesSchedules || []).find(
@@ -509,7 +879,16 @@ export function computeDtekStatusSummary(info: DtekShutdownInfo | null, manualQu
     now,
     currentHourNumber,
     currentMinute,
+    hasFactOutage: emergency.hasFactOutage,
     isFactOutageNow,
+    isEmergencyUpcoming: emergency.isUpcoming,
+    isEmergencyKind: emergency.isEmergencyKind,
+    emergencyReason: emergency.reason,
+    emergencyWindowLabel: emergency.windowLabel,
+    emergencyStartTime: emergency.startTimeShort,
+    emergencyEndTime: emergency.endTimeShort,
+    emergencyRemainingText: emergency.remainingText,
+    emergencySignature: emergency.signature,
     isScheduledPowerOn,
     isPowerAvailableNow,
     currentHourItem,
@@ -517,10 +896,10 @@ export function computeDtekStatusSummary(info: DtekShutdownInfo | null, manualQu
     totalOutageHours,
     queueGroup: 'GPV' + chosenQueue,
     scheduleDate: info.scheduleDate || info.updateFact?.split(' ')[0] || '',
-    startDate: info.startDate || null,
-    endDate: info.endDate || null,
-    subType: info.subType || '',
-    subStatus: info.subStatus || '',
+    startDate: emergency.startDate || null,
+    endDate: emergency.endDate || null,
+    subType: emergency.typeCode,
+    subStatus: emergency.reason,
     updateFact: info.updateFact || '',
     updateFactKyiv: info.updateFact
       ? info.updateFact.includes('Києв')

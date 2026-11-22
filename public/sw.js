@@ -1,4 +1,4 @@
-const CACHE_NAME = 'homehub-v6';
+const CACHE_NAME = 'homehub-v7';
 const META_CACHE_NAME = 'homehub-sw-meta-v1';
 const AUTH_CACHE_NAME = 'homehub-sw-auth-v1';
 const AUTH_TOKEN_CACHE_KEY = '/__sw_auth_token';
@@ -43,11 +43,22 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Network-first with cache fallback for same-origin assets & navigation
+  // Never intercept or cache hashed JS/CSS chunks or sourcemaps (prevents stale/HTML chunk corruption & NG0750)
+  if (/\.(js|mjs|css|map)$/i.test(reqUrl.pathname)) {
+    return;
+  }
+
+  // Network-first with cache fallback for same-origin static icons/manifest & navigation
   event.respondWith(
     fetch(event.request)
       .then((response) => {
-        if (response && response.status === 200) {
+        const contentType = (response.headers.get('content-type') || '').toLowerCase();
+        const isHtmlResponse = contentType.includes('text/html');
+        if (
+          response &&
+          response.status === 200 &&
+          (event.request.mode === 'navigate' || !isHtmlResponse)
+        ) {
           const responseClone = response.clone();
           caches.open(CACHE_NAME).then((cache) => {
             cache.put(event.request, responseClone).catch(() => {});
@@ -127,9 +138,10 @@ self.addEventListener('message', (event) => {
     return;
   }
 
-  if (data.type === 'SHOW_NOTIFICATION' && data.payload) {
-    const title = data.payload.title || '⚡ Зміна графіку відключень ДТЕК';
-    const options = buildNotificationOptions(data.payload);
+  if (data.type === 'SHOW_NOTIFICATION') {
+    const rawPayload = data.payload && typeof data.payload === 'object' ? data.payload : data;
+    const title = rawPayload.title || '⚡ Зміна графіку відключень ДТЕК';
+    const options = buildNotificationOptions(rawPayload);
     event.waitUntil(self.registration.showNotification(title, options));
   }
 });
@@ -172,7 +184,7 @@ self.addEventListener('push', (event) => {
 
 // Periodic Background Sync (Android Chrome / PWA when installed)
 self.addEventListener('periodicsync', (event) => {
-  if (event.tag === 'dtek-schedule-check') {
+  if (event.tag === 'dtek-schedule-check' || event.tag === 'dtek-schedule-sync') {
     event.waitUntil(checkScheduleChangesInBackground());
   }
 });
@@ -192,11 +204,14 @@ async function checkScheduleChangesInBackground() {
 
     if (latest && latest.id && latest.id !== prevId) {
       await cache.put('/__last_notified_change_id', new Response(String(latest.id)));
+      const qLabel = latest.queueKey ? ` (${String(latest.queueKey).replace(/^GPV/i, 'Черга ')})` : '';
+      const notifTitle = latest.title || `⚡ Зміна графіку ДТЕК${qLabel}`;
+      const notifBody = latest.body || latest.summary || 'Оновлено погодинний графік відключень світла.';
       await self.registration.showNotification(
-        latest.title || '⚡ Зміна графіку відключень ДТЕК',
+        notifTitle,
         buildNotificationOptions({
-          title: latest.title,
-          body: latest.body,
+          title: notifTitle,
+          body: notifBody,
           tag: `dtek-bg-${latest.id}`,
           url: '/?tab=outage_schedule',
           queueGroup: latest.queueKey || '',
@@ -214,7 +229,7 @@ self.addEventListener('notificationclick', (event) => {
   const data = notification.data || {};
   notification.close();
 
-  if (action === 'snooze_15m') {
+  if (action === 'snooze_15m' || action === 'snooze') {
     event.waitUntil(
       (async () => {
         try {
@@ -255,11 +270,19 @@ self.addEventListener('notificationclick', (event) => {
   }
 
   const targetUrl = data.url || '/?tab=outage_schedule';
+  let targetTab = 'outage_schedule';
+  try {
+    const parsedUrl = new URL(targetUrl, self.location.origin);
+    targetTab = parsedUrl.searchParams.get('tab') || 'outage_schedule';
+  } catch {
+    // Default to outage_schedule
+  }
+
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
       for (const client of windowClients) {
         if ('focus' in client) {
-          client.postMessage({ type: 'OPEN_TAB', tab: 'outage_schedule' });
+          client.postMessage({ type: 'OPEN_TAB', tab: targetTab });
           return client.focus();
         }
       }

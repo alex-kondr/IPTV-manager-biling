@@ -5,6 +5,11 @@ import * as QRCode from 'qrcode';
 import { triggerFirebaseGooglePopup, triggerFirebaseSignOut } from '../firebase-client';
 import { FirebaseAppletConfig, setFirebaseAppletConfig } from '../firebase-config';
 import {
+  CLIENT_INSTANCE_ID,
+  getActiveImpersonateUid,
+  setActiveImpersonateUid,
+} from '../interceptors/auth.interceptor';
+import {
   Client,
   PaymentTransaction,
   AppSettings,
@@ -52,7 +57,19 @@ import {
   ElectricityScreenshotAnalysisResult,
   UtilityWeatherResponse,
   OutageScheduleViewVariant,
+  DtekEmergencyOutageInfo,
+  extractDtekEmergencyOutage,
 } from '../models/utility.model';
+import {
+  ShoppingList,
+  ShoppingItem,
+  ShoppingPriceMode,
+  ShoppingCatalogItem,
+  ShoppingParticipant,
+  ShoppingDataResponse,
+  ShoppingCategoryId,
+  DEFAULT_SHOPPING_CATALOG,
+} from '../models/shopping.model';
 
 const DEFAULT_SETTINGS: AppSettings = {
   cardRequisites: '',
@@ -83,61 +100,91 @@ export interface ConfirmDialogConfig {
 export interface ScheduleChangeLogEntry {
   id: string;
   queueKey: string;
+  queueTitle?: string;
   detectedAt: string;
   detectedAtKyiv?: string;
-  previousIntervals: string[];
+  scheduleDate?: string;
+  changeType?: string;
+  title?: string;
+  body?: string;
+  addressLabel?: string;
+  emergencyReason?: string;
+  emergencyStartDate?: string;
+  emergencyEndDate?: string;
+  previousIntervals?: string[];
+  oldIntervals?: string[];
   newIntervals: string[];
-  summary: string;
+  totalPowerHours?: number;
+  totalOutageHours?: number;
+  oldTotalOutageHours?: number;
+  summary?: string;
 }
 
 export function normalizeUtilityTariffs(raw?: Partial<UtilityTariffsSettings>): UtilityTariffsSettings {
   if (!raw) return DEFAULT_UTILITY_TARIFFS;
   const t = raw;
-  const waterPrice = t.water?.price !== undefined ? Number(t.water.price) : DEFAULT_UTILITY_TARIFFS.water.price;
-  const waterMonthlyFee = t.water?.monthlyFee !== undefined ? Number(t.water.monthlyFee) : (DEFAULT_UTILITY_TARIFFS.water.monthlyFee || 0);
+  const waterPrice =
+    t.water?.price !== undefined && t.water?.price !== null && !isNaN(Number(t.water.price))
+      ? Number(t.water.price)
+      : DEFAULT_UTILITY_TARIFFS.water.price;
+  const waterMonthlyFee =
+    t.water?.monthlyFee !== undefined && t.water?.monthlyFee !== null && !isNaN(Number(t.water.monthlyFee))
+      ? Number(t.water.monthlyFee)
+      : (DEFAULT_UTILITY_TARIFFS.water.monthlyFee || 0);
   const waterValidFrom = t.water?.validFrom || DEFAULT_UTILITY_TARIFFS.water.validFrom;
   const waterValidTo = t.water?.validTo !== undefined ? t.water.validTo : (DEFAULT_UTILITY_TARIFFS.water.validTo || '');
-  let waterHistory = t.water?.history && Array.isArray(t.water.history) && t.water.history.length > 0 ? [...t.water.history] : [];
+  let waterHistory =
+    t.water?.history && Array.isArray(t.water.history) && t.water.history.length > 0
+      ? t.water.history.map((item) => ({ ...item }))
+      : [];
   if (waterHistory.length === 0) {
     waterHistory = [{ id: 'wh_1', price: waterPrice, monthlyFee: waterMonthlyFee, validFrom: waterValidFrom, validTo: waterValidTo, note: 'Базовий тариф на воду' }];
   } else {
-    for (const item of waterHistory) {
-      if (item.validFrom === waterValidFrom || waterHistory.length === 1) {
-        item.price = waterPrice;
-        item.monthlyFee = waterMonthlyFee;
-        item.validTo = waterValidTo;
-      }
-    }
+    waterHistory = waterHistory.map((item) =>
+      item.validFrom === waterValidFrom || waterHistory.length === 1
+        ? { ...item, price: waterPrice, monthlyFee: waterMonthlyFee, validTo: waterValidTo }
+        : item
+    );
   }
 
-  const wastePrice = t.waste?.price !== undefined ? Number(t.waste.price) : DEFAULT_UTILITY_TARIFFS.waste.price;
+  const wastePrice =
+    t.waste?.price !== undefined && t.waste?.price !== null && !isNaN(Number(t.waste.price))
+      ? Number(t.waste.price)
+      : DEFAULT_UTILITY_TARIFFS.waste.price;
   const wasteValidFrom = t.waste?.validFrom || DEFAULT_UTILITY_TARIFFS.waste.validFrom;
   const wasteValidTo = t.waste?.validTo !== undefined ? t.waste.validTo : (DEFAULT_UTILITY_TARIFFS.waste.validTo || '');
-  let wasteHistory = t.waste?.history && Array.isArray(t.waste.history) && t.waste.history.length > 0 ? [...t.waste.history] : [];
+  let wasteHistory =
+    t.waste?.history && Array.isArray(t.waste.history) && t.waste.history.length > 0
+      ? t.waste.history.map((item) => ({ ...item }))
+      : [];
   if (wasteHistory.length === 0) {
     wasteHistory = [{ id: 'wsh_1', price: wastePrice, validFrom: wasteValidFrom, validTo: wasteValidTo, note: 'Базовий тариф на вивіз сміття' }];
   } else {
-    for (const item of wasteHistory) {
-      if (item.validFrom === wasteValidFrom || wasteHistory.length === 1) {
-        item.price = wastePrice;
-        item.validTo = wasteValidTo;
-      }
-    }
+    wasteHistory = wasteHistory.map((item) =>
+      item.validFrom === wasteValidFrom || wasteHistory.length === 1
+        ? { ...item, price: wastePrice, validTo: wasteValidTo }
+        : item
+    );
   }
 
-  const elecSingleRate = t.electricitySingle?.rate !== undefined ? Number(t.electricitySingle.rate) : DEFAULT_UTILITY_TARIFFS.electricitySingle.rate;
+  const elecSingleRate =
+    t.electricitySingle?.rate !== undefined && t.electricitySingle?.rate !== null && !isNaN(Number(t.electricitySingle.rate))
+      ? Number(t.electricitySingle.rate)
+      : DEFAULT_UTILITY_TARIFFS.electricitySingle.rate;
   const elecSingleValidFrom = t.electricitySingle?.validFrom || DEFAULT_UTILITY_TARIFFS.electricitySingle.validFrom;
   const elecSingleValidTo = t.electricitySingle?.validTo !== undefined ? t.electricitySingle.validTo : (DEFAULT_UTILITY_TARIFFS.electricitySingle.validTo || '');
-  let elecSingleHistory = t.electricitySingle?.history && Array.isArray(t.electricitySingle.history) && t.electricitySingle.history.length > 0 ? [...t.electricitySingle.history] : [];
+  let elecSingleHistory =
+    t.electricitySingle?.history && Array.isArray(t.electricitySingle.history) && t.electricitySingle.history.length > 0
+      ? t.electricitySingle.history.map((item) => ({ ...item }))
+      : [];
   if (elecSingleHistory.length === 0) {
     elecSingleHistory = [{ id: 'esh_1', rate: elecSingleRate, validFrom: elecSingleValidFrom, validTo: elecSingleValidTo, note: 'Єдиний тариф на електроенергію' }];
   } else {
-    for (const item of elecSingleHistory) {
-      if (item.validFrom === elecSingleValidFrom || elecSingleHistory.length === 1) {
-        item.rate = elecSingleRate;
-        item.validTo = elecSingleValidTo;
-      }
-    }
+    elecSingleHistory = elecSingleHistory.map((item) =>
+      item.validFrom === elecSingleValidFrom || elecSingleHistory.length === 1
+        ? { ...item, rate: elecSingleRate, validTo: elecSingleValidTo }
+        : item
+    );
   }
 
   const elecDualValidFrom = t.electricityDual?.validFrom || DEFAULT_UTILITY_TARIFFS.electricityDual.validFrom;
@@ -147,7 +194,10 @@ export function normalizeUtilityTariffs(raw?: Partial<UtilityTariffsSettings>): 
   const elecDualWinterDay = t.electricityDual?.winterDay !== undefined ? Number(t.electricityDual.winterDay) : DEFAULT_UTILITY_TARIFFS.electricityDual.winterDay;
   const elecDualWinterNight = t.electricityDual?.winterNight !== undefined ? Number(t.electricityDual.winterNight) : DEFAULT_UTILITY_TARIFFS.electricityDual.winterNight;
   const elecDualWinterLimit = t.electricityDual?.winterLimitKwh !== undefined ? Number(t.electricityDual.winterLimitKwh) : (DEFAULT_UTILITY_TARIFFS.electricityDual.winterLimitKwh ?? 2000);
-  let elecDualHistory = t.electricityDual?.history && Array.isArray(t.electricityDual.history) && t.electricityDual.history.length > 0 ? [...t.electricityDual.history] : [];
+  let elecDualHistory =
+    t.electricityDual?.history && Array.isArray(t.electricityDual.history) && t.electricityDual.history.length > 0
+      ? t.electricityDual.history.map((item) => ({ ...item }))
+      : [];
   if (elecDualHistory.length === 0) {
     elecDualHistory = [{
       id: 'edh_1',
@@ -161,16 +211,19 @@ export function normalizeUtilityTariffs(raw?: Partial<UtilityTariffsSettings>): 
       note: 'Базовий двозонний тариф',
     }];
   } else {
-    for (const item of elecDualHistory) {
-      if (item.validFrom === elecDualValidFrom || elecDualHistory.length === 1) {
-        item.summerDay = elecDualSummerDay;
-        item.summerNight = elecDualSummerNight;
-        item.winterDay = elecDualWinterDay;
-        item.winterNight = elecDualWinterNight;
-        item.winterLimitKwh = elecDualWinterLimit;
-        item.validTo = elecDualValidTo;
-      }
-    }
+    elecDualHistory = elecDualHistory.map((item) =>
+      item.validFrom === elecDualValidFrom || elecDualHistory.length === 1
+        ? {
+            ...item,
+            summerDay: elecDualSummerDay,
+            summerNight: elecDualSummerNight,
+            winterDay: elecDualWinterDay,
+            winterNight: elecDualWinterNight,
+            winterLimitKwh: elecDualWinterLimit,
+            validTo: elecDualValidTo,
+          }
+        : item
+    );
   }
 
   const outageScheduleViewVariant: OutageScheduleViewVariant =
@@ -388,8 +441,16 @@ export interface DtekShutdownInfo {
   tomorrowSchedule?: DtekDaySchedule | null;
   allQueuesSchedules?: DtekQueueSchedule[];
   isPowerAvailableNow?: boolean;
+  isEmergencyOutage?: boolean;
+  isFactOutageNow?: boolean;
+  isEmergencyUpcoming?: boolean;
+  emergencyOutageReason?: string | null;
+  emergencyStartDate?: string | null;
+  emergencyEndDate?: string | null;
+  emergencyWindowLabel?: string | null;
   currentKyivHour?: number;
   kyivTime?: string;
+  recentScheduleChanges?: ScheduleChangeLogEntry[];
   houseData?: Record<string, unknown> | null;
   raw?: Record<string, unknown>;
   error?: string;
@@ -437,6 +498,19 @@ export interface DtekMeterCheckApiResponse {
   details?: string;
 }
 
+export interface DtekMeterSubmitApiResponse {
+  success: boolean;
+  message?: string;
+  data?: Record<string, unknown>;
+  sentPayload?: {
+    method: string;
+    data: Record<string, unknown>[];
+    profile: Record<string, unknown>;
+  };
+  error?: string;
+  details?: string;
+}
+
 export function formatDtekMeterAccountNumber(rawNumber: string): string {
   if (!rawNumber) return '';
   const clean = String(rawNumber).trim().replace(/\s+/g, '');
@@ -466,6 +540,7 @@ export class IptvData {
   readonly ledger = signal<BudgetLedgerItem[]>([]);
   readonly utilityAccounts = signal<UtilityAccount[]>([]);
   readonly utilityReadings = signal<UtilityReading[]>([]);
+  readonly pendingOpenAddHouseModal = signal<boolean>(false);
   readonly dbStatus = signal<CloudDbStatus | null>(null);
   readonly dtekShutdownInfo = signal<DtekShutdownInfo | null>(null);
   readonly dtekCities = signal<string[]>([]);
@@ -491,8 +566,13 @@ export class IptvData {
   readonly currentUser = signal<AppUser | null>(null);
   readonly realAdminUser = signal<AppUser | null>(null);
   readonly impersonatedUser = signal<AppUser | null>(null);
-  readonly isImpersonating = computed<boolean>(() => !!this.impersonatedUser());
+  readonly isImpersonating = computed<boolean>(
+    () =>
+      !!this.impersonatedUser() ||
+      Boolean(this.realAdminUser() && this.currentUser() && this.currentUser()!.id !== this.realAdminUser()!.id)
+  );
   readonly authToken = signal<string | null>(null);
+  readonly googleAccessToken = signal<string | null>(null);
   readonly isAuthLoading = signal<boolean>(true);
   readonly googleClientId = signal<string>('');
   readonly usersList = signal<AppUser[]>([]);
@@ -553,10 +633,21 @@ export class IptvData {
       expanded.add('waste');
     }
     if (user.role === 'admin') {
+      expanded.add('shopping');
       expanded.add('users');
       expanded.add('settings');
-    } else if (this.allowedSettingsSections().length > 0) {
-      expanded.add('settings');
+    } else {
+      if (
+        expanded.has('electricity') ||
+        expanded.has('water') ||
+        expanded.has('waste') ||
+        expanded.has('outage_schedule')
+      ) {
+        expanded.add('shopping');
+      }
+      if (this.allowedSettingsSections().length > 0) {
+        expanded.add('settings');
+      }
     }
     return Array.from(expanded);
   });
@@ -581,6 +672,7 @@ export class IptvData {
       theme: 'user',
       outage_display: 'user',
       house_visibility: 'user',
+      ooek_credentials: 'user',
       electricity_tariffs: 'user',
       water_tariffs: 'user',
       waste_tariffs: 'user',
@@ -930,6 +1022,10 @@ export class IptvData {
   private inFlightClientsPromise: Promise<void> | null = null;
   private inFlightPaymentsPromise: Promise<void> | null = null;
   private inFlightUtilityPromise: Promise<void> | null = null;
+  private inFlightShoppingPromise: Promise<void> | null = null;
+  private lastUtilityFetchTime = 0;
+  private lastDtekCatalogKey = '';
+  private lastDtekCatalogFetchTime = 0;
   private lastSettingsFetchTime = 0;
   private settingsCooldownUntil = 0;
   private apiRateLimitCooldownUntil = 0;
@@ -1258,10 +1354,17 @@ export class IptvData {
       this.authToken() ||
       (typeof localStorage !== 'undefined' ? localStorage.getItem('homehub_gauth3_token') : null) ||
       (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('homehub_gauth3_token') : null);
+    const gAccess =
+      this.googleAccessToken() ||
+      (typeof localStorage !== 'undefined' ? localStorage.getItem('homehub_google_access_token') : null) ||
+      (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('homehub_google_access_token') : null);
     const impersonated = this.impersonatedUser();
     const headers: Record<string, string> = {};
     if (token && token.startsWith('gauth3_')) {
       headers['Authorization'] = `Bearer ${token}`;
+    }
+    if (gAccess) {
+      headers['x-google-access-token'] = gAccess;
     }
     if (impersonated?.id) {
       headers['x-impersonate-user-id'] = impersonated.id;
@@ -1316,30 +1419,21 @@ export class IptvData {
       };
     }
 
-    if (typeof sessionStorage !== 'undefined') {
-      try {
-        sessionStorage.setItem('homehub_impersonate_uid', testTarget.id);
-      } catch {
-        // ignore
-      }
-    }
+    setActiveImpersonateUid(testTarget.id);
+    this.lastUtilityFetchTime = 0;
     this.impersonatedUser.set(testTarget);
     this.currentUser.set(testTarget);
     await this.checkAuth();
     await this.refreshAllData(false);
+    this.restartAppRealtimeSignals();
     this.triggerSuccess(`Увімкнено режим перегляду очима користувача: ${this.currentUser()?.name || testTarget.name}`);
   }
 
   async exitTestUserMode(): Promise<void> {
     const admin = this.realAdminUser();
     this.impersonatedUser.set(null);
-    if (typeof sessionStorage !== 'undefined') {
-      try {
-        sessionStorage.removeItem('homehub_impersonate_uid');
-      } catch {
-        // ignore
-      }
-    }
+    setActiveImpersonateUid(null);
+    this.lastUtilityFetchTime = 0;
     if (admin) {
       this.currentUser.set(admin);
       if (typeof localStorage !== 'undefined') {
@@ -1352,6 +1446,7 @@ export class IptvData {
     }
     await this.checkAuth();
     await Promise.all([this.refreshAllData(false), this.fetchUsers(), this.fetchAdminUtilityAccounts()]);
+    this.restartAppRealtimeSignals();
     this.triggerSuccess('Ви повернулись у режим Адміністратора з повним доступом');
   }
 
@@ -1359,10 +1454,13 @@ export class IptvData {
     this.isAuthLoading.set(true);
     try {
       if (typeof window !== 'undefined') {
-        // Purge any legacy localStorage keys that previously auto-logged visitors as admin
+        // Purge any legacy localStorage keys and stale persisted impersonation key
         try {
           localStorage.removeItem('iptv_auth_token');
           localStorage.removeItem('iptv_auth_user');
+          if (!this.impersonatedUser()) {
+            setActiveImpersonateUid(null);
+          }
         } catch {
           // ignore
         }
@@ -1381,6 +1479,12 @@ export class IptvData {
 
           if (savedToken && savedToken.startsWith('gauth3_')) {
             this.authToken.set(savedToken);
+            const savedGoogleAccess =
+              localStorage.getItem('homehub_google_access_token') ||
+              (typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('homehub_google_access_token') : null);
+            if (savedGoogleAccess) {
+              this.googleAccessToken.set(savedGoogleAccess);
+            }
             this.syncAuthTokenWithServiceWorker(savedToken);
             if (!this.currentUser() && savedUserJson) {
               try {
@@ -1397,6 +1501,7 @@ export class IptvData {
             }
           } else {
             this.authToken.set(null);
+            this.googleAccessToken.set(null);
             this.currentUser.set(null);
             this.realAdminUser.set(null);
           }
@@ -1417,6 +1522,9 @@ export class IptvData {
             userLastSeenVersion: string;
             dismissedVersion: string;
             shouldShowModal: boolean;
+            updatedAt?: string;
+            updatedAtKyiv?: string;
+            versionTimestamps?: Record<string, string>;
           };
         }>('/api/auth/me', this.getAuthHeaders())
       );
@@ -1441,8 +1549,11 @@ export class IptvData {
       }
 
       if (res.authenticated && res.user) {
+        const isServerImpersonating = Boolean(res.realAdminUser && res.user.id !== res.realAdminUser.id);
         this.currentUser.set(res.user);
-        if (this.impersonatedUser() && res.user.id === this.impersonatedUser()?.id) {
+        if (isServerImpersonating) {
+          this.impersonatedUser.set(res.user);
+        } else if (this.impersonatedUser() && res.user.id === this.impersonatedUser()?.id) {
           this.impersonatedUser.set(res.user);
         } else if (typeof localStorage !== 'undefined' && !this.impersonatedUser()) {
           if (res.user.id !== 'user_test_sandbox') {
@@ -1464,6 +1575,7 @@ export class IptvData {
         this.currentUser.set(null);
         this.realAdminUser.set(null);
         this.impersonatedUser.set(null);
+        setActiveImpersonateUid(null);
         this.authToken.set(null);
         this.syncAuthTokenWithServiceWorker(null);
         if (typeof window !== 'undefined') {
@@ -1495,12 +1607,18 @@ export class IptvData {
     userLastSeenVersion: string;
     dismissedVersion: string;
     shouldShowModal: boolean;
+    updatedAt?: string;
+    updatedAtKyiv?: string;
+    versionTimestamps?: Record<string, string>;
   }>({
-    currentVersion: 'v4.2',
-    previousVersion: 'v4.0',
-    userLastSeenVersion: 'v4.0',
+    currentVersion: 'v6.0',
+    previousVersion: 'v5.1',
+    userLastSeenVersion: 'v5.1',
     dismissedVersion: '',
     shouldShowModal: false,
+    updatedAt: '',
+    updatedAtKyiv: '',
+    versionTimestamps: {},
   });
 
   readonly isUpdateModalOpen = signal<boolean>(false);
@@ -1514,7 +1632,7 @@ export class IptvData {
     this.isUpdateModalOpen.set(false);
   }
 
-  async dismissAppReleaseForUser(version = 'v4.2'): Promise<void> {
+  async dismissAppReleaseForUser(version = 'v6.0'): Promise<void> {
     this.isDismissingUpdate.set(true);
     try {
       const res = await firstValueFrom(
@@ -1526,6 +1644,9 @@ export class IptvData {
             userLastSeenVersion: string;
             dismissedVersion: string;
             shouldShowModal: boolean;
+            updatedAt?: string;
+            updatedAtKyiv?: string;
+            versionTimestamps?: Record<string, string>;
           };
           message?: string;
         }>('/api/app-release/dismiss', { version }, this.getAuthHeaders())
@@ -1603,6 +1724,9 @@ export class IptvData {
             userLastSeenVersion: string;
             dismissedVersion: string;
             shouldShowModal: boolean;
+            updatedAt?: string;
+            updatedAtKyiv?: string;
+            versionTimestamps?: Record<string, string>;
           };
         }>('/api/auth/google', payload)
       );
@@ -1623,11 +1747,17 @@ export class IptvData {
           this.realAdminUser.set(null);
         }
         this.authToken.set(res.token);
+        if (payload.accessToken) {
+          this.googleAccessToken.set(payload.accessToken);
+        }
         this.syncAuthTokenWithServiceWorker(res.token);
         if (typeof localStorage !== 'undefined') {
           try {
             localStorage.setItem('homehub_gauth3_token', res.token);
             localStorage.setItem('homehub_gauth3_user', JSON.stringify(res.user));
+            if (payload.accessToken) {
+              localStorage.setItem('homehub_google_access_token', payload.accessToken);
+            }
           } catch {
             // ignore
           }
@@ -1637,6 +1767,9 @@ export class IptvData {
             sessionStorage.removeItem('homehub_impersonate_uid');
             sessionStorage.setItem('homehub_gauth3_token', res.token);
             sessionStorage.setItem('homehub_gauth3_user', JSON.stringify(res.user));
+            if (payload.accessToken) {
+              sessionStorage.setItem('homehub_google_access_token', payload.accessToken);
+            }
           } catch {
             // ignore
           }
@@ -1646,6 +1779,7 @@ export class IptvData {
           await Promise.all([this.fetchUsers(), this.fetchAdminUtilityAccounts()]);
         }
         await this.refreshAllData(true);
+        this.startAppRealtimeSignals();
         return res.user;
       }
       return null;
@@ -1673,8 +1807,15 @@ export class IptvData {
     this.currentUser.set(null);
     this.realAdminUser.set(null);
     this.impersonatedUser.set(null);
+    setActiveImpersonateUid(null);
+    this.lastUtilityFetchTime = 0;
     this.authToken.set(null);
+    this.googleAccessToken.set(null);
     this.syncAuthTokenWithServiceWorker(null);
+    this.stopAppRealtimeSignals();
+    this.shoppingLists.set([]);
+    this.shoppingCustomCatalog.set([]);
+    this.shoppingPeople.set([]);
     this.clients.set([]);
     this.payments.set([]);
     this.accounts.set([]);
@@ -1685,8 +1826,10 @@ export class IptvData {
       try {
         localStorage.removeItem('homehub_gauth3_token');
         localStorage.removeItem('homehub_gauth3_user');
+        localStorage.removeItem('homehub_google_access_token');
         sessionStorage.removeItem('homehub_gauth3_token');
         sessionStorage.removeItem('homehub_gauth3_user');
+        sessionStorage.removeItem('homehub_google_access_token');
         sessionStorage.removeItem('homehub_impersonate_uid');
         localStorage.removeItem('iptv_auth_token');
         localStorage.removeItem('iptv_auth_user');
@@ -1989,6 +2132,8 @@ export class IptvData {
   openSharedHouseholdModal(): void {
     this.isSharedHouseholdModalOpen.set(true);
     void this.initQrInviteModalState();
+    void this.fetchUtilityData(false);
+    void this.loadShoppingData(true);
   }
 
   closeSharedHouseholdModal(): void {
@@ -2118,6 +2263,42 @@ export class IptvData {
       this.sharedHouseholdMembers.set(Array.isArray(res?.sharedMembers) ? res.sharedMembers : []);
     } catch {
       // ignore
+    }
+  }
+
+  async updateSharedMemberHouses(memberId: string, houseIds: string[]): Promise<boolean> {
+    try {
+      const res = await firstValueFrom(
+        this.http.put<{ success: boolean; assignedUtilityAccountIds?: string[] }>(
+          `/api/household/members/${encodeURIComponent(memberId)}/houses`,
+          { houseIds },
+          this.getAuthHeaders()
+        )
+      );
+      if (res?.success) {
+        const nextAssigned = Array.isArray(res.assignedUtilityAccountIds)
+          ? res.assignedUtilityAccountIds
+          : houseIds;
+        this.sharedHouseholdMembers.update((list) =>
+          list.map((m) =>
+            m.id === memberId ? { ...m, assignedUtilityAccountIds: nextAssigned } : m
+          )
+        );
+        await Promise.all([
+          this.fetchUtilityData(true),
+          this.fetchHouseholdInvites(),
+          this.loadShoppingData(true),
+        ]);
+        this.triggerSuccess('Доступ учасника до будинків оновлено');
+        return true;
+      }
+      return false;
+    } catch (err: unknown) {
+      const httpErr = err as { error?: { error?: string }; message?: string };
+      this.triggerError(
+        httpErr?.error?.error || httpErr?.message || 'Не вдалося оновити доступ до будинків'
+      );
+      return false;
     }
   }
 
@@ -2260,7 +2441,7 @@ export class IptvData {
   }
 
   // ============================================================================
-  // WEB PUSH & ANDROID SYSTEM NOTIFICATION DRAWER FOR DTEK SCHEDULE CHANGES
+  // IN-APP SCHEDULE CHANGE ALERT ON APP ENTRY (TRACKED BY EXACT SCHEDULE SIGNATURE)
   // ============================================================================
   readonly isPushSupported = signal<boolean>(false);
   readonly isPushSubscribed = signal<boolean>(false);
@@ -2272,10 +2453,821 @@ export class IptvData {
     typeof Notification !== 'undefined' ? Notification.permission : 'default'
   );
   readonly recentScheduleChanges = signal<ScheduleChangeLogEntry[]>([]);
+  readonly isLoadingScheduleChangesHistory = signal<boolean>(false);
+  readonly inAppScheduleChangeAlert = signal<{
+    alertKind: 'schedule' | 'emergency' | 'both';
+    isNewDay?: boolean;
+    isHistoryView?: boolean;
+    queueKey: string;
+    queueDisplay: string;
+    houseName: string;
+    addressKey: string;
+    addressLabel: string;
+    scheduleDate: string;
+    previousTodayIntervals: string[];
+    newTodayIntervals: string[];
+    tomorrowDate: string;
+    previousTomorrowIntervals: string[];
+    newTomorrowIntervals: string[];
+    totalPowerHours: number;
+    totalOutageHours: number;
+    updatedAt: string;
+    signature: string;
+    emergencyOutage: DtekEmergencyOutageInfo | null;
+  } | null>(null);
+
+  normalizeQueueKey(raw?: string | null): string {
+    const clean = String(raw || '')
+      .replace(/^Черга\s+/i, '')
+      .trim()
+      .toUpperCase();
+    if (!clean) return '';
+    return clean.startsWith('GPV') ? clean : `GPV${clean}`;
+  }
+
+  getKyivDateDDMMYYYY(input?: Date | string | number): string {
+    try {
+      const dt =
+        input instanceof Date
+          ? input
+          : typeof input === 'number'
+            ? new Date(input)
+            : input
+              ? new Date(input)
+              : new Date();
+      if (isNaN(dt.getTime())) return '';
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Europe/Kyiv',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).formatToParts(dt);
+      const get = (type: string) => parts.find((p) => p.type === type)?.value || '00';
+      return `${get('day')}.${get('month')}.${get('year')}`;
+    } catch {
+      return '';
+    }
+  }
+
+  getKyivTimeHHMM(input?: Date | string | number): string {
+    try {
+      const dt =
+        input instanceof Date
+          ? input
+          : typeof input === 'number'
+            ? new Date(input)
+            : input
+              ? new Date(input)
+              : new Date();
+      if (isNaN(dt.getTime())) return '';
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Europe/Kyiv',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).formatToParts(dt);
+      const get = (type: string) => parts.find((p) => p.type === type)?.value || '00';
+      return `${get('hour')}:${get('minute')}`;
+    } catch {
+      return '';
+    }
+  }
+
+  getTodayScheduleChangesForQueue(
+    queueGroup?: string | null,
+    scheduleDateHint?: string | null
+  ): ScheduleChangeLogEntry[] {
+    const targetQueue = this.normalizeQueueKey(queueGroup);
+    const todayKyiv = this.getKyivDateDDMMYYYY(new Date());
+    const hintDate = String(scheduleDateHint || '').trim();
+    const list = this.recentScheduleChanges();
+    const filtered = list.filter((entry) => {
+      if (targetQueue) {
+        const entryQueue = this.normalizeQueueKey(entry.queueKey);
+        if (entryQueue && entryQueue !== targetQueue) return false;
+      }
+      const detectedKyivDate =
+        entry.detectedAtKyiv?.trim().split(' ')[0] || this.getKyivDateDDMMYYYY(entry.detectedAt);
+      if (todayKyiv && detectedKyivDate) {
+        return detectedKyivDate === todayKyiv;
+      }
+      if (hintDate && entry.scheduleDate) {
+        return entry.scheduleDate === hintDate;
+      }
+      return true;
+    });
+    return [...filtered].sort((a, b) => {
+      const ta = Date.parse(a.detectedAt) || 0;
+      const tb = Date.parse(b.detectedAt) || 0;
+      return tb - ta;
+    });
+  }
+
+  readonly activeAlertTodayChangesHistory = computed<ScheduleChangeLogEntry[]>(() => {
+    const alert = this.inAppScheduleChangeAlert();
+    if (!alert) return [];
+    const serverEntries = this.getTodayScheduleChangesForQueue(alert.queueKey, alert.scheduleDate);
+    if (alert.isHistoryView) {
+      return serverEntries;
+    }
+
+    const normSlots = (arr?: string[]) =>
+      (arr || [])
+        .map((s) => s.replace(/\s+/g, '').replace(/–|—/g, '-'))
+        .join(',');
+
+    if (alert.alertKind === 'emergency' && alert.emergencyOutage) {
+      const hasEmergencyToday = serverEntries.some(
+        (e) =>
+          e.changeType === 'emergency_outage' &&
+          (!alert.emergencyOutage?.reason || e.emergencyReason === alert.emergencyOutage.reason)
+      );
+      if (hasEmergencyToday) return serverEntries;
+      const nowIso = new Date().toISOString();
+      const synthetic: ScheduleChangeLogEntry = {
+        id: `local_emg_${alert.signature}`,
+        queueKey: alert.queueKey,
+        queueTitle: alert.queueDisplay,
+        detectedAt: nowIso,
+        detectedAtKyiv: `${this.getKyivDateDDMMYYYY(nowIso)} ${this.getKyivTimeHHMM(nowIso)}`,
+        scheduleDate: alert.scheduleDate || this.getKyivDateDDMMYYYY(nowIso),
+        changeType: 'emergency_outage',
+        title: alert.emergencyOutage.isActiveNow
+          ? 'Аварійне відключення світла'
+          : 'Заплановані ремонтні роботи',
+        body: alert.emergencyOutage.reason,
+        addressLabel: alert.addressLabel || alert.houseName,
+        emergencyReason: alert.emergencyOutage.reason,
+        emergencyStartDate: alert.emergencyOutage.startDate,
+        emergencyEndDate: alert.emergencyOutage.endDate,
+        oldIntervals: [],
+        newIntervals: [],
+      };
+      return [synthetic, ...serverEntries];
+    }
+
+    const latestScheduleEntry = serverEntries.find(
+      (e) => e.changeType !== 'emergency_outage' && e.changeType !== 'tomorrow_appeared' && e.changeType !== 'tomorrow_changed'
+    );
+    const alreadyLogged =
+      latestScheduleEntry &&
+      normSlots(latestScheduleEntry.newIntervals) === normSlots(alert.newTodayIntervals);
+
+    if (alreadyLogged) {
+      return serverEntries;
+    }
+
+    const nowIso = new Date().toISOString();
+    const synthetic: ScheduleChangeLogEntry = {
+      id: `local_chg_${alert.signature}`,
+      queueKey: alert.queueKey,
+      queueTitle: alert.queueDisplay,
+      detectedAt: nowIso,
+      detectedAtKyiv: `${this.getKyivDateDDMMYYYY(nowIso)} ${this.getKyivTimeHHMM(nowIso)}`,
+      scheduleDate: alert.scheduleDate || this.getKyivDateDDMMYYYY(nowIso),
+      changeType: alert.isNewDay ? 'new_day_schedule' : 'today_changed',
+      title: alert.isNewDay ? 'Новий графік на сьогодні' : 'Зміна графіку на сьогодні',
+      oldIntervals: alert.isNewDay ? [] : alert.previousTodayIntervals,
+      newIntervals: alert.newTodayIntervals,
+      totalPowerHours: alert.totalPowerHours,
+      totalOutageHours: alert.totalOutageHours,
+    };
+    return [synthetic, ...serverEntries];
+  });
+  readonly meterReadingReminderAlert = signal<{
+    windowKey: string;
+    targetPeriodMonth: string;
+    windowStartDate: string;
+    windowEndDate: string;
+    windowRangeDisplay: string;
+    deadlineDateDisplay: string;
+    billingRecordDateDisplay: string;
+    daysLeft: number;
+    totalWindowDays: number;
+    progressPercent: number;
+    urgencyLevel: 'critical' | 'warning' | 'normal';
+    daysLeftLabel: string;
+    windowDaysTimeline: { label: string; dateIso: string; isPast: boolean; isToday: boolean }[];
+    pendingAccounts: { id: string; name: string; address: string }[];
+    primaryAccountId: string;
+  } | null>(null);
+  private dismissedMeterReminderSessionKey: string | null = null;
   private currentPushEndpoint: string | null = null;
   private lastDtekScheduleSignature: string | null = null;
   private lastSeenRemoteChangeId: string | null = null;
   private schedulePollIntervalId: ReturnType<typeof setInterval> | null = null;
+
+  private getSeenSchedulesStorageKey(): string {
+    const uid = this.currentUser()?.id || 'anonymous';
+    return `homehub_seen_dtek_schedules_${uid}`;
+  }
+
+  private loadSeenSchedulesMap(): Record<
+    string,
+    {
+      queueKey: string;
+      scheduleDate: string;
+      todayIntervals: string[];
+      tomorrowDate: string;
+      tomorrowIntervals: string[];
+      signature: string;
+      seenAt: string;
+      lastRemoteChangeId?: string;
+      emergencySignature?: string;
+      emergencyByAddress?: Record<string, string>;
+    }
+  > {
+    const merged: Record<
+      string,
+      {
+        queueKey: string;
+        scheduleDate: string;
+        todayIntervals: string[];
+        tomorrowDate: string;
+        tomorrowIntervals: string[];
+        signature: string;
+        seenAt: string;
+        lastRemoteChangeId?: string;
+        emergencySignature?: string;
+        emergencyByAddress?: Record<string, string>;
+      }
+    > = {};
+
+    const fromPrefs = this.userPersonalSettings().customPreferences?.['seenDtekSchedulesByQueue'];
+    if (fromPrefs && typeof fromPrefs === 'object') {
+      for (const [k, v] of Object.entries(fromPrefs as Record<string, unknown>)) {
+        if (v && typeof v === 'object' && 'signature' in v) {
+          merged[k] = v as (typeof merged)[string];
+        }
+      }
+    }
+
+    if (typeof localStorage !== 'undefined') {
+      try {
+        const raw = localStorage.getItem(this.getSeenSchedulesStorageKey());
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') {
+            for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+              if (v && typeof v === 'object' && 'signature' in v) {
+                merged[k] = v as (typeof merged)[string];
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore storage parse error
+      }
+    }
+
+    return merged;
+  }
+
+  private saveSeenSchedulesMap(
+    seenMap: Record<
+      string,
+      {
+        queueKey: string;
+        scheduleDate: string;
+        todayIntervals: string[];
+        tomorrowDate: string;
+        tomorrowIntervals: string[];
+        signature: string;
+        seenAt: string;
+        lastRemoteChangeId?: string;
+        emergencySignature?: string;
+        emergencyByAddress?: Record<string, string>;
+      }
+    >,
+    syncToServer = true
+  ): void {
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem(this.getSeenSchedulesStorageKey(), JSON.stringify(seenMap));
+      } catch {
+        // ignore
+      }
+    }
+    const curPrefs = { ...(this.userPersonalSettings().customPreferences || {}) };
+    curPrefs['seenDtekSchedulesByQueue'] = seenMap;
+    this.userPersonalSettings.update((prev) => ({
+      ...prev,
+      customPreferences: curPrefs,
+    }));
+    if (syncToServer && this.isAuthenticated()) {
+      void firstValueFrom(
+        this.http.post(
+          '/api/user-settings',
+          { customPreferences: curPrefs },
+          this.getAuthHeaders()
+        )
+      ).catch(() => {
+        // ignore background persistence failure
+      });
+    }
+  }
+
+  acknowledgeScheduleChangeAlert(): void {
+    const alert = this.inAppScheduleChangeAlert();
+    if (alert && !alert.isHistoryView) {
+      const seenMap = this.loadSeenSchedulesMap();
+      const prevEntry = seenMap[alert.queueKey];
+      const emSig = alert.emergencyOutage?.hasFactOutage ? alert.emergencyOutage.signature : 'NONE';
+      const emergencyByAddress = { ...(prevEntry?.emergencyByAddress || {}) };
+      if (alert.addressKey) {
+        emergencyByAddress[alert.addressKey] = emSig;
+      }
+      seenMap[alert.queueKey] = {
+        queueKey: alert.queueKey,
+        scheduleDate: alert.scheduleDate,
+        todayIntervals: alert.newTodayIntervals,
+        tomorrowDate: alert.tomorrowDate,
+        tomorrowIntervals: alert.newTomorrowIntervals,
+        signature: alert.signature,
+        seenAt: new Date().toISOString(),
+        lastRemoteChangeId: this.recentScheduleChanges()[0]?.id || prevEntry?.lastRemoteChangeId,
+        emergencySignature: emSig,
+        emergencyByAddress,
+      };
+      this.saveSeenSchedulesMap(seenMap, true);
+    }
+    this.inAppScheduleChangeAlert.set(null);
+  }
+
+  openTodayScheduleChangesHistory(queueGroupOverride?: string | null): void {
+    const info = this.dtekShutdownInfo();
+    const rawQueue = String(queueGroupOverride || info?.queueGroup || this.pushMonitoredQueue() || '3.1').trim();
+    const queueKey = this.normalizeQueueKey(rawQueue) || 'GPV3.1';
+    const qNorm = queueKey.replace(/^GPV/i, '');
+    const queueDisplay = `Черга ${qNorm}`;
+
+    const matchedQueue = info?.allQueuesSchedules?.find(
+      (q) => q.queueKey === queueKey || q.queueNumber === qNorm
+    );
+    const todayHours = matchedQueue?.hourlySchedule || info?.hourlySchedule || [];
+    const todayIntervals =
+      matchedQueue?.outageIntervals && matchedQueue.outageIntervals.length > 0
+        ? matchedQueue.outageIntervals
+        : this.extractOutageIntervals(todayHours);
+    const tomSchedule = matchedQueue?.tomorrowSchedule || info?.tomorrowSchedule || null;
+    const tomorrowDate = String(tomSchedule?.scheduleDate || '').trim();
+    const tomorrowIntervals = this.extractOutageIntervals(tomSchedule?.hourlySchedule);
+    const scheduleDate = String(
+      matchedQueue?.scheduleDate || info?.scheduleDate || this.getKyivDateDDMMYYYY(new Date())
+    ).trim();
+
+    const totalOutageHours =
+      matchedQueue?.totalOutageHours ??
+      todayHours.reduce(
+        (acc, h) => acc + (h.firstHalfPower ? 0 : 0.5) + (h.secondHalfPower ? 0 : 0.5),
+        0
+      );
+    const totalPowerHours = Math.max(0, 24 - totalOutageHours);
+
+    const activeHouse = this.activeDtekAccount();
+    const addressLabel =
+      [info?.city, info?.street, info?.houseNum ? `буд. ${info.houseNum}` : '']
+        .filter(Boolean)
+        .join(', ') ||
+      activeHouse?.address ||
+      '';
+    const addressKey =
+      [info?.city, info?.street, info?.houseNum]
+        .map((s) => String(s || '').trim().toLowerCase())
+        .filter(Boolean)
+        .join('|') || activeHouse?.id || 'default';
+    const houseName = activeHouse?.name || addressLabel || 'Ваш будинок';
+    const emergency = info ? extractDtekEmergencyOutage(info) : null;
+    const emergencyOutage = emergency?.hasFactOutage ? emergency : null;
+
+    this.inAppScheduleChangeAlert.set({
+      alertKind: 'schedule',
+      isNewDay: false,
+      isHistoryView: true,
+      queueKey,
+      queueDisplay,
+      houseName,
+      addressKey,
+      addressLabel,
+      scheduleDate,
+      previousTodayIntervals: [],
+      newTodayIntervals: todayIntervals,
+      tomorrowDate,
+      previousTomorrowIntervals: [],
+      newTomorrowIntervals: tomorrowIntervals,
+      totalPowerHours,
+      totalOutageHours,
+      updatedAt: info?.updateFact || info?.lastDtekFetchAt || info?.fetchedAt || '',
+      signature: `history|${queueKey}|${scheduleDate}`,
+      emergencyOutage,
+    });
+
+    void this.fetchRecentScheduleChanges(false, queueKey);
+  }
+
+  private evaluateScheduleChangeOnLoad(info: DtekShutdownInfo): void {
+    if (!info || !Array.isArray(info.hourlySchedule)) return;
+    const rawQueue = String(info.queueGroup || '3.1').trim();
+    const queueKey = rawQueue.toUpperCase().startsWith('GPV') ? rawQueue.toUpperCase() : `GPV${rawQueue}`;
+    const queueDisplay = `Черга ${queueKey.replace(/^GPV/i, '')}`;
+
+    const todayIntervals = this.resolveTodayIntervals(info);
+    const tomorrowIntervals = this.resolveTomorrowIntervals(info);
+    const scheduleDate = String(info.scheduleDate || '').trim();
+    const tomorrowDate = String(info.tomorrowSchedule?.scheduleDate || '').trim();
+
+    const signature = `${queueKey}|date:${scheduleDate}|today:${todayIntervals.join(',')}|tom:${tomorrowDate}:${tomorrowIntervals.join(',')}`;
+
+    const seenMap = this.loadSeenSchedulesMap();
+    const prev = seenMap[queueKey];
+
+    const activeHouse = this.activeDtekAccount();
+    const addressLabel =
+      [info.city, info.street, info.houseNum ? `буд. ${info.houseNum}` : '']
+        .filter(Boolean)
+        .join(', ') ||
+      activeHouse?.address ||
+      '';
+    const addressKey =
+      [info.city, info.street, info.houseNum]
+        .map((s) => String(s || '').trim().toLowerCase())
+        .filter(Boolean)
+        .join('|') || activeHouse?.id || 'default';
+    const houseName = activeHouse?.name || addressLabel || 'Ваш будинок';
+
+    const emergency = extractDtekEmergencyOutage(info);
+    const emergencyOutage = emergency.hasFactOutage ? emergency : null;
+
+    const qNorm = queueKey.replace(/^GPV/i, '');
+    const matchedQueue = info.allQueuesSchedules?.find(
+      (q) => q.queueKey === queueKey || q.queueNumber === qNorm
+    );
+    const totalOutageHours =
+      matchedQueue?.totalOutageHours ??
+      info.dailySchedules?.[0]?.totalOutageHours ??
+      info.hourlySchedule.reduce(
+        (acc, h) => acc + (h.firstHalfPower ? 0 : 0.5) + (h.secondHalfPower ? 0 : 0.5),
+        0
+      );
+    const totalPowerHours = Math.max(0, 24 - totalOutageHours);
+    const updatedAt = info.updateFact || info.lastDtekFetchAt || info.fetchedAt || '';
+
+    const latestServerChangeForQueue = this.recentScheduleChanges().find(
+      (c) => c.queueKey === queueKey || c.queueKey.replace(/^GPV/i, '') === qNorm
+    );
+
+    const prevEmergencySig = prev?.emergencyByAddress?.[addressKey] ?? prev?.emergencySignature;
+    const emergencyChanged = Boolean(
+      emergency.hasFactOutage && prevEmergencySig !== emergency.signature
+    );
+
+    if (prev) {
+      const isNewDay = Boolean(prev.scheduleDate && scheduleDate && prev.scheduleDate !== scheduleDate);
+      const todayChanged = !isNewDay && prev.todayIntervals.join(',') !== todayIntervals.join(',');
+      const tomorrowChanged = !isNewDay && prev.tomorrowIntervals.join(',') !== tomorrowIntervals.join(',');
+      const scheduleChanged = isNewDay || (prev.signature !== signature && (todayChanged || tomorrowChanged));
+
+      if (!scheduleChanged && !emergencyChanged) {
+        // Update cleared emergency signature quietly if an earlier emergency outage ended
+        if (!emergency.hasFactOutage && prevEmergencySig && prevEmergencySig !== 'NONE') {
+          const updatedEmergencyByAddress = { ...(prev.emergencyByAddress || {}), [addressKey]: 'NONE' };
+          seenMap[queueKey] = {
+            ...prev,
+            emergencySignature: 'NONE',
+            emergencyByAddress: updatedEmergencyByAddress,
+          };
+          this.saveSeenSchedulesMap(seenMap, true);
+        }
+        return;
+      }
+
+      const alertKind: 'schedule' | 'emergency' | 'both' =
+        scheduleChanged && emergencyChanged
+          ? 'both'
+          : emergencyChanged
+            ? 'emergency'
+            : 'schedule';
+
+      this.inAppScheduleChangeAlert.set({
+        alertKind,
+        isNewDay,
+        isHistoryView: false,
+        queueKey,
+        queueDisplay,
+        houseName,
+        addressKey,
+        addressLabel,
+        scheduleDate,
+        previousTodayIntervals: isNewDay || !todayChanged ? [] : prev.todayIntervals,
+        newTodayIntervals: todayIntervals,
+        tomorrowDate,
+        previousTomorrowIntervals: isNewDay || !tomorrowChanged ? [] : prev.tomorrowIntervals,
+        newTomorrowIntervals: tomorrowIntervals,
+        totalPowerHours,
+        totalOutageHours,
+        updatedAt,
+        signature,
+        emergencyOutage,
+      });
+      void this.fetchRecentScheduleChanges(false, queueKey);
+
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        const slotsText = todayIntervals.length > 0 ? todayIntervals.join(', ') : 'Без відключень';
+        let notifTitle = isNewDay
+          ? `📅 Новий графік ДТЕК на сьогодні (${queueDisplay})`
+          : `⚡ Зміна графіку ДТЕК (${queueDisplay})`;
+        let notifBody = isNewDay
+          ? `${houseName}: новий графік на сьогодні (${scheduleDate}) — ${slotsText} (світло ${totalPowerHours} год).`
+          : `${houseName}: актуальні відключення сьогодні — ${slotsText} (світло ${totalPowerHours} год).`;
+        if (alertKind === 'emergency' && emergencyOutage) {
+          notifTitle = `🚨 Аварійне відключення світла (${houseName})`;
+          notifBody = `${emergencyOutage.reason}${emergencyOutage.windowLabel ? ` (${emergencyOutage.windowLabel})` : ''}. Адреса: ${addressLabel || houseName}.`;
+        } else if (emergencyOutage) {
+          notifTitle = isNewDay
+            ? `🚨 Новий графік та аварійне відключення (${queueDisplay})`
+            : `🚨 Зміна графіку та аварійне відключення (${queueDisplay})`;
+          notifBody = `${houseName}: ${emergencyOutage.reason} (${emergencyOutage.windowLabel || 'діє зараз'}). Графік черги: ${slotsText}.`;
+        }
+        void this.showAndroidSystemNotification({
+          title: notifTitle,
+          body: notifBody,
+          tag: `dtek-change-${queueKey}-${scheduleDate}-${emergency.signature}`,
+          url: '/?tab=outage_schedule',
+          queueGroup: queueKey,
+        });
+      }
+
+      const nextEmergencySig = emergency.hasFactOutage ? emergency.signature : 'NONE';
+      seenMap[queueKey] = {
+        queueKey,
+        scheduleDate,
+        todayIntervals,
+        tomorrowDate,
+        tomorrowIntervals,
+        signature,
+        seenAt: new Date().toISOString(),
+        lastRemoteChangeId: latestServerChangeForQueue?.id || prev.lastRemoteChangeId,
+        emergencySignature: nextEmergencySig,
+        emergencyByAddress: {
+          ...(prev.emergencyByAddress || {}),
+          [addressKey]: nextEmergencySig,
+        },
+      };
+      this.saveSeenSchedulesMap(seenMap, true);
+      return;
+    }
+
+    // First time tracking this queue on this client: check server recent changes or an active emergency outage
+    const isServerNewDay = latestServerChangeForQueue?.changeType === 'new_day_schedule';
+    const prevIntervalsFromServer = isServerNewDay
+      ? []
+      : latestServerChangeForQueue?.previousIntervals || latestServerChangeForQueue?.oldIntervals;
+    const serverDiffDetected = Boolean(
+      latestServerChangeForQueue &&
+        (isServerNewDay ||
+          (Array.isArray(prevIntervalsFromServer) &&
+            prevIntervalsFromServer.length > 0 &&
+            prevIntervalsFromServer.join(',') !== todayIntervals.join(',')))
+    );
+
+    if (serverDiffDetected || emergency.hasFactOutage) {
+      const alertKind: 'schedule' | 'emergency' | 'both' =
+        serverDiffDetected && emergency.hasFactOutage
+          ? 'both'
+          : emergency.hasFactOutage
+            ? 'emergency'
+            : 'schedule';
+      this.inAppScheduleChangeAlert.set({
+        alertKind,
+        isNewDay: isServerNewDay,
+        isHistoryView: false,
+        queueKey,
+        queueDisplay,
+        houseName,
+        addressKey,
+        addressLabel,
+        scheduleDate,
+        previousTodayIntervals: isServerNewDay ? [] : prevIntervalsFromServer || [],
+        newTodayIntervals: todayIntervals,
+        tomorrowDate,
+        previousTomorrowIntervals: [],
+        newTomorrowIntervals: tomorrowIntervals,
+        totalPowerHours,
+        totalOutageHours,
+        updatedAt,
+        signature,
+        emergencyOutage,
+      });
+      void this.fetchRecentScheduleChanges(false, queueKey);
+    }
+
+    const initEmergencySig = emergency.hasFactOutage ? emergency.signature : 'NONE';
+    seenMap[queueKey] = {
+      queueKey,
+      scheduleDate,
+      todayIntervals,
+      tomorrowDate,
+      tomorrowIntervals,
+      signature,
+      seenAt: new Date().toISOString(),
+      lastRemoteChangeId: latestServerChangeForQueue?.id,
+      emergencySignature: initEmergencySig,
+      emergencyByAddress: {
+        [addressKey]: initEmergencySig,
+      },
+    };
+    this.saveSeenSchedulesMap(seenMap, true);
+  }
+
+  // ============================================================================
+  // MONTHLY METER READING SUBMISSION REMINDER (LAST 2 DAYS OF MONTH + 1ST TO 3RD OF NEXT MONTH)
+  // ============================================================================
+  dismissMeterReadingReminder(): void {
+    const current = this.meterReadingReminderAlert();
+    if (current) {
+      this.dismissedMeterReminderSessionKey = current.windowKey;
+    }
+    this.meterReadingReminderAlert.set(null);
+  }
+
+  evaluateMeterReadingReminder(): void {
+    const now = new Date();
+    let year = now.getFullYear();
+    let month = now.getMonth() + 1; // 1..12
+    let day = now.getDate(); // 1..31
+
+    try {
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Europe/Kyiv',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).formatToParts(now);
+      const y = Number(parts.find((p) => p.type === 'year')?.value);
+      const m = Number(parts.find((p) => p.type === 'month')?.value);
+      const d = Number(parts.find((p) => p.type === 'day')?.value);
+      if (y > 2000 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+        year = y;
+        month = m;
+        day = d;
+      }
+    } catch {
+      // Fallback to local system date
+    }
+
+    const pad = (n: number): string => String(n).padStart(2, '0');
+    const daysInCurrentMonth = new Date(year, month, 0).getDate();
+    const todayIso = `${year}-${pad(month)}-${pad(day)}`;
+
+    let windowStartDate = '';
+    let windowEndDate = '';
+    let targetPeriodMonth = '';
+    let windowRangeDisplay = '';
+    let deadlineDateDisplay = '';
+    let billingRecordDateDisplay = '';
+    let daysLeft = 0;
+    let startMonthYear = year;
+    let startMonthNum = month;
+    let startMonthLastDay = daysInCurrentMonth;
+    let endMonthYear = year;
+    let endMonthNum = month;
+
+    if (day >= daysInCurrentMonth - 1) {
+      // Last 2 days of the current month (e.g. 29-30 or 30-31)
+      const startDay = daysInCurrentMonth - 1;
+      const nextYear = month === 12 ? year + 1 : year;
+      const nextMonth = month === 12 ? 1 : month + 1;
+      startMonthYear = year;
+      startMonthNum = month;
+      startMonthLastDay = daysInCurrentMonth;
+      endMonthYear = nextYear;
+      endMonthNum = nextMonth;
+      windowStartDate = `${year}-${pad(month)}-${pad(startDay)}`;
+      windowEndDate = `${nextYear}-${pad(nextMonth)}-03`;
+      targetPeriodMonth = `${year}-${pad(month)}`;
+      windowRangeDisplay = `${pad(startDay)}.${pad(month)}.${year} – 03.${pad(nextMonth)}.${nextYear}`;
+      deadlineDateDisplay = `03.${pad(nextMonth)}.${nextYear}`;
+      billingRecordDateDisplay = `${pad(daysInCurrentMonth)}.${pad(month)}.${year}`;
+      daysLeft = daysInCurrentMonth - day + 3;
+    } else if (day >= 1 && day <= 3) {
+      // 1st to 3rd day of the next month
+      const prevYear = month === 1 ? year - 1 : year;
+      const prevMonth = month === 1 ? 12 : month - 1;
+      const daysInPrevMonth = new Date(prevYear, prevMonth, 0).getDate();
+      const startDay = daysInPrevMonth - 1;
+      startMonthYear = prevYear;
+      startMonthNum = prevMonth;
+      startMonthLastDay = daysInPrevMonth;
+      endMonthYear = year;
+      endMonthNum = month;
+      windowStartDate = `${prevYear}-${pad(prevMonth)}-${pad(startDay)}`;
+      windowEndDate = `${year}-${pad(month)}-03`;
+      targetPeriodMonth = `${prevYear}-${pad(prevMonth)}`;
+      windowRangeDisplay = `${pad(startDay)}.${pad(prevMonth)}.${prevYear} – 03.${pad(month)}.${year}`;
+      deadlineDateDisplay = `03.${pad(month)}.${year}`;
+      billingRecordDateDisplay = `${pad(daysInPrevMonth)}.${pad(prevMonth)}.${prevYear}`;
+      daysLeft = 3 - day;
+    } else {
+      // 4th of the month and onwards (until the last 2 days of the month): never show the reminder
+      this.meterReadingReminderAlert.set(null);
+      return;
+    }
+
+    const elecAccounts = this.electricityAccounts();
+    if (elecAccounts.length === 0) {
+      this.meterReadingReminderAlert.set(null);
+      return;
+    }
+
+    const allReadings = this.utilityReadings();
+    const pendingAccounts = elecAccounts.filter((acc) => {
+      const hasSubmittedInWindow = allReadings.some((r) => {
+        if (r.accountId !== acc.id || r.isControlOnly) return false;
+        const rDate = (r.date || '').slice(0, 10);
+        if (rDate >= windowStartDate && rDate <= windowEndDate) {
+          return true;
+        }
+        return false;
+      });
+      return !hasSubmittedInWindow;
+    });
+
+    if (pendingAccounts.length === 0) {
+      // All accounts already have readings submitted for this window
+      this.meterReadingReminderAlert.set(null);
+      return;
+    }
+
+    const windowKey = `${windowStartDate}_${windowEndDate}`;
+    if (this.dismissedMeterReminderSessionKey === windowKey) {
+      return;
+    }
+
+    const totalWindowDays = 5;
+    const elapsedDays = Math.max(1, totalWindowDays - daysLeft);
+    const progressPercent = Math.min(100, Math.max(20, Math.round((elapsedDays / totalWindowDays) * 100)));
+    const urgencyLevel: 'critical' | 'warning' | 'normal' =
+      daysLeft <= 1 ? 'critical' : daysLeft === 2 ? 'warning' : 'normal';
+
+    const rawTimelineDates: { label: string; dateIso: string }[] = [
+      {
+        label: `${pad(startMonthLastDay - 1)}.${pad(startMonthNum)}`,
+        dateIso: `${startMonthYear}-${pad(startMonthNum)}-${pad(startMonthLastDay - 1)}`,
+      },
+      {
+        label: `${pad(startMonthLastDay)}.${pad(startMonthNum)}`,
+        dateIso: `${startMonthYear}-${pad(startMonthNum)}-${pad(startMonthLastDay)}`,
+      },
+      {
+        label: `01.${pad(endMonthNum)}`,
+        dateIso: `${endMonthYear}-${pad(endMonthNum)}-01`,
+      },
+      {
+        label: `02.${pad(endMonthNum)}`,
+        dateIso: `${endMonthYear}-${pad(endMonthNum)}-02`,
+      },
+      {
+        label: `03.${pad(endMonthNum)}`,
+        dateIso: `${endMonthYear}-${pad(endMonthNum)}-03`,
+      },
+    ];
+
+    const windowDaysTimeline = rawTimelineDates.map((d) => ({
+      label: d.label,
+      dateIso: d.dateIso,
+      isPast: d.dateIso < todayIso,
+      isToday: d.dateIso === todayIso,
+    }));
+
+    const daysLeftLabel =
+      daysLeft === 0
+        ? 'Сьогодні останній день подачі (до 3 числа включно)!'
+        : daysLeft === 1
+          ? 'Залишився 1 день до дедлайну подачі показів'
+          : `До дедлайну подачі залишилося днів: ${daysLeft}`;
+
+    this.meterReadingReminderAlert.set({
+      windowKey,
+      targetPeriodMonth,
+      windowStartDate,
+      windowEndDate,
+      windowRangeDisplay,
+      deadlineDateDisplay,
+      billingRecordDateDisplay,
+      daysLeft,
+      totalWindowDays,
+      progressPercent,
+      urgencyLevel,
+      daysLeftLabel,
+      windowDaysTimeline,
+      pendingAccounts: pendingAccounts.map((acc) => ({
+        id: acc.id,
+        name: acc.name || `${acc.street || ''} ${acc.houseNum || ''}`.trim() || 'Будинок',
+        address: [acc.city, acc.street, acc.houseNum].filter(Boolean).join(', '),
+      })),
+      primaryAccountId: pendingAccounts[0].id,
+    });
+  }
 
   private urlBase64ToUint8Array(base64String: string): Uint8Array {
     const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
@@ -2293,29 +3285,35 @@ export class IptvData {
       this.isPushSupported.set(false);
       return;
     }
-    if ('Notification' in window) {
-      this.notificationPermission.set(Notification.permission);
-    }
-    const hasNotificationApi = 'Notification' in window || ('serviceWorker' in navigator && 'PushManager' in window);
-    this.isPushSupported.set(hasNotificationApi);
-
-    if (!('serviceWorker' in navigator)) {
-      return;
-    }
     try {
-      const reg = await navigator.serviceWorker.register('/sw.js');
-      if ('PushManager' in window) {
-        const sub = await reg.pushManager.getSubscription();
-        if (sub) {
-          this.currentPushEndpoint = sub.endpoint;
-          this.isPushSubscribed.set(true);
-          const q = this.dtekShutdownInfo()?.queueGroup || 'GPV4.1';
-          this.pushMonitoredQueue.set(q);
-        } else {
-          this.isPushSubscribed.set(false);
+      if ('Notification' in window) {
+        this.notificationPermission.set(Notification.permission);
+      }
+
+      if ('serviceWorker' in navigator) {
+        try {
+          const reg = await navigator.serviceWorker.register('/sw.js');
+          if (reg?.pushManager) {
+            const existingSub = await reg.pushManager.getSubscription();
+            if (existingSub) {
+              this.currentPushEndpoint = existingSub.endpoint;
+              this.isPushSubscribed.set(true);
+            } else if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+              this.isPushSubscribed.set(true);
+            }
+          } else if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            this.isPushSubscribed.set(true);
+          }
+        } catch {
+          // Ignore SW registration error in restricted environments
         }
       }
+
       await this.fetchRecentScheduleChanges(false);
+      const currentInfo = this.dtekShutdownInfo();
+      if (currentInfo) {
+        this.evaluateScheduleChangeOnLoad(currentInfo);
+      }
       this.startScheduleChangesPolling();
     } catch {
       // ignore
@@ -2331,10 +3329,14 @@ export class IptvData {
     }, 60_000);
   }
 
-  async fetchRecentScheduleChanges(notifyOnNew = true): Promise<ScheduleChangeLogEntry[]> {
+  async fetchRecentScheduleChanges(
+    notifyOnNew = true,
+    queueOverride?: string
+  ): Promise<ScheduleChangeLogEntry[]> {
     if (typeof window === 'undefined') return [];
+    this.isLoadingScheduleChangesHistory.set(true);
     try {
-      const queue = this.dtekShutdownInfo()?.queueGroup || this.pushMonitoredQueue() || '';
+      const queue = queueOverride || this.dtekShutdownInfo()?.queueGroup || this.pushMonitoredQueue() || '';
       const qs = queue && queue !== 'ALL' ? `?queue=${encodeURIComponent(queue)}` : '';
       const res = await firstValueFrom(
         this.http.get<{ changes: ScheduleChangeLogEntry[] }>(`/api/push/changes${qs}`)
@@ -2344,12 +3346,17 @@ export class IptvData {
       if (list.length > 0) {
         const latest = list[0];
         if (notifyOnNew && this.lastSeenRemoteChangeId && this.lastSeenRemoteChangeId !== latest.id) {
-          if (this.notificationPermission() === 'granted') {
-            await this.showAndroidSystemNotification({
-              title: `⚡ Зміна графіку ДТЕК (${latest.queueKey.replace('GPV', 'Черга ')})`,
-              body: latest.summary || `Нові слоти відключень: ${latest.newIntervals.join(', ') || 'Без відключень'}`,
-              tag: `dtek-change-${latest.queueKey}`,
-              queueGroup: latest.queueKey,
+          const house = this.activeDtekAccount() || this.utilityAccounts().find((a) => a.type === 'electricity');
+          await this.fetchDtekShutdowns(house?.city, house?.street, house?.houseNum, false);
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            const qLabel = latest.queueKey ? ` (${latest.queueKey.replace(/^GPV/i, 'Черга ')})` : '';
+            const isEm = latest.changeType === 'emergency_outage';
+            void this.showAndroidSystemNotification({
+              title: latest.title || (isEm ? `🚨 Аварійне відключення ДТЕК${qLabel}` : `⚡ Зміна графіку ДТЕК${qLabel}`),
+              body: latest.body || latest.summary || 'Оновлено погодинний графік відключень світла.',
+              tag: `dtek-remote-${latest.id}`,
+              url: '/?tab=outage_schedule',
+              queueGroup: latest.queueKey || queue,
             });
           }
         }
@@ -2358,6 +3365,8 @@ export class IptvData {
       return list;
     } catch {
       return this.recentScheduleChanges();
+    } finally {
+      this.isLoadingScheduleChangesHistory.set(false);
     }
   }
 
@@ -2384,23 +3393,26 @@ export class IptvData {
     const title = options.title || '⚡ HomeHub — Графік ДТЕК';
     const tag = options.tag || `dtek-drawer-${Date.now()}`;
     const url = options.url || '/?tab=outage_schedule';
+    const queueGroup = options.queueGroup || this.pushMonitoredQueue();
 
     if ('serviceWorker' in navigator) {
       try {
-        const reg = await navigator.serviceWorker.ready;
-        if (reg && typeof reg.showNotification === 'function') {
-          await reg.showNotification(title, {
+        const existingReg = await navigator.serviceWorker.getRegistration();
+        const reg = existingReg || (await navigator.serviceWorker.register('/sw.js'));
+        const activeReg = reg || (await navigator.serviceWorker.ready);
+        if (activeReg && typeof activeReg.showNotification === 'function') {
+          await activeReg.showNotification(title, {
             body: options.body,
-            icon: '/icons/icon-192.png',
-            badge: '/icons/icon-192.png',
+            icon: '/icons/icon-192x192.png',
+            badge: '/icons/icon-192x192.png',
             tag,
             renotify: true,
             requireInteraction: true,
             vibrate: [200, 100, 200, 100, 300],
-            data: { url, queueGroup: options.queueGroup || this.pushMonitoredQueue() },
+            data: { url, title, body: options.body, queueGroup },
             actions: [
               { action: 'open', title: '📊 Відкрити графік' },
-              { action: 'snooze', title: '⏰ Нагадати за 15 хв' },
+              { action: 'snooze_15m', title: '⏰ Нагадати +15 хв' },
             ],
           } as NotificationOptions & { renotify?: boolean; vibrate?: number[]; actions?: { action: string; title: string }[] });
           return true;
@@ -2408,11 +3420,13 @@ export class IptvData {
         if (navigator.serviceWorker.controller) {
           navigator.serviceWorker.controller.postMessage({
             type: 'SHOW_NOTIFICATION',
-            title,
-            body: options.body,
-            tag,
-            url,
-            queueGroup: options.queueGroup || this.pushMonitoredQueue(),
+            payload: {
+              title,
+              body: options.body,
+              tag,
+              url,
+              queueGroup,
+            },
           });
           return true;
         }
@@ -2424,7 +3438,7 @@ export class IptvData {
     if ('Notification' in window && Notification.permission === 'granted') {
       new Notification(title, {
         body: options.body,
-        icon: '/icons/icon-192.png',
+        icon: '/icons/icon-192x192.png',
         tag,
       });
       return true;
@@ -2473,7 +3487,7 @@ export class IptvData {
           periodicSync?: { register: (tag: string, opts: { minInterval: number }) => Promise<void> };
         };
         if (regWithSync.periodicSync && typeof regWithSync.periodicSync.register === 'function') {
-          await regWithSync.periodicSync.register('dtek-schedule-sync', { minInterval: 15 * 60 * 1000 });
+          await regWithSync.periodicSync.register('dtek-schedule-check', { minInterval: 15 * 60 * 1000 });
         }
       } catch {
         // Periodic sync optional
@@ -2698,7 +3712,7 @@ export class IptvData {
       try {
         // Stagger requests into two small waves to avoid Cloud Run 429 burst rate-limiting
         await Promise.all([
-          this.fetchSettings(),
+          this.fetchSettings(true),
           this.fetchUtilityData(),
           this.fetchClients(),
           this.fetchPayments(),
@@ -2710,8 +3724,10 @@ export class IptvData {
           this.fetchDbStatus(),
           this.isRealAdmin() ? this.fetchUsers() : Promise.resolve(),
         ]);
-        if (!this.dtekShutdownInfo() && Date.now() >= this.apiRateLimitCooldownUntil) {
-          await this.fetchDtekShutdowns();
+        if (Date.now() >= this.apiRateLimitCooldownUntil) {
+          const house = this.activeDtekAccount() || this.utilityAccounts().find((a) => a.type === 'electricity');
+          await this.fetchRecentScheduleChanges(false);
+          await this.fetchDtekShutdowns(house?.city, house?.street, house?.houseNum);
         }
         this.lastAutoSyncTime.set(new Date().toISOString());
       } catch (err) {
@@ -2750,6 +3766,7 @@ export class IptvData {
 
     try {
       await this.refreshAllData(true);
+      this.startAppRealtimeSignals();
     } catch {
       this.loadFromLocalStorage();
     } finally {
@@ -2773,9 +3790,19 @@ export class IptvData {
     if (typeof window === 'undefined') {
       return { cities: this.dtekCities(), streets: this.dtekStreets() };
     }
+    const cleanCity = (city || '').trim();
+    const cacheKey = cleanCity.toLowerCase();
+    const now = Date.now();
+    if (
+      this.lastDtekCatalogKey === cacheKey &&
+      now - this.lastDtekCatalogFetchTime < 60_000 &&
+      this.dtekCities().length > 0 &&
+      (!cleanCity || this.dtekStreets().length > 0)
+    ) {
+      return { cities: this.dtekCities(), streets: this.dtekStreets() };
+    }
     this.isDtekCatalogLoading.set(true);
     try {
-      const cleanCity = (city || '').trim();
       const url = cleanCity ? `/api/utility/dtek-streets?city=${encodeURIComponent(cleanCity)}` : '/api/utility/dtek-streets';
       const res = await firstValueFrom(this.http.get<{ cities: string[]; streets: string[] }>(url));
       if (res && Array.isArray(res.cities) && res.cities.length > 0) {
@@ -2786,6 +3813,8 @@ export class IptvData {
       } else if (res && Array.isArray(res.streets)) {
         this.dtekStreets.set(res.streets);
       }
+      this.lastDtekCatalogKey = cacheKey;
+      this.lastDtekCatalogFetchTime = Date.now();
       return res || { cities: [], streets: [] };
     } catch (e) {
       console.warn('Error fetching DTEK catalog:', e);
@@ -2957,21 +3986,12 @@ export class IptvData {
         const todaySlots = this.resolveTodayIntervals(info);
         const tomorrowSlots = this.resolveTomorrowIntervals(info);
         const nextSignature = `${info.queueGroup || ''}|${todaySlots.join(',')}|${tomorrowSlots.join(',')}`;
-        if (
-          this.lastDtekScheduleSignature &&
-          this.lastDtekScheduleSignature !== nextSignature &&
-          this.notificationPermission() === 'granted'
-        ) {
-          const slotsText = todaySlots.join(', ') || 'Без відключень';
-          void this.showAndroidSystemNotification({
-            title: `⚡ Зміна графіку ДТЕК (${(info.queueGroup || 'Черга').replace('GPV', 'Черга ')})`,
-            body: `Новий розклад на сьогодні: ${slotsText}`,
-            tag: `dtek-local-diff-${info.queueGroup || 'gpv'}`,
-            queueGroup: info.queueGroup || undefined,
-          });
-        }
         this.lastDtekScheduleSignature = nextSignature;
         this.dtekShutdownInfo.set(info);
+        if (Array.isArray(info.recentScheduleChanges)) {
+          this.recentScheduleChanges.set(info.recentScheduleChanges);
+        }
+        this.evaluateScheduleChangeOnLoad(info);
         if (forceRefresh) {
           if (info.didFetchLiveFromDtek) {
             this.triggerSuccess(
@@ -3020,6 +4040,35 @@ export class IptvData {
         error: errorMsg,
         rawNumber: accountNumber,
         formattedNumber: this.formatDtekMeterAccountNumber(accountNumber),
+      };
+    }
+  }
+
+  async submitDtekMeterReading(params: {
+    accountNumber: string;
+    accountId?: string;
+    value: string | number;
+    readingT1?: string | number;
+    readingT2?: string | number;
+    zoneData?: DtekMeterCheckZone | Record<string, unknown> | null;
+    zonesData?: (DtekMeterCheckZone | Record<string, unknown>)[] | null;
+    profile?: DtekMeterCheckProfile | Record<string, unknown> | null;
+  }): Promise<DtekMeterSubmitApiResponse> {
+    try {
+      const res = await firstValueFrom(
+        this.http.post<DtekMeterSubmitApiResponse>('/api/utility/dtek-meter-submit', params)
+      );
+      if (res.success && res.message) {
+        this.triggerSuccess(res.message);
+      }
+      return res;
+    } catch (err: unknown) {
+      const httpErr = err as { error?: { error?: string; message?: string }; message?: string };
+      const errorMsg =
+        httpErr.error?.error || httpErr.error?.message || httpErr.message || 'Помилка відправки показів до сервера ДТЕК ОЕМ';
+      return {
+        success: false,
+        error: errorMsg,
       };
     }
   }
@@ -3294,24 +4343,51 @@ export class IptvData {
     return this.inFlightPaymentsPromise;
   }
 
+  private getNoCacheAuthHeaders(): { headers: Record<string, string> } {
+    const auth = this.getAuthHeaders();
+    return {
+      headers: {
+        ...auth.headers,
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+      },
+    };
+  }
+
   async fetchSettings(force = false): Promise<void> {
     const now = Date.now();
-    // 1. Observe cooldown if Cloud Run / backend hit rate limit (429)
+    // Observe cooldown only if backend hit rate limit (429) and not explicitly forced
     if (!force && now < this.settingsCooldownUntil) {
       return;
     }
-    // 2. Throttle calls within 15 seconds unless explicitly forced
-    if (!force && this.lastSettingsFetchTime > 0 && now - this.lastSettingsFetchTime < 15000) {
-      return;
-    }
-    // 3. Reuse in-flight promise to avoid duplicate concurrent HTTP calls
-    if (this.inFlightSettingsPromise) {
+    // Reuse in-flight promise to avoid duplicate concurrent HTTP calls unless forced
+    if (!force && this.inFlightSettingsPromise) {
       return this.inFlightSettingsPromise;
     }
 
     this.inFlightSettingsPromise = (async () => {
       try {
-        const data = await firstValueFrom(this.http.get<AppSettings>('/api/settings', this.getAuthHeaders()));
+        const reqOpts = this.getNoCacheAuthHeaders();
+        const [data, userRes] = await Promise.all([
+          firstValueFrom(this.http.get<AppSettings>('/api/settings', reqOpts)),
+          firstValueFrom(
+            this.http.get<{
+              userSettings?: UserPersonalSettings;
+              allUserSettings?: Record<string, UserPersonalSettings>;
+              systemSettingsConfig?: SystemSettingsConfig;
+            }>('/api/user-settings', reqOpts)
+          ).catch(() => null),
+        ]);
+
+        if (userRes?.userSettings) {
+          this.userPersonalSettings.set(userRes.userSettings);
+        }
+        if (userRes?.allUserSettings) {
+          this.allUsersPersonalSettings.set(userRes.allUserSettings);
+        }
+        if (userRes?.systemSettingsConfig) {
+          this.systemSettingsConfig.set(userRes.systemSettingsConfig);
+        }
         if (data) {
           const tariffs = normalizeUtilityTariffs(data.utilityTariffsSettings);
           const merged: AppSettings = { ...DEFAULT_SETTINGS, ...data, utilityTariffsSettings: tariffs };
@@ -3319,15 +4395,13 @@ export class IptvData {
           this.lastSettingsFetchTime = Date.now();
           this.settingsCooldownUntil = 0;
         }
-        await this.fetchUserAndSystemSettings();
       } catch (err: unknown) {
         const httpErr = err as { status?: number; message?: string };
         if (httpErr?.status === 429) {
-          // 429 Rate exceeded: activate a 45-second cooldown and quietly rely on local storage
-          this.settingsCooldownUntil = Date.now() + 45000;
-          console.warn('API settings rate limit reached (429), serving local cached settings during cooldown');
+          this.settingsCooldownUntil = Date.now() + 15000;
+          console.warn('API settings rate limit reached (429)');
         } else {
-          console.warn('Notice: error fetching settings (serving local cached settings):', httpErr?.message || err);
+          console.warn('Notice: error fetching settings from DB:', httpErr?.message || err);
         }
       } finally {
         this.inFlightSettingsPromise = null;
@@ -3344,7 +4418,7 @@ export class IptvData {
           userSettings?: UserPersonalSettings;
           allUserSettings?: Record<string, UserPersonalSettings>;
           systemSettingsConfig?: SystemSettingsConfig;
-        }>('/api/user-settings', this.getAuthHeaders())
+        }>('/api/user-settings', this.getNoCacheAuthHeaders())
       );
       if (res?.userSettings) {
         this.userPersonalSettings.set(res.userSettings);
@@ -4029,13 +5103,889 @@ export class IptvData {
     return 'v10_minimal_pills';
   });
 
+  readonly requestedSettingsAccountId = signal<string | null>(null);
+
   openOutageScheduleSettings(): void {
     this.requestedSettingsModal.set('outage_display');
     this.requestedAppTab.set('settings');
   }
 
+  openOoekCredentialsSettings(accountId?: string): void {
+    if (accountId) {
+      this.requestedSettingsAccountId.set(accountId);
+    }
+    this.requestedSettingsModal.set('ooek_credentials');
+    this.requestedAppTab.set('settings');
+  }
+
   openOutageScheduleTab(): void {
     this.requestedAppTab.set('outage_schedule');
+  }
+
+  openHomeTilesVisibilitySettings(): void {
+    this.requestedSettingsModal.set('house_visibility');
+    this.requestedAppTab.set('settings');
+  }
+
+  // ============================================================================
+  // HOME MENU TILES VISIBILITY (SHARED SINGLE SOURCE OF TRUTH WITH SETTINGS)
+  // ============================================================================
+  readonly hiddenHomeTiles = computed<string[]>(() => {
+    const prefs = this.userPersonalSettings().customPreferences;
+    const raw = prefs?.['hiddenHomeTiles'];
+    if (Array.isArray(raw)) {
+      return raw.filter((x): x is string => typeof x === 'string' && x.length > 0);
+    }
+    return [];
+  });
+
+  isHomeTileHidden(tileId: string): boolean {
+    return this.hiddenHomeTiles().includes(tileId);
+  }
+
+  async toggleHomeTileVisibility(tileId: string): Promise<void> {
+    const current = this.hiddenHomeTiles();
+    const nextHidden = current.includes(tileId)
+      ? current.filter((id) => id !== tileId)
+      : [...current, tileId];
+    const curPrefs = { ...(this.userPersonalSettings().customPreferences || {}) };
+    curPrefs['hiddenHomeTiles'] = nextHidden;
+
+    // Optimistic update for instant UI feedback on both Home & Settings
+    this.userPersonalSettings.update((prev) => ({
+      ...prev,
+      customPreferences: curPrefs,
+    }));
+
+    await this.saveUserPersonalSettings({ customPreferences: curPrefs });
+  }
+
+  async resetHiddenHomeTiles(): Promise<void> {
+    const curPrefs = { ...(this.userPersonalSettings().customPreferences || {}) };
+    curPrefs['hiddenHomeTiles'] = [];
+    this.userPersonalSettings.update((prev) => ({
+      ...prev,
+      customPreferences: curPrefs,
+    }));
+    await this.saveUserPersonalSettings({ customPreferences: curPrefs });
+  }
+
+  // ============================================================================
+  // SHARED SHOPPING LISTS & QUICK-PICK PRODUCT CATALOG
+  // ============================================================================
+  readonly shoppingLists = signal<ShoppingList[]>([]);
+  readonly shoppingCustomCatalog = signal<ShoppingCatalogItem[]>([]);
+  readonly shoppingPeople = signal<ShoppingParticipant[]>([]);
+  readonly isShoppingLoading = signal<boolean>(false);
+
+  readonly shoppingCatalog = computed<ShoppingCatalogItem[]>(() => {
+    const custom = this.shoppingCustomCatalog();
+    const seen = new Set<string>();
+    const merged: ShoppingCatalogItem[] = [];
+    for (const item of custom) {
+      const key = item.name.trim().toLowerCase();
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        merged.push({ ...item, isCustom: true });
+      }
+    }
+    for (const item of DEFAULT_SHOPPING_CATALOG) {
+      const key = item.name.trim().toLowerCase();
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        merged.push(item);
+      }
+    }
+    return merged;
+  });
+
+  // ============================================================================
+  // UNIFIED SERVER-SIDE REAL-TIME SIGNALS (SSE + SMART DEFERRED DIRTY QUEUE)
+  // ============================================================================
+
+  readonly activeUiTab = signal<string>('home');
+
+  private appSseAbort: AbortController | null = null;
+  private appSseReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private appSseActive = false;
+  private appSseReconnectAttempts = 0;
+  private appSseLastRev = 0;
+  private appSseListenersBound = false;
+
+  private readonly pendingSignalScopes = new Set<
+    'shopping' | 'utility' | 'schedule' | 'budget' | 'household' | 'settings' | 'app_release' | 'clients' | 'accounts'
+  >();
+  private readonly scopeCoalesceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  private readonly handleAppSignalWindowResume = (): void => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+      return;
+    }
+    this.flushPendingSignalScopes(true);
+  };
+
+  setActiveUiTab(tab: string): void {
+    const clean = (tab || '').trim();
+    if (!clean) return;
+    this.activeUiTab.set(clean);
+    this.flushPendingSignalScopes(false);
+  }
+
+  flushSignalScopeIfPending(
+    scope: 'shopping' | 'utility' | 'schedule' | 'budget' | 'household' | 'settings' | 'app_release' | 'clients' | 'accounts'
+  ): void {
+    if (!this.pendingSignalScopes.has(scope)) return;
+    this.pendingSignalScopes.delete(scope);
+    this.scheduleCoalescedScopeRefresh(scope, 40);
+  }
+
+  startAppRealtimeSignals(): void {
+    if (typeof window === 'undefined' || !this.isAuthenticated()) return;
+    if (!this.appSseListenersBound) {
+      this.appSseListenersBound = true;
+      document.addEventListener('visibilitychange', this.handleAppSignalWindowResume);
+      window.addEventListener('online', this.handleAppSignalWindowResume);
+    }
+    if (this.appSseActive) return;
+    this.appSseActive = true;
+    this.appSseReconnectAttempts = 0;
+    void this.connectAppSseLoop();
+  }
+
+  stopAppRealtimeSignals(): void {
+    this.appSseActive = false;
+    this.pendingSignalScopes.clear();
+    for (const timer of this.scopeCoalesceTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.scopeCoalesceTimers.clear();
+    if (this.appSseReconnectTimer) {
+      clearTimeout(this.appSseReconnectTimer);
+      this.appSseReconnectTimer = null;
+    }
+    if (this.appSseAbort) {
+      this.appSseAbort.abort();
+      this.appSseAbort = null;
+    }
+    if (this.appSseListenersBound && typeof window !== 'undefined') {
+      this.appSseListenersBound = false;
+      document.removeEventListener('visibilitychange', this.handleAppSignalWindowResume);
+      window.removeEventListener('online', this.handleAppSignalWindowResume);
+    }
+  }
+
+  restartAppRealtimeSignals(): void {
+    this.stopAppRealtimeSignals();
+    if (this.isAuthenticated()) {
+      this.startAppRealtimeSignals();
+    }
+  }
+
+  // Compatibility wrappers so existing shopping callers delegate to the single unified stream
+  startShoppingRealtimeSync(): void {
+    this.startAppRealtimeSignals();
+    this.flushSignalScopeIfPending('shopping');
+  }
+
+  stopShoppingRealtimeSync(): void {
+    // No-op: the unified app-wide SSE stream remains active across tab switches
+    // and is only stopped on logout() or impersonation switch.
+  }
+
+  restartShoppingRealtimeSync(): void {
+    this.restartAppRealtimeSignals();
+  }
+
+  private async connectAppSseLoop(): Promise<void> {
+    if (!this.appSseActive || !this.isAuthenticated() || typeof window === 'undefined') {
+      return;
+    }
+    if (this.appSseAbort) {
+      this.appSseAbort.abort();
+    }
+    const controller = new AbortController();
+    this.appSseAbort = controller;
+
+    const headers: Record<string, string> = {
+      ...this.getNoCacheAuthHeaders().headers,
+      Accept: 'text/event-stream',
+      'x-client-instance-id': CLIENT_INSTANCE_ID,
+    };
+    const impersonateUid = getActiveImpersonateUid();
+    if (impersonateUid) {
+      headers['x-impersonate-user-id'] = impersonateUid;
+    }
+
+    const wasReconnect = this.appSseReconnectAttempts > 0;
+    try {
+      const response = await fetch('/api/events/stream', {
+        method: 'GET',
+        headers,
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) {
+        if (response.status === 401 || response.status === 403) {
+          this.stopAppRealtimeSignals();
+          return;
+        }
+        throw new Error(`App SSE HTTP ${response.status}`);
+      }
+
+      this.appSseReconnectAttempts = 0;
+      if (wasReconnect) {
+        // Reconcile only relevant domains silently after recovering from disconnect
+        this.reconcileActiveScopeAfterReconnect();
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (this.appSseActive) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let boundaryIdx = buffer.indexOf('\n\n');
+        while (boundaryIdx !== -1) {
+          const rawBlock = buffer.slice(0, boundaryIdx);
+          buffer = buffer.slice(boundaryIdx + 2);
+          this.parseAndDispatchAppSseBlock(rawBlock);
+          boundaryIdx = buffer.indexOf('\n\n');
+        }
+      }
+    } catch (err: unknown) {
+      if ((err as { name?: string })?.name === 'AbortError' || !this.appSseActive) {
+        return;
+      }
+    } finally {
+      if (this.appSseAbort === controller) {
+        this.appSseAbort = null;
+      }
+    }
+
+    if (this.appSseActive && this.isAuthenticated()) {
+      this.appSseReconnectAttempts = Math.min(this.appSseReconnectAttempts + 1, 6);
+      const delayMs = Math.min(10_000, 1500 * this.appSseReconnectAttempts);
+      this.appSseReconnectTimer = setTimeout(() => {
+        this.appSseReconnectTimer = null;
+        void this.connectAppSseLoop();
+      }, delayMs);
+    }
+  }
+
+  private reconcileActiveScopeAfterReconnect(): void {
+    const visible = typeof document === 'undefined' || document.visibilityState === 'visible';
+    const tab = this.activeUiTab();
+    const scopesToQueue: Array<
+      'shopping' | 'utility' | 'schedule' | 'budget' | 'household' | 'settings'
+    > = ['shopping', 'utility', 'schedule', 'budget', 'household', 'settings'];
+
+    if (!visible) {
+      for (const s of scopesToQueue) {
+        this.pendingSignalScopes.add(s);
+      }
+      return;
+    }
+
+    if (tab === 'shopping') {
+      this.scheduleCoalescedScopeRefresh('shopping', 120);
+    } else if (tab === 'outage_schedule') {
+      this.scheduleCoalescedScopeRefresh('schedule', 120);
+    } else if (tab === 'electricity' || tab === 'water' || tab === 'waste' || tab === 'water_waste') {
+      this.scheduleCoalescedScopeRefresh('utility', 120);
+    } else if (tab === 'budget') {
+      this.scheduleCoalescedScopeRefresh('budget', 120);
+    } else if (tab === 'settings') {
+      this.scheduleCoalescedScopeRefresh('settings', 120);
+    } else if (tab === 'users' || this.isSharedHouseholdModalOpen()) {
+      this.scheduleCoalescedScopeRefresh('household', 120);
+    } else {
+      // Home dashboard shows summary across utility + schedule + shopping
+      this.scheduleCoalescedScopeRefresh('utility', 120);
+      this.scheduleCoalescedScopeRefresh('schedule', 220);
+      this.scheduleCoalescedScopeRefresh('shopping', 320);
+    }
+  }
+
+  private parseAndDispatchAppSseBlock(rawBlock: string): void {
+    const lines = rawBlock.split('\n');
+    let eventName = 'message';
+    const dataParts: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith(':')) continue;
+      if (line.startsWith('event:')) {
+        eventName = line.slice(6).trim();
+      } else if (line.startsWith('data:')) {
+        dataParts.push(line.slice(5).trim());
+      }
+    }
+    if (dataParts.length === 0) return;
+
+    if (eventName === 'connected') {
+      try {
+        const info = JSON.parse(dataParts.join('\n')) as { rev?: number };
+        if (typeof info.rev === 'number' && info.rev > this.appSseLastRev) {
+          this.appSseLastRev = info.rev;
+        }
+      } catch {
+        // Ignore malformed connected frame
+      }
+      return;
+    }
+
+    if (eventName !== 'app_signal') {
+      // Ignore legacy duplicate 'shopping_updated' frames because 'app_signal' carries the same delta
+      return;
+    }
+
+    try {
+      const signalPayload = JSON.parse(dataParts.join('\n')) as {
+        scope?:
+          | 'shopping'
+          | 'utility'
+          | 'schedule'
+          | 'budget'
+          | 'household'
+          | 'settings'
+          | 'app_release'
+          | 'clients'
+          | 'accounts';
+        action?: string;
+        rev?: number;
+        updatedAt?: string;
+        entityId?: string;
+        queueKey?: string;
+        originClientId?: string;
+        actorUserId?: string;
+        data?: {
+          type?: string;
+          listId?: string;
+          list?: ShoppingList;
+          catalogItem?: ShoppingCatalogItem | null;
+        };
+      };
+      if (!signalPayload.scope) return;
+      if (typeof signalPayload.rev === 'number') {
+        if (signalPayload.rev <= this.appSseLastRev) {
+          return;
+        }
+        this.appSseLastRev = signalPayload.rev;
+      }
+
+      // Skip echo from this very browser tab (except server-side schedule/release events)
+      if (
+        signalPayload.originClientId &&
+        signalPayload.originClientId === CLIENT_INSTANCE_ID &&
+        signalPayload.scope !== 'schedule' &&
+        signalPayload.scope !== 'app_release'
+      ) {
+        return;
+      }
+
+      // Shopping delta arrives inline inside the signal — patch signals in-memory with zero extra HTTP requests
+      if (signalPayload.scope === 'shopping' && signalPayload.data) {
+        this.applyShoppingRealtimeEvent(signalPayload.data);
+        return;
+      }
+
+      const isVisible = typeof document === 'undefined' || document.visibilityState === 'visible';
+      if (isVisible && this.isScopeRelevantToCurrentView(signalPayload.scope)) {
+        this.scheduleCoalescedScopeRefresh(signalPayload.scope, 250);
+      } else {
+        this.pendingSignalScopes.add(signalPayload.scope);
+      }
+    } catch {
+      // Ignore malformed frame
+    }
+  }
+
+  private isScopeRelevantToCurrentView(
+    scope: 'shopping' | 'utility' | 'schedule' | 'budget' | 'household' | 'settings' | 'app_release' | 'clients' | 'accounts'
+  ): boolean {
+    const tab = this.activeUiTab();
+    switch (scope) {
+      case 'app_release':
+      case 'settings':
+        return true;
+      case 'household':
+        return true;
+      case 'shopping':
+        return tab === 'shopping' || tab === 'home';
+      case 'utility':
+        return (
+          tab === 'home' ||
+          tab === 'electricity' ||
+          tab === 'water' ||
+          tab === 'waste' ||
+          tab === 'water_waste' ||
+          tab === 'outage_schedule'
+        );
+      case 'schedule':
+        return tab === 'home' || tab === 'outage_schedule' || tab === 'electricity';
+      case 'budget':
+        return tab === 'budget' || tab === 'home';
+      case 'clients':
+        return tab === 'clients' || tab === 'payments' || tab === 'analytics';
+      case 'accounts':
+        return tab === 'accounts' || tab === 'budget' || tab === 'analytics';
+      default:
+        return false;
+    }
+  }
+
+  private flushPendingSignalScopes(onVisibilityResume: boolean): void {
+    if (this.pendingSignalScopes.size === 0 || !this.isAuthenticated()) return;
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+
+    const toRun: Array<
+      'shopping' | 'utility' | 'schedule' | 'budget' | 'household' | 'settings' | 'app_release' | 'clients' | 'accounts'
+    > = [];
+
+    for (const scope of Array.from(this.pendingSignalScopes)) {
+      if (this.isScopeRelevantToCurrentView(scope)) {
+        this.pendingSignalScopes.delete(scope);
+        toRun.push(scope);
+      }
+    }
+
+    if (toRun.length === 0) return;
+
+    // Stagger slightly on resume so multiple queued scopes never burst rate limits
+    toRun.forEach((scope, idx) => {
+      const delay = onVisibilityResume ? 120 + idx * 140 : 60 + idx * 90;
+      this.scheduleCoalescedScopeRefresh(scope, delay);
+    });
+  }
+
+  private scheduleCoalescedScopeRefresh(
+    scope: 'shopping' | 'utility' | 'schedule' | 'budget' | 'household' | 'settings' | 'app_release' | 'clients' | 'accounts',
+    delayMs = 250
+  ): void {
+    const existing = this.scopeCoalesceTimers.get(scope);
+    if (existing) {
+      clearTimeout(existing);
+    }
+    const timer = setTimeout(() => {
+      this.scopeCoalesceTimers.delete(scope);
+      void this.executeSilentScopeRefresh(scope);
+    }, delayMs);
+    this.scopeCoalesceTimers.set(scope, timer);
+  }
+
+  private async refreshCurrentUserSilently(): Promise<void> {
+    if (!this.isAuthenticated()) return;
+    try {
+      const res = await firstValueFrom(
+        this.http.get<{
+          authenticated: boolean;
+          user: AppUser | null;
+          realAdminUser?: AppUser | null;
+          appReleaseInfo?: {
+            currentVersion: string;
+            previousVersion: string;
+            userLastSeenVersion: string;
+            dismissedVersion: string;
+            shouldShowModal: boolean;
+            updatedAt?: string;
+            updatedAtKyiv?: string;
+            versionTimestamps?: Record<string, string>;
+          };
+        }>('/api/auth/me', this.getNoCacheAuthHeaders())
+      );
+
+      if (res.appReleaseInfo) {
+        this.appReleaseInfo.set(res.appReleaseInfo);
+        if (res.appReleaseInfo.shouldShowModal) {
+          this.isUpdateModalOpen.set(true);
+        }
+      }
+
+      if (res.authenticated && res.user) {
+        this.currentUser.set(res.user);
+        if (res.realAdminUser) {
+          this.realAdminUser.set(res.realAdminUser);
+        }
+        if (this.impersonatedUser() && res.user.id === this.impersonatedUser()?.id) {
+          this.impersonatedUser.set(res.user);
+        }
+      }
+    } catch {
+      // Silent background sync: never disturb user UI on transient failure
+    }
+  }
+
+  private async executeSilentScopeRefresh(
+    scope: 'shopping' | 'utility' | 'schedule' | 'budget' | 'household' | 'settings' | 'app_release' | 'clients' | 'accounts'
+  ): Promise<void> {
+    if (!this.isAuthenticated()) return;
+    if (Date.now() < this.apiRateLimitCooldownUntil) {
+      this.pendingSignalScopes.add(scope);
+      return;
+    }
+
+    try {
+      switch (scope) {
+        case 'shopping':
+          await this.loadShoppingData(true);
+          break;
+        case 'utility':
+          await this.fetchUtilityData(true);
+          break;
+        case 'schedule': {
+          const house = this.activeDtekAccount() || this.utilityAccounts().find((a) => a.type === 'electricity');
+          await this.fetchRecentScheduleChanges(false);
+          if (house?.city || house?.street || house?.houseNum) {
+            await this.fetchDtekShutdowns(house.city, house.street, house.houseNum, false);
+          } else {
+            await this.fetchDtekShutdowns(undefined, undefined, undefined, false);
+          }
+          break;
+        }
+        case 'budget':
+          await this.fetchBudget(true);
+          break;
+        case 'household':
+          await Promise.all([
+            this.refreshCurrentUserSilently(),
+            this.fetchHouseholdInvites(),
+            this.isRealAdmin() ? this.fetchUsers() : Promise.resolve(),
+          ]);
+          break;
+        case 'settings':
+          await this.fetchSettings(true);
+          break;
+        case 'app_release':
+          await this.refreshCurrentUserSilently();
+          break;
+        case 'clients':
+          await Promise.all([this.fetchClients(true), this.fetchPayments()]);
+          break;
+        case 'accounts':
+          await this.fetchAccounts(true);
+          break;
+      }
+      this.lastAutoSyncTime.set(new Date().toISOString());
+    } catch {
+      // Silent refresh: never display error toasts for background signals
+    }
+  }
+
+  private applyShoppingRealtimeEvent(payload: {
+    type?: string;
+    listId?: string;
+    list?: ShoppingList;
+    catalogItem?: ShoppingCatalogItem | null;
+  }): void {
+    const myId = this.currentUser()?.id || '';
+    if (!myId) return;
+
+    if (payload.catalogItem) {
+      const cat = payload.catalogItem;
+      this.shoppingCustomCatalog.update((prev) =>
+        prev.some((c) => c.id === cat.id || c.name.toLowerCase() === cat.name.toLowerCase())
+          ? prev
+          : [cat, ...prev]
+      );
+    }
+
+    if (payload.type === 'list:deleted' && payload.listId) {
+      this.shoppingLists.update((prev) => prev.filter((l) => l.id !== payload.listId));
+      return;
+    }
+
+    if (payload.list) {
+      const incoming = payload.list;
+      const canSee =
+        incoming.ownerUserId === myId ||
+        (Array.isArray(incoming.participantIds) && incoming.participantIds.includes(myId));
+
+      if (!canSee) {
+        this.shoppingLists.update((prev) => prev.filter((l) => l.id !== incoming.id));
+        return;
+      }
+
+      // Idempotent upsert + ignore stale out-of-order frames + keep newest-updated lists first
+      this.shoppingLists.update((prev) => {
+        const existing = prev.find((l) => l.id === incoming.id);
+        if (
+          existing &&
+          existing.updatedAt &&
+          incoming.updatedAt &&
+          String(existing.updatedAt) > String(incoming.updatedAt)
+        ) {
+          return prev;
+        }
+        const next = existing
+          ? prev.map((l) => (l.id === incoming.id ? incoming : l))
+          : [incoming, ...prev];
+        return [...next].sort((a, b) =>
+          String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))
+        );
+      });
+    }
+  }
+
+  async loadShoppingData(silent = false): Promise<void> {
+    if (!this.isAuthenticated()) return;
+    if (this.inFlightShoppingPromise) return this.inFlightShoppingPromise;
+    const showSpinner = !silent && this.shoppingLists().length === 0;
+    if (showSpinner) this.isShoppingLoading.set(true);
+    this.inFlightShoppingPromise = (async () => {
+      try {
+        const res = await firstValueFrom(
+          this.http.get<ShoppingDataResponse>('/api/shopping/data', this.getNoCacheAuthHeaders())
+        );
+        this.shoppingLists.set(Array.isArray(res.lists) ? res.lists : []);
+        this.shoppingCustomCatalog.set(Array.isArray(res.catalog) ? res.catalog : []);
+        this.shoppingPeople.set(Array.isArray(res.people) ? res.people : []);
+      } catch (err) {
+        if (!silent) {
+          console.warn('Failed to load shopping data:', err);
+          this.showError('Не вдалося завантажити списки покупок');
+        }
+      } finally {
+        if (showSpinner) this.isShoppingLoading.set(false);
+        this.inFlightShoppingPromise = null;
+      }
+    })();
+    return this.inFlightShoppingPromise;
+  }
+
+  async createShoppingList(payload: {
+    title: string;
+    budgetUah: number | null;
+    participantIds: string[];
+  }): Promise<ShoppingList | null> {
+    try {
+      const created = await firstValueFrom(
+        this.http.post<ShoppingList>('/api/shopping/lists', payload, this.getAuthHeaders())
+      );
+      this.shoppingLists.update((prev) => [created, ...prev.filter((l) => l.id !== created.id)]);
+      this.showSuccess(`Список «${created.title}» створено`);
+      return created;
+    } catch (err) {
+      console.error('Create shopping list error:', err);
+      this.showError('Не вдалося створити список покупок');
+      return null;
+    }
+  }
+
+  async carryOverShoppingList(
+    sourceListId: string,
+    payload: {
+      title: string;
+      budgetUah: number | null;
+      itemIds: string[];
+      removeFromSource: boolean;
+    }
+  ): Promise<ShoppingList | null> {
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{ newList: ShoppingList; sourceList?: ShoppingList }>(
+          `/api/shopping/lists/${encodeURIComponent(sourceListId)}/carry-over`,
+          payload,
+          this.getAuthHeaders()
+        )
+      );
+      if (res?.newList) {
+        this.shoppingLists.update((prev) => {
+          const updatedSourceList = prev.map((l) =>
+            res.sourceList && l.id === sourceListId ? res.sourceList : l
+          );
+          return [res.newList, ...updatedSourceList.filter((l) => l.id !== res.newList.id)];
+        });
+        this.showSuccess(`Залишок перенесено у новий список «${res.newList.title}»`);
+        return res.newList;
+      }
+      return null;
+    } catch (err) {
+      console.error('Carry over shopping list error:', err);
+      this.showError('Не вдалося перенести залишок у новий список');
+      return null;
+    }
+  }
+
+  async updateShoppingList(
+    listId: string,
+    payload: { title?: string; budgetUah?: number | null; participantIds?: string[]; isInactive?: boolean },
+    successMessage?: string
+  ): Promise<ShoppingList | null> {
+    try {
+      const updated = await firstValueFrom(
+        this.http.put<ShoppingList>(
+          `/api/shopping/lists/${encodeURIComponent(listId)}`,
+          payload,
+          this.getAuthHeaders()
+        )
+      );
+      this.shoppingLists.update((prev) => prev.map((l) => (l.id === listId ? updated : l)));
+      if (successMessage) {
+        this.triggerSuccess(successMessage);
+      }
+      return updated;
+    } catch (err) {
+      console.error('Update shopping list error:', err);
+      this.showError('Не вдалося оновити список покупок');
+      return null;
+    }
+  }
+
+  async deleteShoppingList(listId: string): Promise<boolean> {
+    try {
+      await firstValueFrom(
+        this.http.delete(
+          `/api/shopping/lists/${encodeURIComponent(listId)}`,
+          this.getAuthHeaders()
+        )
+      );
+      this.shoppingLists.update((prev) => prev.filter((l) => l.id !== listId));
+      this.showSuccess('Список покупок видалено');
+      return true;
+    } catch (err) {
+      console.error('Delete shopping list error:', err);
+      this.showError('Не вдалося видалити список покупок');
+      return false;
+    }
+  }
+
+  async addShoppingItem(
+    listId: string,
+    payload: {
+      name: string;
+      category?: ShoppingCategoryId;
+      quantity?: number;
+      unit?: string;
+      priceMode?: ShoppingPriceMode;
+      weightGrams?: number | null;
+      price?: number | null;
+      isBought?: boolean;
+      addToCatalog?: boolean;
+    }
+  ): Promise<ShoppingItem | null> {
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{
+          item: ShoppingItem;
+          list: ShoppingList;
+          catalogItem?: ShoppingCatalogItem | null;
+        }>(
+          `/api/shopping/lists/${encodeURIComponent(listId)}/items`,
+          payload,
+          this.getAuthHeaders()
+        )
+      );
+      if (res.list) {
+        this.shoppingLists.update((prev) => prev.map((l) => (l.id === listId ? res.list : l)));
+      }
+      if (res.catalogItem) {
+        const addedCat = res.catalogItem;
+        this.shoppingCustomCatalog.update((prev) =>
+          prev.some((c) => c.id === addedCat.id || c.name.toLowerCase() === addedCat.name.toLowerCase())
+            ? prev
+            : [addedCat, ...prev]
+        );
+      }
+      return res.item;
+    } catch (err) {
+      console.error('Add shopping item error:', err);
+      this.showError('Не вдалося додати товар у список');
+      return null;
+    }
+  }
+
+  async updateShoppingItem(
+    listId: string,
+    itemId: string,
+    payload: Partial<{
+      name: string;
+      category: ShoppingCategoryId;
+      quantity: number;
+      unit: string;
+      priceMode: ShoppingPriceMode;
+      weightGrams: number | null;
+      price: number | null;
+      isBought: boolean;
+    }>
+  ): Promise<ShoppingItem | null> {
+    // Optimistic update for responsive price & checkbox changes
+    this.shoppingLists.update((prev) =>
+      prev.map((l) =>
+        l.id === listId
+          ? {
+              ...l,
+              items: l.items.map((it) => (it.id === itemId ? { ...it, ...payload } : it)),
+            }
+          : l
+      )
+    );
+    try {
+      const res = await firstValueFrom(
+        this.http.put<{ item: ShoppingItem; list: ShoppingList }>(
+          `/api/shopping/lists/${encodeURIComponent(listId)}/items/${encodeURIComponent(itemId)}`,
+          payload,
+          this.getAuthHeaders()
+        )
+      );
+      if (res.list) {
+        this.shoppingLists.update((prev) => prev.map((l) => (l.id === listId ? res.list : l)));
+      }
+      return res.item;
+    } catch (err) {
+      console.error('Update shopping item error:', err);
+      this.showError('Не вдалося оновити товар');
+      void this.loadShoppingData(true);
+      return null;
+    }
+  }
+
+  async deleteShoppingItem(listId: string, itemId: string): Promise<boolean> {
+    this.shoppingLists.update((prev) =>
+      prev.map((l) =>
+        l.id === listId ? { ...l, items: l.items.filter((it) => it.id !== itemId) } : l
+      )
+    );
+    try {
+      const res = await firstValueFrom(
+        this.http.delete<{ success: boolean; list?: ShoppingList }>(
+          `/api/shopping/lists/${encodeURIComponent(listId)}/items/${encodeURIComponent(itemId)}`,
+          this.getAuthHeaders()
+        )
+      );
+      if (res.list) {
+        this.shoppingLists.update((prev) => prev.map((l) => (l.id === listId ? res.list! : l)));
+      }
+      return true;
+    } catch (err) {
+      console.error('Delete shopping item error:', err);
+      this.showError('Не вдалося видалити товар');
+      void this.loadShoppingData(true);
+      return false;
+    }
+  }
+
+  async addShoppingCatalogProduct(payload: {
+    name: string;
+    category: ShoppingCategoryId;
+    defaultUnit?: string;
+  }): Promise<ShoppingCatalogItem | null> {
+    try {
+      const res = await firstValueFrom(
+        this.http.post<{ catalogItem: ShoppingCatalogItem | null; catalog: ShoppingCatalogItem[] }>(
+          '/api/shopping/catalog',
+          payload,
+          this.getAuthHeaders()
+        )
+      );
+      if (Array.isArray(res.catalog)) {
+        this.shoppingCustomCatalog.set(res.catalog);
+      }
+      return res.catalogItem;
+    } catch (err) {
+      console.error('Add catalog product error:', err);
+      return null;
+    }
   }
 
   async setOutageScheduleViewVariant(variant: OutageScheduleViewVariant, persist = true): Promise<void> {
@@ -4182,8 +6132,15 @@ export class IptvData {
   }
 
   // Utility APIs (Electricity, Water, Waste)
-  async fetchUtilityData(): Promise<void> {
+  async fetchUtilityData(force = true): Promise<void> {
     if (Date.now() < this.apiRateLimitCooldownUntil) return;
+    if (
+      !force &&
+      this.utilityAccounts().length > 0 &&
+      Date.now() - this.lastUtilityFetchTime < 15_000
+    ) {
+      return;
+    }
     if (this.inFlightUtilityPromise) return this.inFlightUtilityPromise;
     this.inFlightUtilityPromise = (async () => {
       try {
@@ -4191,6 +6148,7 @@ export class IptvData {
           this.http.get<{ accounts: UtilityAccount[]; readings: UtilityReading[] }>('/api/utility/data', this.getAuthHeaders())
         );
         if (data) {
+          this.lastUtilityFetchTime = Date.now();
           if (Array.isArray(data.accounts)) {
             this.utilityAccounts.set(data.accounts);
 
@@ -4225,6 +6183,7 @@ export class IptvData {
           if (Array.isArray(data.readings)) {
             this.utilityReadings.set(data.readings);
           }
+          this.evaluateMeterReadingReminder();
         }
       } catch (err) {
         if (this.isRateLimitError(err)) {
@@ -4431,6 +6390,83 @@ export class IptvData {
     }
   }
 
+  async getOoekPortmonePaymentLink(
+    accountId: string,
+    payload?: {
+      amountUah?: number | null;
+      description?: string;
+      address?: string;
+      payeeId?: string;
+      attribute3?: string;
+      tryOndo?: boolean;
+      decodeUrl?: string;
+    }
+  ): Promise<{
+    success: boolean;
+    paymentLink?: string;
+    rawQuery?: string;
+    payeeId?: string;
+    descriptionSlash?: string;
+    contractNumber12?: string;
+    amountUah?: number;
+    amountFormatted?: string;
+    address?: string;
+    attribute3?: string;
+    source?: 'ondo_live' | 'local_gzip';
+    consumer?: Record<string, unknown> | null;
+    ondoError?: string | null;
+    decoded?: {
+      rawQuery: string;
+      params: Record<string, string>;
+      payeeId: string;
+      description: string;
+      amount: string;
+      attribute1: string;
+      attribute2: string;
+      attribute3: string;
+      attribute4: string;
+    };
+    error?: string;
+  }> {
+    try {
+      return await firstValueFrom(
+        this.http.post<{
+          success: boolean;
+          paymentLink?: string;
+          rawQuery?: string;
+          payeeId?: string;
+          descriptionSlash?: string;
+          contractNumber12?: string;
+          amountUah?: number;
+          amountFormatted?: string;
+          address?: string;
+          attribute3?: string;
+          source?: 'ondo_live' | 'local_gzip';
+          consumer?: Record<string, unknown> | null;
+          ondoError?: string | null;
+          decoded?: {
+            rawQuery: string;
+            params: Record<string, string>;
+            payeeId: string;
+            description: string;
+            amount: string;
+            attribute1: string;
+            attribute2: string;
+            attribute3: string;
+            attribute4: string;
+          };
+          error?: string;
+        }>(`/api/utility/accounts/${accountId}/portmone-link`, payload || {}, this.getAuthHeaders())
+      );
+    } catch (err: unknown) {
+      const httpErr = err as { error?: { error?: string }; message?: string };
+      return {
+        success: false,
+        error: httpErr?.error?.error || httpErr?.message || 'Не вдалося сформувати посилання Portmone',
+      };
+    }
+  }
+
   async syncDtekCabinet(
     accountId: string,
     payload?: { dtekLogin?: string; dtekPassword?: string }
@@ -4605,6 +6641,7 @@ export class IptvData {
         }
         return [saved, ...list];
       });
+      this.evaluateMeterReadingReminder();
       this.triggerSuccess(reading.id ? 'Запис показів успішно оновлено!' : 'Покази лічильника успішно збережено!');
       this.broadcastDataChange();
       return saved;
@@ -4624,6 +6661,7 @@ export class IptvData {
         this.http.delete(`/api/utility/readings/${id}`, this.getAuthHeaders())
       );
       this.utilityReadings.update((list) => list.filter((r) => r.id !== id));
+      this.evaluateMeterReadingReminder();
       this.triggerSuccess('Запис показів видалено');
       this.broadcastDataChange();
     } catch (err: unknown) {
@@ -4672,13 +6710,14 @@ export class IptvData {
     if (forceSystem && this.isAdmin()) {
       const current = this.settings();
       const currentTariffs = current.utilityTariffsSettings || DEFAULT_UTILITY_TARIFFS;
-      const mergedTariffs: UtilityTariffsSettings = {
+      const mergedTariffs: UtilityTariffsSettings = normalizeUtilityTariffs({
         ...currentTariffs,
         ...tariffs,
-      };
+      });
       await this.saveSettings({
         utilityTariffsSettings: mergedTariffs,
       });
+      await this.fetchSettings(true);
       return;
     }
 
@@ -4704,7 +6743,10 @@ export class IptvData {
       userPatch.wasteTariffs = merged.waste;
     }
 
-    await this.saveUserPersonalSettings(userPatch, targetUserId);
+    const saved = await this.saveUserPersonalSettings(userPatch, targetUserId);
+    if (!saved) {
+      throw new Error('Не вдалося зберегти тарифи у базу даних');
+    }
 
     // If admin is editing and a section is configured as 'system', also persist to global settings
     if (this.isAdmin() && !targetUserId) {
@@ -4729,6 +6771,10 @@ export class IptvData {
         });
       }
     }
+
+    // Always re-fetch directly from DB after saving so UI reflects persisted DB state with zero cache
+    await this.fetchSettings(true);
+    this.broadcastDataChange();
   }
 
   getUserEffectiveTariffs(userId: string): UtilityTariffsSettings {
@@ -4761,19 +6807,47 @@ export class IptvData {
     explanation?: string;
     error?: string;
   }> {
-    return firstValueFrom(
-      this.http.post<{
-        success: boolean;
-        readingT1?: number | null;
-        readingT2?: number | null;
-        singleReading?: number | null;
-        readingWater?: number | null;
-        meterNumber?: string | null;
-        confidence?: number;
-        explanation?: string;
-        error?: string;
-      }>('/api/utility/recognize-meter', payload, this.getAuthHeaders())
-    );
+    try {
+      return await firstValueFrom(
+        this.http.post<{
+          success: boolean;
+          readingT1?: number | null;
+          readingT2?: number | null;
+          singleReading?: number | null;
+          readingWater?: number | null;
+          meterNumber?: string | null;
+          confidence?: number;
+          explanation?: string;
+          error?: string;
+        }>('/api/utility/recognize-meter', payload, this.getAuthHeaders())
+      );
+    } catch (err: unknown) {
+      let errMsg = '';
+      if (err && typeof err === 'object') {
+        const httpErr = err as {
+          error?: { error?: string; message?: string } | string;
+          message?: string;
+          status?: number;
+        };
+        if (typeof httpErr.error === 'object' && httpErr.error !== null) {
+          errMsg = httpErr.error.error || httpErr.error.message || '';
+        } else if (typeof httpErr.error === 'string') {
+          errMsg = httpErr.error;
+        }
+        if (!errMsg && typeof httpErr.message === 'string') {
+          errMsg = httpErr.message;
+        }
+      } else if (typeof err === 'string') {
+        errMsg = err;
+      }
+      if (!errMsg || errMsg === '[object Object]') {
+        errMsg = 'Не вдалося розпізнати покази на фото. Ви можете ввести покази з фото вручну нижче.';
+      }
+      return {
+        success: false,
+        error: errMsg,
+      };
+    }
   }
 
   async saveUtilityAccountDevices(
@@ -4995,6 +7069,14 @@ export class IptvData {
       isAlertOnly: true,
       tone,
     });
+  }
+
+  showSuccess(msg: string): void {
+    this.triggerSuccess(msg);
+  }
+
+  showError(msg: string): void {
+    this.triggerError(msg);
   }
 
   private triggerSuccess(msg: string): void {

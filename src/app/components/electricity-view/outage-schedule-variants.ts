@@ -12,6 +12,16 @@ export interface DtekAddressScheduleStatus {
   currentHourNumber: number;
   currentMinute: number;
   isPowerAvailableNow: boolean;
+  hasFactOutage?: boolean;
+  isFactOutageNow?: boolean;
+  isEmergencyUpcoming?: boolean;
+  emergencyReason?: string;
+  emergencyWindowLabel?: string;
+  emergencyStartTime?: string;
+  emergencyEndTime?: string;
+  emergencyRemainingText?: string;
+  startDate?: string | null;
+  endDate?: string | null;
   totalPowerHours: number;
   totalOutageHours: number;
   queueGroup: string;
@@ -64,65 +74,28 @@ export interface OutageRadarWedge {
   template: `
     @if (status(); as status) {
       <!-- ================================================================ -->
-      <!-- 10 SCHEDULE DISPLAY VARIANTS BAR + SETTINGS NAVIGATION BUTTON    -->
+      <!-- SCHEDULE DISPLAY VARIANT DROPDOWN SELECTOR                       -->
       <!-- ================================================================ -->
-      <div class="p-3.5 rounded-xl bg-gradient-to-r from-amber-50/90 via-slate-50 to-indigo-50/60 border border-amber-200/80 space-y-2.5">
-        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div class="flex items-center gap-2 flex-wrap">
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 text-white text-2xs font-extrabold">
-              <mat-icon class="text-xs text-amber-400 leading-none">{{ activeOutageVariantMeta().icon }}</mat-icon>
-              <span>{{ activeOutageVariantMeta().name }}</span>
-            </span>
-            <span class="text-2xs text-slate-600 hidden md:inline">
-              {{ activeOutageVariantMeta().description }}
-            </span>
-          </div>
-
-          <div class="flex items-center gap-2 self-start sm:self-auto shrink-0 flex-wrap">
-            <button
-              type="button"
-              (click)="shareScheduleAsImage('today')"
-              class="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-2xs font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
-              title="Створити зображення графіку ДТЕК та поділитися у вибраний застосунок"
-            >
-              <mat-icon class="text-xs text-amber-400 leading-none">share</mat-icon>
-              <span>Поділитися</span>
-            </button>
-
-            <button
-              type="button"
-              (click)="openOutageDisplaySettings()"
-              class="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-2xs font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
-              title="Перейти у загальні налаштування для детального вибору варіанту відображення графіку"
-            >
-              <mat-icon class="text-xs leading-none">settings</mat-icon>
-              <span>Налаштування вигляду графіку (11 варіантів) →</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- 10 Quick Variant Selector Pills -->
-        <div class="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
-          @for (v of outageScheduleVariants; track v.id) {
-            @let isSelected = activeOutageVariant() === v.id;
-            <button
-              type="button"
-              (click)="selectOutageVariantInline(v.id)"
-              class="px-2.5 py-1.5 rounded-lg text-2xs font-bold flex items-center gap-1.5 shrink-0 border transition-all cursor-pointer"
-              [class.bg-slate-900]="isSelected"
-              [class.text-white]="isSelected"
-              [class.border-slate-900]="isSelected"
-              [class.shadow-2xs]="isSelected"
-              [class.bg-white]="!isSelected"
-              [class.text-slate-700]="!isSelected"
-              [class.border-slate-200]="!isSelected"
-              [class.hover:border-amber-400]="!isSelected"
-              [title]="v.name + ' — ' + v.description"
-            >
-              <mat-icon class="text-xs leading-none" [class.text-amber-400]="isSelected" [class.text-slate-500]="!isSelected">{{ v.icon }}</mat-icon>
-              <span>{{ v.shortName }}</span>
-            </button>
-          }
+      <div class="flex items-center gap-2">
+        <div class="relative flex items-center w-full sm:w-auto sm:min-w-[280px] sm:max-w-[380px]">
+          <mat-icon class="text-base text-amber-500 pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 leading-none z-10">
+            {{ activeOutageVariantMeta().icon }}
+          </mat-icon>
+          <select
+            aria-label="Вигляд графіку відключень"
+            [value]="activeOutageVariant()"
+            (change)="selectOutageVariantInline($any($event.target).value)"
+            class="h-9 w-full min-w-0 max-w-full appearance-none pl-9 pr-8 rounded-xl bg-slate-100 hover:bg-slate-200/70 border border-slate-200 text-xs font-bold text-slate-900 focus:outline-none focus:border-amber-500 cursor-pointer transition-colors truncate"
+          >
+            @for (v of outageScheduleVariants; track v.id) {
+              <option [value]="v.id" [selected]="activeOutageVariant() === v.id">
+                {{ v.shortName }}
+              </option>
+            }
+          </select>
+          <mat-icon class="text-base text-slate-500 pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 leading-none z-10">
+            expand_more
+          </mat-icon>
         </div>
       </div>
 
@@ -165,7 +138,7 @@ export interface OutageRadarWedge {
           <!-- ========================================================== -->
           @let nextTr = getNextTransitionSummary(status.hourlySchedule, status.currentHourNumber, status.currentMinute);
           <div
-            class="p-4 sm:p-5 rounded-2xl border flex items-start justify-between gap-3 sm:gap-4 bg-gradient-to-r relative"
+            class="p-4 sm:p-5 rounded-2xl border flex flex-col gap-3 bg-gradient-to-r relative text-white"
             [class.from-emerald-600]="status.isPowerAvailableNow"
             [class.to-teal-700]="status.isPowerAvailableNow"
             [class.border-emerald-500]="status.isPowerAvailableNow"
@@ -173,234 +146,105 @@ export interface OutageRadarWedge {
             [class.to-red-800]="!status.isPowerAvailableNow"
             [class.border-rose-500]="!status.isPowerAvailableNow"
           >
-            <!-- Left side: Titles + Last update + Status till HH:MM + Counters -->
-            <div class="flex flex-col gap-3 text-white min-w-0 flex-1">
-              <div>
-                <div class="flex items-center gap-2 flex-wrap">
-                  <span class="text-2xs uppercase tracking-wider font-bold text-white/80">
-                    Фокус поточного інтервалу
-                  </span>
-                  @if (lastUpdated()) {
-                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-black/20 text-white/90 text-3xs font-medium backdrop-blur border border-white/10">
-                      <mat-icon class="text-3xs leading-none">update</mat-icon>
-                      <span>ДТЕК: <strong>{{ lastUpdated() }}</strong></span>
-                    </span>
-                  }
-                  @if (lastDtekFetchAt()) {
-                    <span
-                      class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-black/25 text-amber-200 text-3xs font-medium backdrop-blur border border-amber-300/25"
-                      [title]="'Графік зберігається у базі даних для всіх користувачів і синхронізується з сайтом ДТЕК кожні ' + dtekSyncIntervalMinutes() + ' хвилин'"
-                    >
-                      <mat-icon class="text-3xs leading-none">storage</mat-icon>
-                      <span>Запит у БД: <strong>{{ lastDtekFetchAt() }}</strong> (кожні {{ dtekSyncIntervalMinutes() }} хв)</span>
-                    </span>
-                  }
-                </div>
+            <!-- Top Row: History Button + Refresh Button -->
+            <div class="flex items-center justify-between gap-3 w-full">
+              <div class="flex items-center gap-2 flex-wrap min-w-0">
+                <button
+                  type="button"
+                  (click)="openTodayScheduleHistory()"
+                  title="Переглянути всю історію змін графіку відключень за сьогодні"
+                  aria-label="Історія змін графіку за сьогодні"
+                  class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-white/15 hover:bg-white/25 text-white text-3xs font-bold backdrop-blur border border-white/25 transition-all cursor-pointer active:scale-95"
+                >
+                  <mat-icon class="text-xs text-sky-200 leading-none">history</mat-icon>
+                  <span>Історія змін графіку</span>
+                </button>
+              </div>
 
-                <div class="text-base sm:text-xl font-black leading-tight mt-1">
+              <div class="shrink-0 flex items-center gap-2">
+                <button
+                  type="button"
+                  (click)="refresh.emit()"
+                  [disabled]="isRefreshing()"
+                  class="w-10 h-10 sm:w-11 sm:h-11 aspect-square rounded-xl bg-white/20 hover:bg-white/30 text-white flex items-center justify-center transition-all cursor-pointer backdrop-blur border border-white/25 disabled:opacity-50 shadow-md hover:scale-105 active:scale-95"
+                  [title]="minutesUntilNextRefresh() > 0 ? 'Оновити графік (у БД: ' + lastDtekFetchAt() + ', наступний запит на сайт ДТЕК через ' + minutesUntilNextRefresh() + ' хв)' : 'Оновити графік з сайту ДТЕК та зберегти в БД'"
+                  aria-label="Оновити графік"
+                >
+                  <mat-icon class="text-xl sm:text-2xl leading-none" [class.animate-spin]="isRefreshing()">sync</mat-icon>
+                </button>
+              </div>
+            </div>
+
+            <!-- Full-Width Headline & Emergency Outage Info -->
+            <div class="w-full min-w-0">
+              @if (status.isFactOutageNow) {
+                <div class="w-full text-base sm:text-xl font-black leading-tight">
+                  {{ status.emergencyEndTime ? 'Аварійне відключення до ' + status.emergencyEndTime : 'Діє аварійне відключення' }}
+                </div>
+                <div class="w-full mt-1.5 space-y-1 text-xs text-rose-100">
+                  <div class="font-bold text-white">
+                    Причина: <span class="font-semibold text-rose-100">{{ status.emergencyReason || 'Аварійні ремонтні роботи' }}</span>
+                    @if (status.emergencyRemainingText) {
+                      <span class="font-mono text-white ml-1.5">· {{ status.emergencyRemainingText }}</span>
+                    }
+                  </div>
+                  @if (status.startDate || status.endDate || status.emergencyWindowLabel) {
+                    <div class="font-mono text-2xs sm:text-xs text-rose-100 tabular-nums">
+                      @if (status.startDate || status.endDate) {
+                        Початок: <strong class="text-white">{{ status.startDate || '—' }}</strong> · Орієнт. відновлення: <strong class="text-white">{{ status.endDate || '—' }}</strong>
+                      } @else {
+                        Період: <strong class="text-white">{{ status.emergencyWindowLabel }}</strong>
+                      }
+                    </div>
+                  }
+                  <div class="text-3xs text-rose-100/90">
+                    Поза стабілізаційним графіком черги · За графіком: {{ nextTr.label }} {{ nextTr.time }}
+                  </div>
+                </div>
+              } @else {
+                <div class="w-full text-base sm:text-xl font-black leading-tight">
                   {{ nextTr.label }} {{ nextTr.time }}
                 </div>
-              </div>
-
-              <!-- Counters + Subscribe to Schedule Changes & Enable Notifications button -->
-              <div class="flex items-center gap-1.5 sm:gap-2 shrink-0 flex-wrap pt-0.5">
-                <div class="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl bg-black/20 text-white text-center">
-                  <div class="text-3xs opacity-80">Світло</div>
-                  <div class="text-xs sm:text-sm font-black font-mono">{{ status.totalPowerHours }} год</div>
-                </div>
-                <div class="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl bg-black/20 text-white text-center">
-                  <div class="text-3xs opacity-80">Відкл.</div>
-                  <div class="text-xs sm:text-sm font-black font-mono">{{ status.totalOutageHours }} год</div>
-                </div>
-                @if (status.queueGroup) {
-                  <div class="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl bg-white/20 backdrop-blur text-white text-center border border-white/20">
-                    <div class="text-3xs opacity-80">Черга</div>
-                    <div class="text-xs sm:text-sm font-black font-mono">{{ status.queueGroup }}</div>
+                @if (status.isEmergencyUpcoming) {
+                  <div class="w-full mt-2 px-3 py-2 rounded-xl bg-black/20 border border-white/20 text-2xs text-white space-y-0.5">
+                    <div class="font-extrabold flex items-center gap-1.5">
+                      <mat-icon class="text-sm text-amber-300 leading-none shrink-0">warning</mat-icon>
+                      <span>Заплановані ремонтні роботи за адресою: {{ status.emergencyReason || 'Ремонтні роботи' }}</span>
+                    </div>
+                    <div class="font-mono text-white/90 tabular-nums">
+                      Початок: <strong class="text-white">{{ status.startDate || '—' }}</strong> · Орієнт. відновлення: <strong class="text-white">{{ status.endDate || '—' }}</strong>
+                    </div>
                   </div>
                 }
-
-                <!-- Subscribe / Unsubscribe to Schedule Changes Button -->
-                @if (!isPushSubscribed()) {
-                  <button
-                    id="btn-schedule-subscribe-notifications"
-                    type="button"
-                    (click)="enableSchedulePushNotifications()"
-                    [disabled]="isPushLoading()"
-                    class="px-3 sm:px-3.5 py-1.5 sm:py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-2xs sm:text-xs inline-flex items-center gap-1.5 transition-all cursor-pointer shadow-md border border-amber-300 disabled:opacity-50"
-                    title="Отримувати фонові сповіщення на телефон при зміні графіку відключень ДТЕК ({{ status.queueGroup || 'Черга' }})"
-                  >
-                    <mat-icon class="text-sm sm:text-base leading-none shrink-0">notifications_active</mat-icon>
-                    <span class="text-left leading-tight">
-                      {{ isPushLoading() ? 'Підключення...' : 'Підписатись' }}
-                    </span>
-                  </button>
-                } @else {
-                  <button
-                    id="btn-schedule-subscribe-notifications"
-                    type="button"
-                    (click)="disableSchedulePushNotifications()"
-                    [disabled]="isPushLoading()"
-                    class="px-3 sm:px-3.5 py-1.5 sm:py-2 rounded-xl bg-white/25 hover:bg-white/35 backdrop-blur text-white font-extrabold text-2xs sm:text-xs inline-flex items-center gap-1.5 transition-all cursor-pointer border border-white/30 shadow-xs disabled:opacity-50"
-                    title="Вимкнути фонові сповіщення про зміни графіку"
-                  >
-                    <mat-icon class="text-sm sm:text-base leading-none shrink-0">notifications_off</mat-icon>
-                    <span class="text-left leading-tight">
-                      {{ isPushLoading() ? 'Відключення...' : 'Відписатись' }}
-                    </span>
-                  </button>
-                }
-              </div>
-
-              @if (pushStatusMessage()) {
-                <div class="text-2xs font-semibold text-amber-100 bg-black/25 border border-white/15 px-2.5 py-1 rounded-lg inline-flex items-center gap-1.5 w-fit">
-                  <mat-icon class="text-xs text-amber-300 leading-none">info</mat-icon>
-                  <span>{{ pushStatusMessage() }}</span>
-                </div>
               }
             </div>
 
-            <!-- Right side: Share + Refresh buttons positioned at top right -->
-            <div class="shrink-0 self-start flex items-center gap-2">
-              <button
-                type="button"
-                (click)="shareScheduleAsImage('today')"
-                class="w-11 h-11 sm:w-12 sm:h-12 aspect-square rounded-xl bg-white/20 hover:bg-white/30 text-white flex items-center justify-center transition-all cursor-pointer backdrop-blur border border-white/25 shadow-md hover:scale-105 active:scale-95"
-                title="Поділитися графіком (створити зображення та надіслати у вибраний застосунок)"
-                aria-label="Поділитися графіком"
-              >
-                <mat-icon class="text-xl sm:text-2xl leading-none">share</mat-icon>
-              </button>
-              <button
-                type="button"
-                (click)="refresh.emit()"
-                [disabled]="isRefreshing()"
-                class="w-11 h-11 sm:w-12 sm:h-12 aspect-square rounded-xl bg-white/20 hover:bg-white/30 text-white flex items-center justify-center transition-all cursor-pointer backdrop-blur border border-white/25 disabled:opacity-50 shadow-md hover:scale-105 active:scale-95"
-                [title]="minutesUntilNextRefresh() > 0 ? 'Оновити графік (у БД: ' + lastDtekFetchAt() + ', наступний запит на сайт ДТЕК через ' + minutesUntilNextRefresh() + ' хв)' : 'Оновити графік з сайту ДТЕК та зберегти в БД'"
-                aria-label="Оновити графік"
-              >
-                <mat-icon class="text-xl sm:text-2xl leading-none" [class.animate-spin]="isRefreshing()">sync</mat-icon>
-              </button>
-            </div>
-          </div>
-
-          <!-- ANDROID SYSTEM NOTIFICATION DRAWER CONTROLS & HISTORY FEED -->
-          <div class="p-3.5 sm:p-4 rounded-2xl bg-slate-900 text-white border border-slate-800 space-y-3 shadow-xs">
-            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-              <div class="flex items-start gap-2.5 min-w-0">
-                <div
-                  class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border"
-                  [class.bg-emerald-500/20]="notificationPermission() === 'granted'"
-                  [class.text-emerald-300]="notificationPermission() === 'granted'"
-                  [class.border-emerald-400/30]="notificationPermission() === 'granted'"
-                  [class.bg-amber-500/20]="notificationPermission() !== 'granted'"
-                  [class.text-amber-300]="notificationPermission() !== 'granted'"
-                  [class.border-amber-400/30]="notificationPermission() !== 'granted'"
+            <!-- Full-Width Counters + Queue List Button -->
+            <div class="w-full grid grid-cols-3 gap-2 pt-0.5">
+              <div class="px-2.5 sm:px-3 py-2 rounded-xl bg-black/20 text-white flex flex-col items-center justify-center text-center">
+                <div class="text-3xs opacity-80">Світло</div>
+                <div class="text-xs sm:text-sm font-black font-mono">{{ status.totalPowerHours }} год</div>
+              </div>
+              <div class="px-2.5 sm:px-3 py-2 rounded-xl bg-black/20 text-white flex flex-col items-center justify-center text-center">
+                <div class="text-3xs opacity-80">Відкл.</div>
+                <div class="text-xs sm:text-sm font-black font-mono">{{ status.totalOutageHours }} год</div>
+              </div>
+              @if (status.queueGroup) {
+                <button
+                  type="button"
+                  (click)="openAllQueues.emit()"
+                  title="Відкрити графік по всіх чергах ДТЕК (1.1 – 6.2)"
+                  aria-label="Відкрити всі черги ДТЕК"
+                  class="w-full px-2.5 sm:px-3 py-2 rounded-xl bg-white/20 hover:bg-white/30 backdrop-blur text-white border border-white/25 transition-all cursor-pointer shadow-xs hover:scale-[1.02] active:scale-95 inline-flex items-center justify-center gap-1.5 sm:gap-2"
                 >
-                  <mat-icon class="text-lg leading-none">notifications</mat-icon>
-                </div>
-                <div class="min-w-0">
-                  <div class="flex items-center gap-2 flex-wrap">
-                    <span class="text-xs sm:text-sm font-extrabold text-white">Сповіщення у шторці Android</span>
-                    <span
-                      class="px-2 py-0.5 rounded-md text-3xs font-bold uppercase tracking-wide"
-                      [class.bg-emerald-500/20]="notificationPermission() === 'granted'"
-                      [class.text-emerald-300]="notificationPermission() === 'granted'"
-                      [class.bg-rose-500/20]="notificationPermission() === 'denied'"
-                      [class.text-rose-300]="notificationPermission() === 'denied'"
-                      [class.bg-amber-500/20]="notificationPermission() === 'default'"
-                      [class.text-amber-200]="notificationPermission() === 'default'"
-                    >
-                      {{
-                        notificationPermission() === 'granted'
-                          ? 'Дозвіл надано'
-                          : notificationPermission() === 'denied'
-                            ? 'Заблоковано в налаштуваннях Chrome'
-                            : 'Потрібен дозвіл'
-                      }}
-                    </span>
-                    @if (status.queueGroup) {
-                      <span class="px-2 py-0.5 rounded-md bg-white/10 text-slate-200 text-3xs font-mono font-bold">
-                        Черга {{ status.queueGroup }}
-                      </span>
-                    }
+                  <div class="text-left">
+                    <div class="text-3xs opacity-80 leading-tight">Черга</div>
+                    <div class="text-xs sm:text-sm font-black font-mono leading-tight">{{ status.queueGroup }}</div>
                   </div>
-                  <p class="text-2xs text-slate-300 mt-0.5">
-                    Спливаючі системні повідомлення з вібрацією при зміні графіку ДТЕК ОЕМ та фоновій синхронізації.
-                  </p>
-                </div>
-              </div>
-
-              <div class="flex items-center gap-2 flex-wrap shrink-0">
-                @if (!isPushSubscribed() || notificationPermission() !== 'granted') {
-                  <button
-                    type="button"
-                    (click)="enableSchedulePushNotifications()"
-                    [disabled]="isPushLoading()"
-                    class="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-2xs sm:text-xs inline-flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-50"
-                  >
-                    <mat-icon class="text-sm leading-none">notifications_active</mat-icon>
-                    <span>Увімкнути сповіщення у шторці Android</span>
-                  </button>
-                } @else {
-                  <button
-                    type="button"
-                    (click)="disableSchedulePushNotifications()"
-                    [disabled]="isPushLoading()"
-                    class="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-2xs sm:text-xs inline-flex items-center gap-1.5 transition-all cursor-pointer border border-white/15 disabled:opacity-50"
-                  >
-                    <mat-icon class="text-sm leading-none">notifications_off</mat-icon>
-                    <span>Вимкнути</span>
-                  </button>
-                }
-
-                <button
-                  type="button"
-                  (click)="testAndroidNotificationNow()"
-                  class="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-2xs sm:text-xs inline-flex items-center gap-1.5 transition-all cursor-pointer"
-                  title="Показати миттєве системне сповіщення у шторці Android"
-                >
-                  <mat-icon class="text-sm leading-none">notification_important</mat-icon>
-                  <span>Тест у шторці зараз</span>
+                  <mat-icon class="text-sm text-amber-300 leading-none">grid_view</mat-icon>
                 </button>
-
-                <button
-                  type="button"
-                  (click)="testSchedulePushNotifications()"
-                  [disabled]="pushCountdownSeconds() > 0"
-                  class="px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-2xs sm:text-xs inline-flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-60"
-                  title="Запустити 5-секундний таймер — згорніть браузер і перевірте шторку Android"
-                >
-                  <mat-icon class="text-sm leading-none">timer</mat-icon>
-                  <span>
-                    {{
-                      pushCountdownSeconds() > 0
-                        ? 'Згорніть браузер: ' + pushCountdownSeconds() + ' с...'
-                        : 'Тест зі згортанням (5 сек)'
-                    }}
-                  </span>
-                </button>
-              </div>
+              }
             </div>
-
-            @if (recentScheduleChanges().length > 0) {
-              <div class="pt-2.5 border-t border-white/10 space-y-1.5">
-                <div class="text-3xs font-bold uppercase tracking-wider text-amber-300 flex items-center gap-1.5">
-                  <mat-icon class="text-xs leading-none">history</mat-icon>
-                  <span>Останні зміни графіку</span>
-                </div>
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                  @for (chg of recentScheduleChanges().slice(0, 4); track chg.id) {
-                    <div class="px-2.5 py-1.5 rounded-xl bg-white/5 border border-white/10 flex items-center justify-between gap-2 text-2xs">
-                      <div class="min-w-0">
-                        <span class="font-bold text-amber-300">{{ chg.queueKey.replace('GPV', 'Черга ') }}</span>
-                        <span class="text-slate-300 ml-1.5 truncate">{{ chg.summary }}</span>
-                      </div>
-                      <span class="text-3xs font-mono text-slate-400 shrink-0">{{ chg.detectedAtKyiv || chg.detectedAt }}</span>
-                    </div>
-                  }
-                </div>
-              </div>
-            }
           </div>
 
           @switch (activeOutageVariant()) {
@@ -2221,6 +2065,7 @@ export class OutageScheduleVariantsComponent {
   readonly minutesUntilNextRefresh = input<number>(0);
   readonly isRefreshing = input<boolean>(false);
   readonly refresh = output<void>();
+  readonly openAllQueues = output<void>();
 
   readonly outageScheduleVariants = OUTAGE_SCHEDULE_VARIANTS;
   readonly activeOutageVariant = this.dataService.outageScheduleViewVariant;
@@ -2233,6 +2078,26 @@ export class OutageScheduleVariantsComponent {
   readonly pushCountdownSeconds = this.dataService.pushCountdownSeconds;
   readonly notificationPermission = this.dataService.notificationPermission;
   readonly recentScheduleChanges = this.dataService.recentScheduleChanges;
+
+  readonly todayChangesCountForQueue = computed<number>(() => {
+    this.recentScheduleChanges();
+    const st = this.status();
+    return this.dataService.getTodayScheduleChangesForQueue(st?.queueGroup, st?.scheduleDate).length;
+  });
+
+  readonly todayChangesCountLabel = computed<string>(() => {
+    const count = this.todayChangesCountForQueue();
+    if (count === 0) return 'Сьогодні';
+    const mod10 = count % 10;
+    const mod100 = count % 100;
+    if (mod10 === 1 && mod100 !== 11) return `${count} зміна`;
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${count} зміни`;
+    return `${count} змін`;
+  });
+
+  openTodayScheduleHistory(): void {
+    this.dataService.openTodayScheduleChangesHistory(this.status()?.queueGroup);
+  }
 
   enableSchedulePushNotifications(): void {
     void this.dataService.enableWebPushNotifications();
@@ -2651,25 +2516,34 @@ export class OutageScheduleVariantsComponent {
     ctx.font = `800 13px ${fontSans}`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    ctx.fillText('ФОКУС ПОТОЧНОГО ІНТЕРВАЛУ', padX + 24, curY + 20);
+    ctx.fillText(
+      st.isFactOutageNow ? 'АВАРІЙНЕ ВІДКЛЮЧЕННЯ ЗА АДРЕСОЮ' : 'ФОКУС ПОТОЧНОГО ІНТЕРВАЛУ',
+      padX + 24,
+      curY + 20
+    );
 
     if (this.lastUpdated()) {
       const updText = `ДТЕК: ${this.lastUpdated()}`;
       ctx.font = `700 12px ${fontSans}`;
       const updW = ctx.measureText(updText).width + 20;
-      this.drawRoundedRect(ctx, padX + 260, curY + 16, updW, 22, 6);
+      this.drawRoundedRect(ctx, padX + 290, curY + 16, updW, 22, 6);
       ctx.fillStyle = 'rgba(0,0,0,0.22)';
       ctx.fill();
       ctx.fillStyle = '#ffffff';
       ctx.textBaseline = 'middle';
-      ctx.fillText(updText, padX + 270, curY + 27);
+      ctx.fillText(updText, padX + 300, curY + 27);
     }
 
     ctx.fillStyle = '#ffffff';
     ctx.font = `900 28px ${fontSans}`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    ctx.fillText(`${nextTr.label} ${nextTr.time}`, padX + 24, curY + 48);
+    const focusHeadline = st.isFactOutageNow
+      ? st.emergencyEndTime
+        ? `Аварійне відключення (до ${st.emergencyEndTime})`
+        : 'Діє аварійне відключення'
+      : `${nextTr.label} ${nextTr.time}`;
+    ctx.fillText(focusHeadline, padX + 24, curY + 48);
 
     // Counters inside Focus Banner (Світло / Відкл. / Черга)
     const drawFocusCounter = (

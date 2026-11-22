@@ -247,7 +247,6 @@ function parseMeterNumber(val: unknown): number | null {
                   #fileInput
                   type="file"
                   accept="image/*"
-                  capture="environment"
                   (change)="onFileSelected($event)"
                   class="hidden"
                 />
@@ -288,20 +287,22 @@ function parseMeterNumber(val: unknown): number | null {
                 }
               </div>
 
-              <!-- Results Card -->
-              @if (!isAnalyzing() && recognitionResult()) {
+              <!-- Results / Manual Entry Card -->
+              @if (!isAnalyzing() && (recognitionResult() || errorMessage())) {
                 <div class="p-4 rounded-xl bg-slate-800/90 border border-slate-700 space-y-3.5">
-                  <div class="flex items-center justify-between pb-2.5 border-b border-slate-700/80">
-                    <div class="flex items-center gap-2">
-                      <mat-icon class="text-emerald-400 text-lg">check_circle</mat-icon>
-                      <span class="text-xs font-bold text-white">Показники успішно розпізнано!</span>
+                  @if (recognitionResult()) {
+                    <div class="flex items-center justify-between pb-2.5 border-b border-slate-700/80">
+                      <div class="flex items-center gap-2">
+                        <mat-icon class="text-emerald-400 text-lg">check_circle</mat-icon>
+                        <span class="text-xs font-bold text-white">Показники успішно розпізнано!</span>
+                      </div>
+                      @if (recognitionResult()?.confidence !== undefined) {
+                        <span class="px-2 py-0.5 rounded text-3xs font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                          Точність: {{ Math.round(((recognitionResult()?.confidence ?? 0.9)) * 100) }}%
+                        </span>
+                      }
                     </div>
-                    @if (recognitionResult()?.confidence !== undefined) {
-                      <span class="px-2 py-0.5 rounded text-3xs font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                        Точність: {{ Math.round(((recognitionResult()?.confidence ?? 0.9)) * 100) }}%
-                      </span>
-                    }
-                  </div>
+                  }
 
                   @if (recognitionResult()?.explanation) {
                     <div class="text-2xs text-slate-300 leading-relaxed bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">
@@ -677,6 +678,7 @@ export class MeterCameraModal implements OnInit, OnDestroy {
       };
       reader.readAsDataURL(file);
     }
+    input.value = '';
   }
 
   private resizeImageIfNeeded(dataUrl: string, maxDim = 1920): Promise<string> {
@@ -746,10 +748,19 @@ export class MeterCameraModal implements OnInit, OnDestroy {
       });
 
       if (!res || res.success === false) {
-        this.errorMessage.set(
-          res?.error ||
-            'Не вдалося розпізнати покази на фото. Спробуйте сфотографувати ближче або ввести вручну.'
-        );
+        const rawErr = res?.error;
+        let errText = '';
+        if (typeof rawErr === 'string') {
+          errText = rawErr;
+        } else if (rawErr && typeof rawErr === 'object') {
+          const obj = rawErr as { message?: string; error?: string };
+          errText = obj.message || obj.error || '';
+        }
+        if (!errText || errText === '[object Object]') {
+          errText =
+            'Не вдалося розпізнати покази на фото автоматично. Перевірте або введіть значення вручну нижче.';
+        }
+        this.errorMessage.set(errText);
         return;
       }
 
@@ -774,10 +785,29 @@ export class MeterCameraModal implements OnInit, OnDestroy {
       }
     } catch (err: unknown) {
       console.error('Error analyzing photo:', err);
-      const msg = err instanceof Error ? err.message : String(err);
-      this.errorMessage.set(
-        msg || 'Помилка розпізнавання фото. Будь ласка, спробуйте ще раз.'
-      );
+      let msg = '';
+      if (err instanceof Error) {
+        msg = err.message;
+      } else if (err && typeof err === 'object') {
+        const httpErr = err as {
+          error?: { error?: string; message?: string } | string;
+          message?: string;
+        };
+        if (typeof httpErr.error === 'object' && httpErr.error !== null) {
+          msg = httpErr.error.error || httpErr.error.message || '';
+        } else if (typeof httpErr.error === 'string') {
+          msg = httpErr.error;
+        }
+        if (!msg && typeof httpErr.message === 'string') {
+          msg = httpErr.message;
+        }
+      } else if (typeof err === 'string') {
+        msg = err;
+      }
+      if (!msg || msg === '[object Object]') {
+        msg = 'Помилка розпізнавання фото. Ви можете ввести покази з фото вручну нижче.';
+      }
+      this.errorMessage.set(msg);
     } finally {
       this.isAnalyzing.set(false);
     }

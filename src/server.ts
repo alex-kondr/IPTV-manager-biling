@@ -6,9 +6,11 @@ import {
   writeResponseToNodeResponse,
 } from '@angular/ssr/node';
 import express from 'express';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { GoogleGenAI, Type } from '@google/genai';
 import * as webpush from 'web-push';
 import {
@@ -40,8 +42,11 @@ import {
   saveUserToCloudSql,
   deleteUserFromCloudSql,
   saveSettingsToCloudSql,
+  getSettingsFromCloudSql,
   saveUserSettingsToCloudSql,
+  loadUserSettingsDirectlyFromDb,
   saveSystemSettingsConfigToCloudSql,
+  loadSystemSettingsConfigDirectlyFromDb,
   loadRevokedSessionJtisFromCloudSql,
   saveRevokedSessionJtiToCloudSql,
   seedInitialDataToCloudSql,
@@ -170,6 +175,47 @@ function encryptStoredPassword(plainText: string): string {
   const encrypted = Buffer.concat([cipher.update(plainText, 'utf8'), cipher.final()]);
   const authTag = cipher.getAuthTag();
   return `enc2:${iv.toString('base64url')}:${authTag.toString('base64url')}:${encrypted.toString('base64url')}`;
+}
+
+function upsertEnvVariables(updates: Record<string, string>): void {
+  const entries = Object.entries(updates).filter(([k, v]) => Boolean(k && v !== undefined));
+  if (entries.length === 0) return;
+
+  for (const [k, v] of entries) {
+    process.env[k] = v;
+  }
+
+  try {
+    const envPath = resolve(process.cwd(), '.env');
+    let content = existsSync(envPath) ? readFileSync(envPath, 'utf8') : '';
+    let modified = false;
+
+    for (const [key, rawVal] of entries) {
+      const cleanVal = String(rawVal).replace(/\r?\n/g, ' ').trim();
+      const useSingleQuotes = cleanVal.includes('`') || cleanVal.includes('\\') || cleanVal.includes('$');
+      const formattedLine = useSingleQuotes
+        ? `${key}='${cleanVal.replace(/'/g, "\\'")}'`
+        : `${key}="${cleanVal.replace(/"/g, '\\"')}"`;
+
+      const lineRegex = new RegExp(`^\\s*${key}\\s*=.*$`, 'm');
+      if (lineRegex.test(content)) {
+        const nextContent = content.replace(lineRegex, formattedLine);
+        if (nextContent !== content) {
+          content = nextContent;
+          modified = true;
+        }
+      } else {
+        content = `${content.trimEnd()}\n${formattedLine}\n`;
+        modified = true;
+      }
+    }
+
+    if (modified) {
+      writeFileSync(envPath, content, 'utf8');
+    }
+  } catch (err) {
+    console.warn('[EnvSync] Could not update .env file on disk:', err instanceof Error ? err.message : String(err));
+  }
 }
 
 function sanitizeUtilityAccountForClient(acc: Record<string, unknown>): Record<string, unknown> {
@@ -364,6 +410,7 @@ const DEFAULT_SCOPES_CONFIG: Record<string, 'user' | 'system'> = {
   theme: 'user',
   outage_display: 'user',
   house_visibility: 'user',
+  ooek_credentials: 'user',
   electricity_tariffs: 'user',
   water_tariffs: 'user',
   waste_tariffs: 'user',
@@ -407,10 +454,14 @@ function ensureUserDefaultSettings(user: Record<string, unknown>): boolean {
   }
   const currentTabs = Array.isArray(user['allowedTabs'])
     ? (user['allowedTabs'] as string[])
-    : ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'settings'];
-  if (mergedSettings.length > 0 && !currentTabs.includes('settings')) {
-    user['allowedTabs'] = [...currentTabs, 'settings'];
+    : ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'shopping', 'settings'];
+  let nextTabs = [...currentTabs];
+  if (mergedSettings.length > 0 && !nextTabs.includes('settings')) {
+    nextTabs = [...nextTabs, 'settings'];
     changed = true;
+  }
+  if (changed) {
+    user['allowedTabs'] = nextTabs;
   }
   return changed;
 }
@@ -456,7 +507,7 @@ const state: AppState = {
           name: process.env['ADMIN_NAME'] || 'Адміністратор',
           role: 'admin',
           status: 'active',
-          allowedTabs: ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'clients', 'accounts', 'budget', 'analytics', 'payments', 'users', 'settings'],
+          allowedTabs: ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'shopping', 'clients', 'accounts', 'budget', 'analytics', 'payments', 'users', 'settings'],
           assignedUtilityAccountIds: [],
           assignedClientIds: [],
           canManageOwnData: true,
@@ -554,7 +605,11 @@ async function triggerBackgroundMultiDbSync(): Promise<void> {
   }
 }
 
+let lastUtilityDbRefreshAt = 0;
+let inFlightUtilityDbRefresh: Promise<void> | null = null;
+
 function bumpVersion(): void {
+  lastUtilityDbRefreshAt = 0;
   state.version += 1;
   const nowUa = getUkFormattedNow();
   const verStr = `v2.5.${state.version}`;
@@ -569,6 +624,250 @@ function bumpVersion(): void {
   dbLastUpdateTimes['firestore'] = nowUa;
   dbLastUpdateVersions['firestore'] = verStr;
   void triggerBackgroundMultiDbSync();
+}
+
+// ============================================================================
+// UNIFIED REAL-TIME SERVER SIGNAL BUS (SSE PUSH TO CONNECTED CLIENTS)
+// ============================================================================
+
+type AppSignalScope =
+  | 'shopping'
+  | 'utility'
+  | 'schedule'
+  | 'budget'
+  | 'household'
+  | 'settings'
+  | 'app_release'
+  | 'clients'
+  | 'accounts';
+
+interface AppSignalPayload {
+  scope: AppSignalScope;
+  action: string;
+  rev: number;
+  updatedAt: string;
+  entityId?: string;
+  queueKey?: string;
+  originClientId?: string;
+  actorUserId?: string;
+  data?: Record<string, unknown>;
+}
+
+let appSignalRev = 0;
+const appSseClients = new Map<string, Set<express.Response>>();
+
+function getClientInstanceId(req?: express.Request): string {
+  const raw = req?.headers?.['x-client-instance-id'];
+  if (typeof raw === 'string') return raw.trim().slice(0, 64);
+  if (Array.isArray(raw) && typeof raw[0] === 'string') return raw[0].trim().slice(0, 64);
+  return '';
+}
+
+function getAdminUserIds(): Set<string> {
+  const set = new Set<string>();
+  for (const u of state.users) {
+    if (u['role'] === 'admin' && u['status'] !== 'inactive') {
+      const uid = String(u['id'] || '').trim();
+      if (uid) set.add(uid);
+    }
+  }
+  return set;
+}
+
+function getAllConnectedUserIds(): Set<string> {
+  return new Set<string>(appSseClients.keys());
+}
+
+function getUtilityHouseAudienceUserIds(
+  houseOrId?: Record<string, unknown> | string | null,
+  extraUserIds: string[] = []
+): Set<string> {
+  const audience = getAdminUserIds();
+  const houseObj =
+    typeof houseOrId === 'string'
+      ? state.utilityAccounts.find((a) => String(a['id'] || '') === houseOrId) || null
+      : houseOrId || null;
+  const houseId = typeof houseOrId === 'string' ? houseOrId : String(houseObj?.['id'] || '');
+
+  if (houseObj) {
+    const ownerId = String(houseObj['ownerUserId'] || '').trim();
+    if (ownerId) audience.add(ownerId);
+    const assigned = Array.isArray(houseObj['assignedUserIds'])
+      ? (houseObj['assignedUserIds'] as string[])
+      : [];
+    for (const uid of assigned) {
+      const clean = String(uid || '').trim();
+      if (clean) audience.add(clean);
+    }
+  }
+  if (houseId) {
+    for (const u of state.users) {
+      const uHouses = Array.isArray(u['assignedUtilityAccountIds'])
+        ? (u['assignedUtilityAccountIds'] as string[])
+        : [];
+      if (uHouses.includes(houseId)) {
+        const uid = String(u['id'] || '').trim();
+        if (uid) audience.add(uid);
+      }
+    }
+  }
+  for (const extra of extraUserIds) {
+    const clean = String(extra || '').trim();
+    if (clean) audience.add(clean);
+  }
+  return audience;
+}
+
+function getBudgetAudienceUserIds(actorUserId = ''): Set<string> {
+  const audience = getAdminUserIds();
+  const cleanActor = actorUserId.trim();
+  if (cleanActor) {
+    audience.add(cleanActor);
+    for (const memberId of getSharedHouseholdUserIdsForUser(cleanActor)) {
+      audience.add(memberId);
+    }
+  }
+  for (const u of state.users) {
+    const tabs = Array.isArray(u['allowedTabs']) ? (u['allowedTabs'] as string[]) : [];
+    if (tabs.includes('budget') && u['status'] !== 'inactive') {
+      const uid = String(u['id'] || '').trim();
+      if (uid) audience.add(uid);
+    }
+  }
+  return audience;
+}
+
+function getHouseholdAudienceUserIds(
+  primaryUserId: string,
+  extraUserIds: string[] = []
+): Set<string> {
+  const audience = getAdminUserIds();
+  const cleanPrimary = String(primaryUserId || '').trim();
+  if (cleanPrimary) {
+    audience.add(cleanPrimary);
+    for (const memberId of getSharedHouseholdUserIdsForUser(cleanPrimary)) {
+      audience.add(memberId);
+    }
+  }
+  for (const extra of extraUserIds) {
+    const clean = String(extra || '').trim();
+    if (clean) {
+      audience.add(clean);
+      for (const memberId of getSharedHouseholdUserIdsForUser(clean)) {
+        audience.add(memberId);
+      }
+    }
+  }
+  return audience;
+}
+
+function emitAppSignal(params: {
+  scope: AppSignalScope;
+  action: string;
+  audience: Iterable<string>;
+  entityId?: string;
+  queueKey?: string;
+  originClientId?: string;
+  actorUserId?: string;
+  data?: Record<string, unknown>;
+  legacyShoppingEvent?: boolean;
+}): void {
+  appSignalRev += 1;
+  const payload: AppSignalPayload = {
+    scope: params.scope,
+    action: params.action,
+    rev: appSignalRev,
+    updatedAt: new Date().toISOString(),
+    ...(params.entityId ? { entityId: params.entityId } : {}),
+    ...(params.queueKey ? { queueKey: params.queueKey } : {}),
+    ...(params.originClientId ? { originClientId: params.originClientId } : {}),
+    ...(params.actorUserId ? { actorUserId: params.actorUserId } : {}),
+    ...(params.data ? { data: params.data } : {}),
+  };
+  const unifiedFrame = `event: app_signal\ndata: ${JSON.stringify(payload)}\n\n`;
+  const legacyFrame =
+    params.legacyShoppingEvent && params.data
+      ? `event: shopping_updated\ndata: ${JSON.stringify(params.data)}\n\n`
+      : '';
+
+  const sentUids = new Set<string>();
+  for (const rawUid of params.audience) {
+    const uid = String(rawUid || '').trim();
+    if (!uid || sentUids.has(uid)) continue;
+    sentUids.add(uid);
+    const sockets = appSseClients.get(uid);
+    if (!sockets || sockets.size === 0) continue;
+    for (const res of Array.from(sockets)) {
+      try {
+        if (res.writableEnded || res.destroyed) {
+          sockets.delete(res);
+          continue;
+        }
+        res.write(unifiedFrame);
+        if (legacyFrame) {
+          res.write(legacyFrame);
+        }
+      } catch {
+        sockets.delete(res);
+      }
+    }
+    if (sockets.size === 0) {
+      appSseClients.delete(uid);
+    }
+  }
+}
+
+function registerAppSseConnection(req: express.Request, res: express.Response): void {
+  const { authenticated, user } = resolveRequestUser(req);
+  if (!authenticated || !user || user['status'] === 'inactive' || user['role'] === 'new') {
+    res.status(401).json({ error: 'Необхідна авторизація' });
+    return;
+  }
+  const userId = String(user['id'] || '').trim();
+  if (!userId) {
+    res.status(401).json({ error: 'Необхідна авторизація' });
+    return;
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-store, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  let set = appSseClients.get(userId);
+  if (!set) {
+    set = new Set<express.Response>();
+    appSseClients.set(userId, set);
+  }
+  set.add(res);
+
+  res.write(
+    `event: connected\ndata: ${JSON.stringify({ ok: true, rev: appSignalRev, ts: Date.now() })}\n\n`
+  );
+
+  const heartbeat = setInterval(() => {
+    if (res.writableEnded || res.destroyed) {
+      clearInterval(heartbeat);
+      return;
+    }
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      clearInterval(heartbeat);
+    }
+  }, 25_000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    const currentSet = appSseClients.get(userId);
+    if (currentSet) {
+      currentSet.delete(res);
+      if (currentSet.size === 0) {
+        appSseClients.delete(userId);
+      }
+    }
+  });
 }
 
 function addMonthsExactIso(dateStr: string, months: number): string {
@@ -632,6 +931,7 @@ function normalizeUsersAndSettingsInState(): void {
     'water',
     'waste',
     'water_waste',
+    'shopping',
     'clients',
     'accounts',
     'budget',
@@ -656,7 +956,7 @@ function normalizeUsersAndSettingsInState(): void {
       }
       const curTabs = Array.isArray(u['allowedTabs']) ? (u['allowedTabs'] as string[]) : [];
       if (curTabs.length <= 1 && curTabs[0] === 'electricity') {
-        u['allowedTabs'] = ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste'];
+        u['allowedTabs'] = ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'shopping'];
       }
       if (Array.isArray(u['assignedUtilityAccountIds'])) {
         const validIds = new Set(state.utilityAccounts.map((a) => String(a['id'])));
@@ -668,7 +968,7 @@ function normalizeUsersAndSettingsInState(): void {
     } else if (u['role'] === 'new') {
       u['role'] = 'user';
       if (!Array.isArray(u['allowedTabs']) || (u['allowedTabs'] as string[]).length === 0) {
-        u['allowedTabs'] = ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste'];
+        u['allowedTabs'] = ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'shopping'];
       }
       void saveUserToCloudSql(u);
     }
@@ -855,8 +1155,8 @@ function resolveRequestUser(req: express.Request): {
         role: isOwnerAdmin ? 'admin' : 'user',
         status: 'active',
         allowedTabs: isOwnerAdmin
-          ? ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'clients', 'accounts', 'budget', 'analytics', 'payments', 'users', 'settings']
-          : ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'settings'],
+          ? ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'shopping', 'clients', 'accounts', 'budget', 'analytics', 'payments', 'users', 'settings']
+          : ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'shopping', 'settings'],
         allowedSettings: isOwnerAdmin ? Object.keys(DEFAULT_SCOPES_CONFIG) : getDefaultUserSettingsIds(),
         assignedUtilityAccountIds: [],
         assignedClientIds: [],
@@ -879,7 +1179,7 @@ function resolveRequestUser(req: express.Request): {
         name: 'Тестовий Користувач (Перевірка доступу)',
         role: 'user',
         status: 'active',
-        allowedTabs: ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'settings'],
+        allowedTabs: ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'shopping', 'settings'],
         allowedSettings: getDefaultUserSettingsIds(),
         assignedUtilityAccountIds: [],
         assignedClientIds: [],
@@ -933,8 +1233,8 @@ app.get('/api/sync/version', (_req, res) => {
   res.json({ version: state.version, lastUpdate: state.lastUpdate });
 });
 
-const CURRENT_APP_RELEASE_VERSION = 'v4.2';
-const PREVIOUS_APP_RELEASE_VERSION = 'v4.0';
+const CURRENT_APP_RELEASE_VERSION = 'v6.0';
+const PREVIOUS_APP_RELEASE_VERSION = 'v5.1';
 
 function getAppReleaseInfoForUser(user: Record<string, unknown> | null): {
   currentVersion: string;
@@ -942,6 +1242,9 @@ function getAppReleaseInfoForUser(user: Record<string, unknown> | null): {
   userLastSeenVersion: string;
   dismissedVersion: string;
   shouldShowModal: boolean;
+  updatedAt: string;
+  updatedAtKyiv: string;
+  versionTimestamps: Record<string, string>;
 } {
   const sysVals = getSystemValuesMap();
   const existingTracking =
@@ -953,11 +1256,36 @@ function getAppReleaseInfoForUser(user: Record<string, unknown> | null): {
   if (storedCurr && storedCurr !== CURRENT_APP_RELEASE_VERSION) {
     prevVer = storedCurr;
   }
-  if (storedCurr !== CURRENT_APP_RELEASE_VERSION) {
+  const existingTimestampsRaw = existingTracking['versionTimestamps'];
+  const versionTimestamps: Record<string, string> =
+    existingTimestampsRaw && typeof existingTimestampsRaw === 'object'
+      ? { ...(existingTimestampsRaw as Record<string, string>) }
+      : {};
+
+  // Preserve previous version timestamp if it existed on tracking record
+  if (storedCurr && !versionTimestamps[storedCurr] && typeof existingTracking['updatedAt'] === 'string') {
+    const prevMs = Date.parse(existingTracking['updatedAt']);
+    if (!isNaN(prevMs)) {
+      versionTimestamps[storedCurr] = formatKyivDateParts(prevMs).kyivDateTime;
+    }
+  }
+
+  let updatedAtIso = String(existingTracking['updatedAt'] || '');
+  let updatedAtKyiv = String(
+    existingTracking['updatedAtKyiv'] || versionTimestamps[CURRENT_APP_RELEASE_VERSION] || ''
+  );
+
+  if (storedCurr !== CURRENT_APP_RELEASE_VERSION || !updatedAtIso || !updatedAtKyiv) {
+    const nowMs = Date.now();
+    updatedAtIso = new Date(nowMs).toISOString();
+    updatedAtKyiv = formatKyivDateParts(nowMs).kyivDateTime;
+    versionTimestamps[CURRENT_APP_RELEASE_VERSION] = updatedAtKyiv;
     sysVals['appReleaseTracking'] = {
       currentVersion: CURRENT_APP_RELEASE_VERSION,
       previousVersion: prevVer || PREVIOUS_APP_RELEASE_VERSION,
-      updatedAt: new Date().toISOString(),
+      updatedAt: updatedAtIso,
+      updatedAtKyiv,
+      versionTimestamps,
     };
     void persistSystemValues();
   }
@@ -969,6 +1297,9 @@ function getAppReleaseInfoForUser(user: Record<string, unknown> | null): {
       userLastSeenVersion: PREVIOUS_APP_RELEASE_VERSION,
       dismissedVersion: '',
       shouldShowModal: false,
+      updatedAt: updatedAtIso,
+      updatedAtKyiv,
+      versionTimestamps,
     };
   }
 
@@ -1006,6 +1337,9 @@ function getAppReleaseInfoForUser(user: Record<string, unknown> | null): {
     userLastSeenVersion,
     dismissedVersion,
     shouldShowModal: dismissedVersion !== CURRENT_APP_RELEASE_VERSION,
+    updatedAt: updatedAtIso,
+    updatedAtKyiv,
+    versionTimestamps,
   };
 }
 
@@ -1090,8 +1424,8 @@ app.post('/api/auth/google', async (req, res) => {
       role: isOwnerAdmin ? 'admin' : 'user',
       status: 'active',
       allowedTabs: isOwnerAdmin
-        ? ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'clients', 'accounts', 'budget', 'analytics', 'payments', 'users', 'settings']
-        : ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'settings'],
+        ? ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'shopping', 'clients', 'accounts', 'budget', 'analytics', 'payments', 'users', 'settings']
+        : ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'shopping', 'settings'],
       allowedSettings: isOwnerAdmin ? Object.keys(DEFAULT_SCOPES_CONFIG) : getDefaultUserSettingsIds(),
       assignedUtilityAccountIds: [],
       assignedClientIds: [],
@@ -1109,13 +1443,37 @@ app.post('/api/auth/google', async (req, res) => {
       existing['role'] = 'user';
       existing['status'] = 'active';
       if (!Array.isArray(existing['allowedTabs']) || (existing['allowedTabs'] as string[]).length === 0) {
-        existing['allowedTabs'] = ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'settings'];
+        existing['allowedTabs'] = ['outage_schedule', 'electricity', 'water', 'waste', 'water_waste', 'shopping', 'settings'];
       }
     }
     ensureUserDefaultSettings(existing);
     if (name) existing['name'] = name;
     if (picture) existing['picture'] = picture;
     if (sub) existing['sub'] = sub;
+  }
+
+  if (accessToken && typeof accessToken === 'string' && accessToken.trim()) {
+    const cleanAccess = accessToken.trim();
+    const encAccess = encryptStoredPassword(cleanAccess);
+    const uid = String(existing['id']);
+    const us = getOrCreateUserSettingsEntry(uid);
+    const customPrefs =
+      us['customPreferences'] && typeof us['customPreferences'] === 'object'
+        ? { ...(us['customPreferences'] as Record<string, unknown>) }
+        : {};
+    customPrefs['googleAccessTokenEnc'] = encAccess;
+    customPrefs['googleAccessTokenUpdatedAt'] = new Date().toISOString();
+    us['customPreferences'] = customPrefs;
+    us['updatedAt'] = new Date().toISOString();
+    await saveUserSettingsToCloudSql(us);
+
+    if (isOwnerAdmin || existing['role'] === 'admin') {
+      const sysVals = getSystemValuesMap();
+      sysVals['adminGoogleAccessTokenEnc'] = encAccess;
+      sysVals['adminGoogleEmail'] = normEmail;
+      await persistSystemValues();
+      upsertEnvVariables({ ADMIN_GOOGLE_ACCESS_TOKEN: cleanAccess });
+    }
   }
 
   await saveUserToCloudSql(existing);
@@ -1351,6 +1709,9 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
+// Unified authenticated server-to-client real-time signal stream
+app.get('/api/events/stream', registerAppSseConnection);
+
 // ============================================================================
 // USERS & PERMISSIONS API (ADMIN ONLY)
 // ============================================================================
@@ -1452,6 +1813,14 @@ app.put('/api/users/:id/role', async (req, res) => {
   }
   await saveUserToCloudSql(user);
   bumpVersion();
+  emitAppSignal({
+    scope: 'household',
+    action: 'user:role',
+    entityId: String(user['id'] || ''),
+    audience: getHouseholdAudienceUserIds(String(user['id'] || '')),
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(caller['id'] || ''),
+  });
   res.json(user);
 });
 
@@ -1481,6 +1850,14 @@ app.put('/api/users/:id/status', async (req, res) => {
   }
   await saveUserToCloudSql(user);
   bumpVersion();
+  emitAppSignal({
+    scope: 'household',
+    action: 'user:status',
+    entityId: String(user['id'] || ''),
+    audience: getHouseholdAudienceUserIds(String(user['id'] || '')),
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(caller['id'] || ''),
+  });
   res.json({ success: true, user });
 });
 
@@ -1580,6 +1957,25 @@ app.put('/api/users/:id/permissions', async (req, res) => {
   }
   await saveUserToCloudSql(user);
   bumpVersion();
+  const permAudience = getHouseholdAudienceUserIds(String(user['id'] || ''), [String(caller['id'] || '')]);
+  emitAppSignal({
+    scope: 'household',
+    action: 'user:permissions',
+    entityId: String(user['id'] || ''),
+    audience: permAudience,
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(caller['id'] || ''),
+  });
+  if (Array.isArray(payload.assignedUtilityAccountIds)) {
+    emitAppSignal({
+      scope: 'utility',
+      action: 'house:access_changed',
+      entityId: String(user['id'] || ''),
+      audience: permAudience,
+      originClientId: getClientInstanceId(req),
+      actorUserId: String(caller['id'] || ''),
+    });
+  }
   res.json({ success: true, user });
 });
 
@@ -1593,6 +1989,14 @@ app.delete('/api/users/:id', async (req, res) => {
   state.users = state.users.filter((u) => u['id'] !== id);
   await deleteUserFromCloudSql(id);
   bumpVersion();
+  emitAppSignal({
+    scope: 'household',
+    action: 'user:deleted',
+    entityId: id,
+    audience: getHouseholdAudienceUserIds(id, [String(caller['id'] || '')]),
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(caller['id'] || ''),
+  });
   res.json({ success: true });
 });
 
@@ -1655,38 +2059,120 @@ app.get('/api/household/invites', (req, res) => {
         (inv['acceptedByUserIds'] as string[]).includes(userId))
   );
 
-  // Find users who share houses with current user or were invited by current user (no automatic admin binding)
-  const myHouseIds = new Set<string>(
-    state.utilityAccounts
-      .filter((a) => {
-        const ownerId = String(a['ownerUserId'] || '');
-        const assigned = Array.isArray(a['assignedUserIds']) ? (a['assignedUserIds'] as string[]) : [];
-        const userAssigned = Array.isArray(user['assignedUtilityAccountIds'])
-          ? (user['assignedUtilityAccountIds'] as string[])
-          : [];
-        return (
-          (ownerId && ownerId === userId) ||
-          assigned.includes(userId) ||
-          userAssigned.includes(String(a['id']))
-        );
-      })
-      .map((a) => String(a['id']))
-  );
-
+  // Unified shared household members: invited users + co-members sharing any house (excludes inactive/sandbox)
+  const sharedMemberIds = getSharedHouseholdUserIdsForUser(userId);
   const sharedMembers = state.users.filter((u) => {
     const uid = String(u['id'] || '');
-    if (!uid || uid === userId) return false;
-    if (String(u['invitedByUserId'] || '') === userId) return true;
-    if (String(user['invitedByUserId'] || '') === uid) return true;
-    const uHouses = Array.isArray(u['assignedUtilityAccountIds'])
-      ? (u['assignedUtilityAccountIds'] as string[])
-      : [];
-    return myHouseIds.size > 0 && uHouses.some((hid) => myHouseIds.has(hid));
+    return Boolean(uid) && uid !== userId && sharedMemberIds.has(uid);
   });
 
   res.json({
     invites: visibleInvites,
     sharedMembers,
+  });
+});
+
+app.put('/api/household/members/:memberId/houses', async (req, res) => {
+  setNoCacheHeaders(res);
+  const { authenticated, user, realAdmin } = resolveRequestUser(req);
+  if (!authenticated || !user || user['status'] === 'inactive' || user['role'] === 'new') {
+    res.status(401).json({ error: 'Необхідна авторизація' });
+    return;
+  }
+  const userId = String(user['id'] || '');
+  const memberId = String(req.params.memberId || '').trim();
+  if (!memberId || memberId === userId) {
+    res.status(400).json({ error: 'Некоректний ідентифікатор учасника' });
+    return;
+  }
+
+  const targetUser = state.users.find((u) => String(u['id'] || '') === memberId);
+  if (!targetUser) {
+    res.status(404).json({ error: 'Користувача не знайдено' });
+    return;
+  }
+
+  const isAdminCaller = user['role'] === 'admin' || realAdmin?.['role'] === 'admin';
+  const allowedHouseholdIds = getSharedHouseholdUserIdsForUser(userId);
+  if (!isAdminCaller && !allowedHouseholdIds.has(memberId)) {
+    res.status(403).json({ error: 'Цей користувач не належить до вашого спільного дому' });
+    return;
+  }
+
+  const requestedHouseIds = new Set<string>(
+    Array.isArray(req.body?.houseIds)
+      ? (req.body.houseIds as unknown[]).map((id) => String(id || '').trim()).filter(Boolean)
+      : []
+  );
+
+  // Caller may only update house membership on houses they own (or all houses if admin)
+  const manageableHouses = state.utilityAccounts.filter((a) => {
+    if (isAdminCaller) return true;
+    const ownerId = String(a['ownerUserId'] || '');
+    return !ownerId || ownerId === userId;
+  });
+
+  const manageableHouseIds = new Set(manageableHouses.map((a) => String(a['id'] || '')));
+  const updatedAccounts: Record<string, unknown>[] = [];
+
+  for (const acc of manageableHouses) {
+    const accId = String(acc['id'] || '');
+    const currAssigned = Array.isArray(acc['assignedUserIds'])
+      ? (acc['assignedUserIds'] as string[])
+      : [];
+    const shouldHave = requestedHouseIds.has(accId);
+    const hasNow = currAssigned.includes(memberId);
+    if (shouldHave && !hasNow) {
+      acc['assignedUserIds'] = [...currAssigned, memberId];
+      acc['updatedAt'] = new Date().toISOString();
+      updatedAccounts.push(acc);
+    } else if (!shouldHave && hasNow) {
+      acc['assignedUserIds'] = currAssigned.filter((uid) => uid !== memberId);
+      acc['updatedAt'] = new Date().toISOString();
+      updatedAccounts.push(acc);
+    }
+  }
+
+  const existingMemberHouses = Array.isArray(targetUser['assignedUtilityAccountIds'])
+    ? (targetUser['assignedUtilityAccountIds'] as string[])
+    : [];
+  const untouchedHouses = existingMemberHouses.filter((hid) => !manageableHouseIds.has(hid));
+  const nextManageableAssigned = Array.from(requestedHouseIds).filter((hid) =>
+    manageableHouseIds.has(hid)
+  );
+  targetUser['assignedUtilityAccountIds'] = Array.from(
+    new Set([...untouchedHouses, ...nextManageableAssigned])
+  );
+  targetUser['updatedAt'] = new Date().toISOString();
+
+  await Promise.all([
+    ...updatedAccounts.map((acc) => saveUtilityAccountToCloudSql(acc)),
+    saveUserToCloudSql(targetUser),
+  ]);
+  bumpVersion();
+
+  const houseMemberAudience = getHouseholdAudienceUserIds(userId, [memberId]);
+  emitAppSignal({
+    scope: 'household',
+    action: 'member:houses_updated',
+    entityId: memberId,
+    audience: houseMemberAudience,
+    originClientId: getClientInstanceId(req),
+    actorUserId: userId,
+  });
+  emitAppSignal({
+    scope: 'utility',
+    action: 'house:access_changed',
+    entityId: memberId,
+    audience: houseMemberAudience,
+    originClientId: getClientInstanceId(req),
+    actorUserId: userId,
+  });
+
+  res.json({
+    success: true,
+    memberId,
+    assignedUtilityAccountIds: targetUser['assignedUtilityAccountIds'],
   });
 });
 
@@ -1892,6 +2378,24 @@ app.post('/api/household/invites/:code/accept', async (req, res) => {
   await persistSystemValues();
   bumpVersion();
 
+  const acceptAudience = getHouseholdAudienceUserIds(userId, [String(invite['ownerUserId'] || '')]);
+  emitAppSignal({
+    scope: 'household',
+    action: 'invite:accepted',
+    entityId: String(invite['code'] || ''),
+    audience: acceptAudience,
+    originClientId: getClientInstanceId(req),
+    actorUserId: userId,
+  });
+  emitAppSignal({
+    scope: 'utility',
+    action: 'house:member_joined',
+    entityId: userId,
+    audience: acceptAudience,
+    originClientId: getClientInstanceId(req),
+    actorUserId: userId,
+  });
+
   res.json({
     success: true,
     user,
@@ -1920,7 +2424,1004 @@ app.delete('/api/household/invites/:id', async (req, res) => {
   );
   await persistSystemValues();
   bumpVersion();
+  emitAppSignal({
+    scope: 'household',
+    action: 'invite:deleted',
+    entityId: id,
+    audience: getHouseholdAudienceUserIds(String(user['id'] || '')),
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(user['id'] || ''),
+  });
   res.json({ success: true });
+});
+
+// ============================================================================
+// SHARED SHOPPING LISTS & QUICK-PICK CATALOG API
+// ============================================================================
+
+const VALID_SHOPPING_CATEGORIES = new Set([
+  'produce',
+  'dairy',
+  'meat',
+  'bakery',
+  'grocery',
+  'drinks',
+  'household',
+  'sweets',
+  'frozen',
+  'other',
+]);
+
+async function refreshSystemValuesFromActiveDb(): Promise<void> {
+  try {
+    const activeMode = await loadPersistedDbMode();
+    if (activeMode !== 'sqlite_local') {
+      const dbSysConfig = await loadSystemSettingsConfigDirectlyFromDb(activeMode);
+      if (dbSysConfig && dbSysConfig['systemValues'] && typeof dbSysConfig['systemValues'] === 'object') {
+        const currentSysVals = getSystemValuesMap();
+        const dbVals = dbSysConfig['systemValues'] as Record<string, unknown>;
+        if (Array.isArray(dbVals['shoppingLists'])) {
+          currentSysVals['shoppingLists'] = dbVals['shoppingLists'];
+        }
+        if (Array.isArray(dbVals['shoppingCatalog'])) {
+          currentSysVals['shoppingCatalog'] = dbVals['shoppingCatalog'];
+        }
+        if (Array.isArray(dbVals['householdInvites'])) {
+          currentSysVals['householdInvites'] = dbVals['householdInvites'];
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Shopping] DB refresh warning:', err instanceof Error ? err.message : String(err));
+  }
+}
+
+function getStoredShoppingLists(): Record<string, unknown>[] {
+  const sysVals = getSystemValuesMap();
+  if (!Array.isArray(sysVals['shoppingLists'])) {
+    sysVals['shoppingLists'] = [];
+  }
+  return sysVals['shoppingLists'] as Record<string, unknown>[];
+}
+
+function getStoredShoppingCatalog(): Record<string, unknown>[] {
+  const sysVals = getSystemValuesMap();
+  if (!Array.isArray(sysVals['shoppingCatalog'])) {
+    sysVals['shoppingCatalog'] = [];
+  }
+  return sysVals['shoppingCatalog'] as Record<string, unknown>[];
+}
+
+function canAccessShoppingList(list: Record<string, unknown>, userId: string): boolean {
+  if (!userId) return false;
+  if (String(list['ownerUserId'] || '') === userId) return true;
+  const participants = Array.isArray(list['participantIds']) ? (list['participantIds'] as string[]) : [];
+  return participants.includes(userId);
+}
+
+function sanitizeShoppingCategory(raw: unknown): string {
+  const val = typeof raw === 'string' ? raw.trim() : '';
+  return VALID_SHOPPING_CATEGORIES.has(val) ? val : 'other';
+}
+
+function sanitizeMoneyValue(raw: unknown): number | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 100_000_000) return null;
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * Returns the set of active user IDs in `userId`'s Shared Household ("Спільний дім"):
+ * 1) Users invited by `userId` or who invited `userId` (via `householdInvites.acceptedByUserIds` or `invitedByUserId`)
+ * 2) Users who share at least one house (`state.utilityAccounts`) with `userId` (owner or assigned co-member).
+ * Unrelated users are never included.
+ */
+function getSharedHouseholdUserIdsForUser(userId: string): Set<string> {
+  const candidateIds = new Set<string>();
+  if (!userId) return candidateIds;
+
+  const currentUser = state.users.find((u) => String(u['id'] || '').trim() === userId);
+  const currentUserAssignedHouses = new Set<string>(
+    Array.isArray(currentUser?.['assignedUtilityAccountIds'])
+      ? (currentUser['assignedUtilityAccountIds'] as string[]).map((id) => String(id || '').trim()).filter(Boolean)
+      : []
+  );
+
+  // 1. Users linked via household invitations (both directions)
+  const invites = getStoredHouseholdInvites();
+  for (const inv of invites) {
+    const invOwnerId = String(inv['ownerUserId'] || '').trim();
+    const accepted = Array.isArray(inv['acceptedByUserIds'])
+      ? (inv['acceptedByUserIds'] as string[]).map((id) => String(id || '').trim()).filter(Boolean)
+      : [];
+    if (invOwnerId === userId) {
+      for (const accId of accepted) {
+        if (accId !== userId) candidateIds.add(accId);
+      }
+    } else if (accepted.includes(userId) && invOwnerId) {
+      candidateIds.add(invOwnerId);
+      for (const accId of accepted) {
+        if (accId !== userId) candidateIds.add(accId);
+      }
+    }
+  }
+
+  // 2. Users sharing any house (utility account) with current user
+  const myHouseIds = new Set<string>();
+  for (const acc of state.utilityAccounts) {
+    const accId = String(acc['id'] || '').trim();
+    if (!accId) continue;
+    const ownerId = String(acc['ownerUserId'] || '').trim();
+    const assigned = Array.isArray(acc['assignedUserIds'])
+      ? (acc['assignedUserIds'] as string[]).map((id) => String(id || '').trim()).filter(Boolean)
+      : [];
+    const belongsToMe =
+      ownerId === userId ||
+      assigned.includes(userId) ||
+      currentUserAssignedHouses.has(accId);
+    if (belongsToMe) {
+      myHouseIds.add(accId);
+      if (ownerId && ownerId !== userId) candidateIds.add(ownerId);
+      for (const uid of assigned) {
+        if (uid && uid !== userId) candidateIds.add(uid);
+      }
+    }
+  }
+
+  const activeHouseholdIds = new Set<string>();
+  const myInviterId = String(currentUser?.['invitedByUserId'] || '').trim();
+  for (const u of state.users) {
+    const uid = String(u['id'] || '').trim();
+    if (!uid || uid === userId || uid === 'user_test_sandbox') continue;
+    if (u['status'] === 'inactive') continue;
+
+    const uHouses = Array.isArray(u['assignedUtilityAccountIds'])
+      ? (u['assignedUtilityAccountIds'] as string[]).map((id) => String(id || '').trim()).filter(Boolean)
+      : [];
+    const sharesHouseViaProfile = myHouseIds.size > 0 && uHouses.some((hid) => myHouseIds.has(hid));
+
+    if (
+      candidateIds.has(uid) ||
+      String(u['invitedByUserId'] || '').trim() === userId ||
+      (myInviterId && myInviterId === uid) ||
+      sharesHouseViaProfile
+    ) {
+      activeHouseholdIds.add(uid);
+    }
+  }
+
+  return activeHouseholdIds;
+}
+
+function sanitizeParticipantIds(raw: unknown, ownerUserId: string): string[] {
+  if (!Array.isArray(raw)) return [];
+  const allowedHouseholdIds = getSharedHouseholdUserIdsForUser(ownerUserId);
+  const dedup = new Set<string>();
+  for (const id of raw) {
+    const s = String(id || '').trim();
+    if (s && s !== ownerUserId && allowedHouseholdIds.has(s) && dedup.size < 50) {
+      dedup.add(s);
+    }
+  }
+  return Array.from(dedup);
+}
+
+function getSharedHouseholdPeopleForUser(
+  userId: string
+): { id: string; name: string; email: string; picture: string; sharedHouses: string[] }[] {
+  const allowedHouseholdIds = getSharedHouseholdUserIdsForUser(userId);
+  if (allowedHouseholdIds.size === 0) return [];
+
+  const currentUser = state.users.find((u) => String(u['id'] || '').trim() === userId);
+  const currentUserAssignedHouses = new Set<string>(
+    Array.isArray(currentUser?.['assignedUtilityAccountIds'])
+      ? (currentUser['assignedUtilityAccountIds'] as string[]).map((id) => String(id || '').trim()).filter(Boolean)
+      : []
+  );
+
+  // Build map of houses accessible to `userId` -> name & member IDs
+  const myHouses = state.utilityAccounts.filter((acc) => {
+    const accId = String(acc['id'] || '').trim();
+    if (!accId) return false;
+    const ownerId = String(acc['ownerUserId'] || '').trim();
+    const assigned = Array.isArray(acc['assignedUserIds'])
+      ? (acc['assignedUserIds'] as string[]).map((id) => String(id || '').trim())
+      : [];
+    return (
+      ownerId === userId ||
+      assigned.includes(userId) ||
+      currentUserAssignedHouses.has(accId)
+    );
+  });
+
+  return state.users
+    .filter((u) => {
+      const uid = String(u['id'] || '').trim();
+      return Boolean(uid) && allowedHouseholdIds.has(uid);
+    })
+    .map((u) => {
+      const uid = String(u['id'] || '');
+      const uProfileHouses = new Set<string>(
+        Array.isArray(u['assignedUtilityAccountIds'])
+          ? (u['assignedUtilityAccountIds'] as string[]).map((id) => String(id || '').trim())
+          : []
+      );
+      const sharedHouses = myHouses
+        .filter((acc) => {
+          const accId = String(acc['id'] || '').trim();
+          const ownerId = String(acc['ownerUserId'] || '').trim();
+          const assigned = Array.isArray(acc['assignedUserIds'])
+            ? (acc['assignedUserIds'] as string[]).map((id) => String(id || '').trim())
+            : [];
+          return ownerId === uid || assigned.includes(uid) || uProfileHouses.has(accId);
+        })
+        .map((acc) => String(acc['name'] || 'Будинок').trim())
+        .filter(Boolean);
+
+      return {
+        id: uid,
+        name: String(u['name'] || u['email'] || 'Користувач'),
+        email: String(u['email'] || ''),
+        picture: String(u['picture'] || ''),
+        sharedHouses: Array.from(new Set(sharedHouses)),
+      };
+    });
+}
+
+function addCustomProductToCatalogIfMissing(
+  name: string,
+  category: string,
+  unit: string | undefined,
+  userId: string
+): Record<string, unknown> | null {
+  const catalog = getStoredShoppingCatalog();
+  const normalized = name.trim().toLowerCase();
+  const exists = catalog.find(
+    (c) => String(c['name'] || '').trim().toLowerCase() === normalized
+  );
+  if (exists) return exists;
+  if (catalog.length >= 500) return null;
+  const entry: Record<string, unknown> = {
+    id: `cat_custom_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    name: name.trim(),
+    category: sanitizeShoppingCategory(category),
+    defaultUnit: unit ? unit.trim().slice(0, 20) : 'шт',
+    isCustom: true,
+    createdByUserId: userId,
+  };
+  catalog.push(entry);
+  return entry;
+}
+
+let shoppingMutationChain: Promise<void> = Promise.resolve();
+
+function withShoppingMutationLock<T>(task: () => Promise<T>): Promise<T> {
+  const next = shoppingMutationChain.then(task, task);
+  shoppingMutationChain = next.then(
+    () => undefined,
+    () => undefined
+  );
+  return next;
+}
+
+function getShoppingListAudienceUserIds(
+  list: Record<string, unknown>,
+  extraUserIds: string[] = []
+): Set<string> {
+  const audience = new Set<string>();
+  const ownerId = String(list['ownerUserId'] || '').trim();
+  if (ownerId) audience.add(ownerId);
+  const participants = Array.isArray(list['participantIds'])
+    ? (list['participantIds'] as string[])
+    : [];
+  for (const pid of participants) {
+    const clean = String(pid || '').trim();
+    if (clean) audience.add(clean);
+  }
+  for (const extra of extraUserIds) {
+    const clean = String(extra || '').trim();
+    if (clean) audience.add(clean);
+  }
+  return audience;
+}
+
+function broadcastShoppingEvent(
+  targetUserIds: Iterable<string>,
+  payload: Record<string, unknown>,
+  originClientId?: string
+): void {
+  emitAppSignal({
+    scope: 'shopping',
+    action: String(payload['type'] || 'shopping:updated'),
+    entityId: payload['listId'] ? String(payload['listId']) : undefined,
+    audience: targetUserIds,
+    originClientId,
+    actorUserId: payload['actorUserId'] ? String(payload['actorUserId']) : undefined,
+    data: payload,
+    legacyShoppingEvent: true,
+  });
+}
+
+// Keep legacy endpoint wired to the unified SSE stream for backward compatibility
+app.get('/api/shopping/events', registerAppSseConnection);
+
+app.get('/api/shopping/data', async (req, res) => {
+  setNoCacheHeaders(res);
+  const { authenticated, user } = resolveRequestUser(req);
+  if (!authenticated || !user || user['status'] === 'inactive' || user['role'] === 'new') {
+    res.status(401).json({ error: 'Необхідна авторизація' });
+    return;
+  }
+  try {
+    await refreshSystemValuesFromActiveDb();
+    const userId = String(user['id'] || '');
+    const allLists = getStoredShoppingLists();
+    const visibleLists = allLists
+      .filter((list) => canAccessShoppingList(list, userId))
+      .sort((a, b) => String(b['updatedAt'] || '').localeCompare(String(a['updatedAt'] || '')));
+    res.json({
+      lists: visibleLists,
+      catalog: getStoredShoppingCatalog(),
+      people: getSharedHouseholdPeopleForUser(userId),
+    });
+  } catch (err) {
+    console.error('[Shopping] Failed to load shopping data:', err);
+    res.status(500).json({ error: 'Не вдалося завантажити дані списків покупок' });
+  }
+});
+
+app.post('/api/shopping/lists', async (req, res) => {
+  setNoCacheHeaders(res);
+  const { authenticated, user } = resolveRequestUser(req);
+  if (!authenticated || !user || user['status'] === 'inactive' || user['role'] === 'new') {
+    res.status(401).json({ error: 'Необхідна авторизація' });
+    return;
+  }
+  const body = req.body || {};
+  const title = typeof body.title === 'string' ? body.title.trim().slice(0, 120) : '';
+  if (!title) {
+    res.status(400).json({ error: 'Вкажіть назву списку покупок' });
+    return;
+  }
+  const userId = String(user['id'] || '');
+  const ownerName = String(user['name'] || user['email'] || 'Користувач');
+
+  try {
+    const newList = await withShoppingMutationLock(async () => {
+      await refreshSystemValuesFromActiveDb();
+      const now = new Date().toISOString();
+      const created: Record<string, unknown> = {
+        id: `shop_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        title,
+        ownerUserId: userId,
+        ownerName,
+        participantIds: sanitizeParticipantIds(body.participantIds, userId),
+        budgetUah: sanitizeMoneyValue(body.budgetUah),
+        items: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      const lists = getStoredShoppingLists();
+      lists.unshift(created);
+      await persistSystemValues();
+      bumpVersion();
+      broadcastShoppingEvent(
+        getShoppingListAudienceUserIds(created),
+        {
+          type: 'list:created',
+          listId: created['id'],
+          list: created,
+          actorUserId: userId,
+          actorName: ownerName,
+          updatedAt: now,
+        },
+        getClientInstanceId(req)
+      );
+      return created;
+    });
+
+    res.status(201).json(newList);
+  } catch (err) {
+    console.error('[Shopping] Failed to create shopping list:', err);
+    res.status(500).json({ error: 'Не вдалося зберегти список покупок у базу даних' });
+  }
+});
+
+app.post('/api/shopping/lists/:id/carry-over', async (req, res) => {
+  setNoCacheHeaders(res);
+  const { authenticated, user } = resolveRequestUser(req);
+  if (!authenticated || !user || user['status'] === 'inactive' || user['role'] === 'new') {
+    res.status(401).json({ error: 'Необхідна авторизація' });
+    return;
+  }
+  const userId = String(user['id'] || '');
+  const userName = String(user['name'] || user['email'] || 'Користувач');
+  const body = req.body || {};
+  const title = typeof body.title === 'string' ? body.title.trim().slice(0, 120) : '';
+  if (!title) {
+    res.status(400).json({ error: 'Вкажіть назву нового списку покупок' });
+    return;
+  }
+
+  const requestedItemIds = Array.isArray(body.itemIds)
+    ? new Set(body.itemIds.map((id: unknown) => String(id || '').trim()).filter(Boolean))
+    : new Set<string>();
+  const removeFromSource = body.removeFromSource !== false;
+
+  try {
+    const outcome = await withShoppingMutationLock(async () => {
+      await refreshSystemValuesFromActiveDb();
+      const lists = getStoredShoppingLists();
+      const source = lists.find((l) => String(l['id'] || '') === req.params.id);
+      if (!source) return { status: 404 as const, error: 'Вихідний список покупок не знайдено' };
+      if (!canAccessShoppingList(source, userId)) {
+        return { status: 403 as const, error: 'Немає доступу до цього списку покупок' };
+      }
+
+      const sourceItems = Array.isArray(source['items'])
+        ? (source['items'] as Record<string, unknown>[])
+        : [];
+      const now = new Date().toISOString();
+      const movedIds = new Set<string>();
+      const carriedItems: Record<string, unknown>[] = [];
+
+      for (const rawItem of sourceItems) {
+        const itemId = String(rawItem['id'] || '');
+        if (!itemId || !requestedItemIds.has(itemId)) continue;
+        movedIds.add(itemId);
+        carriedItems.push({
+          id: `item_${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${carriedItems.length}`,
+          name: String(rawItem['name'] || '').trim().slice(0, 120) || 'Товар',
+          category: sanitizeShoppingCategory(rawItem['category']),
+          quantity:
+            Number.isFinite(Number(rawItem['quantity'])) && Number(rawItem['quantity']) > 0
+              ? Number(rawItem['quantity'])
+              : 1,
+          unit: typeof rawItem['unit'] === 'string' && rawItem['unit'].trim() ? rawItem['unit'].trim().slice(0, 20) : 'шт',
+          ...(rawItem['priceMode'] === 'per_100g' ||
+          rawItem['priceMode'] === 'per_kg' ||
+          rawItem['priceMode'] === 'per_unit'
+            ? { priceMode: rawItem['priceMode'] }
+            : {}),
+          weightGrams:
+            rawItem['weightGrams'] !== null &&
+            rawItem['weightGrams'] !== undefined &&
+            Number.isFinite(Number(rawItem['weightGrams'])) &&
+            Number(rawItem['weightGrams']) > 0
+              ? Number(rawItem['weightGrams'])
+              : null,
+          price: null,
+          isBought: false,
+          addedByUserId: userId,
+          addedByName: userName,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+
+      // Preserve shared participants from source list (including original owner if a member creates the carry-over)
+      const inheritedCandidates: string[] = [];
+      if (typeof source['ownerUserId'] === 'string' && source['ownerUserId']) {
+        inheritedCandidates.push(source['ownerUserId']);
+      }
+      if (Array.isArray(source['participantIds'])) {
+        for (const pid of source['participantIds']) {
+          if (typeof pid === 'string' && pid.trim()) inheritedCandidates.push(pid.trim());
+        }
+      }
+
+      const newList: Record<string, unknown> = {
+        id: `shop_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        title,
+        ownerUserId: userId,
+        ownerName: userName,
+        participantIds: sanitizeParticipantIds(inheritedCandidates, userId),
+        budgetUah: sanitizeMoneyValue(body.budgetUah),
+        items: carriedItems,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      let sourceChanged = false;
+      if (removeFromSource && movedIds.size > 0) {
+        source['items'] = sourceItems.filter((it) => !movedIds.has(String(it['id'] || '')));
+        source['updatedAt'] = now;
+        sourceChanged = true;
+      }
+
+      lists.unshift(newList);
+      await persistSystemValues();
+      bumpVersion();
+
+      const originClientId = getClientInstanceId(req);
+      broadcastShoppingEvent(
+        getShoppingListAudienceUserIds(newList),
+        {
+          type: 'list:created',
+          listId: newList['id'],
+          list: newList,
+          actorUserId: userId,
+          actorName: userName,
+          updatedAt: now,
+        },
+        originClientId
+      );
+      if (sourceChanged) {
+        broadcastShoppingEvent(
+          getShoppingListAudienceUserIds(source),
+          {
+            type: 'list:updated',
+            listId: source['id'],
+            list: source,
+            actorUserId: userId,
+            actorName: userName,
+            updatedAt: now,
+          },
+          originClientId
+        );
+      }
+
+      return { status: 201 as const, data: { newList, sourceList: source } };
+    });
+
+    if (outcome.status !== 201) {
+      res.status(outcome.status).json({ error: outcome.error });
+      return;
+    }
+    res.status(201).json(outcome.data);
+  } catch (err) {
+    console.error('[Shopping] Failed to carry over shopping list:', err);
+    res.status(500).json({ error: 'Не вдалося перенести залишок у новий список' });
+  }
+});
+
+app.put('/api/shopping/lists/:id', async (req, res) => {
+  setNoCacheHeaders(res);
+  const { authenticated, user } = resolveRequestUser(req);
+  if (!authenticated || !user || user['status'] === 'inactive' || user['role'] === 'new') {
+    res.status(401).json({ error: 'Необхідна авторизація' });
+    return;
+  }
+  const userId = String(user['id'] || '');
+  const userName = String(user['name'] || user['email'] || 'Користувач');
+  const body = req.body || {};
+
+  try {
+    const outcome = await withShoppingMutationLock(async () => {
+      await refreshSystemValuesFromActiveDb();
+      const lists = getStoredShoppingLists();
+      const target = lists.find((l) => String(l['id'] || '') === req.params.id);
+      if (!target) return { status: 404 as const, error: 'Список покупок не знайдено' };
+      if (!canAccessShoppingList(target, userId)) {
+        return { status: 403 as const, error: 'Немає доступу до цього списку покупок' };
+      }
+      const prevParticipants = Array.isArray(target['participantIds'])
+        ? [...(target['participantIds'] as string[])]
+        : [];
+      if (typeof body.title === 'string') {
+        const cleanTitle = body.title.trim().slice(0, 120);
+        if (!cleanTitle) {
+          return { status: 400 as const, error: 'Назва списку не може бути порожньою' };
+        }
+        target['title'] = cleanTitle;
+      }
+      if (body.budgetUah !== undefined) {
+        target['budgetUah'] = sanitizeMoneyValue(body.budgetUah);
+      }
+      const ownerUserId = String(target['ownerUserId'] || '');
+      if (Array.isArray(body.participantIds) && ownerUserId === userId) {
+        target['participantIds'] = sanitizeParticipantIds(body.participantIds, ownerUserId);
+      }
+      if (body.isInactive !== undefined) {
+        target['isInactive'] = Boolean(body.isInactive);
+      }
+      const now = new Date().toISOString();
+      target['updatedAt'] = now;
+      await persistSystemValues();
+      bumpVersion();
+      broadcastShoppingEvent(
+        getShoppingListAudienceUserIds(target, prevParticipants),
+        {
+          type: 'list:updated',
+          listId: target['id'],
+          list: target,
+          actorUserId: userId,
+          actorName: userName,
+          updatedAt: now,
+        },
+        getClientInstanceId(req)
+      );
+      return { status: 200 as const, data: target };
+    });
+
+    if (outcome.status !== 200) {
+      res.status(outcome.status).json({ error: outcome.error });
+      return;
+    }
+    res.json(outcome.data);
+  } catch (err) {
+    console.error('[Shopping] Failed to update shopping list:', err);
+    res.status(500).json({ error: 'Не вдалося оновити список покупок у базі даних' });
+  }
+});
+
+app.delete('/api/shopping/lists/:id', async (req, res) => {
+  setNoCacheHeaders(res);
+  const { authenticated, user } = resolveRequestUser(req);
+  if (!authenticated || !user || user['status'] === 'inactive' || user['role'] === 'new') {
+    res.status(401).json({ error: 'Необхідна авторизація' });
+    return;
+  }
+  const userId = String(user['id'] || '');
+  const userName = String(user['name'] || user['email'] || 'Користувач');
+
+  try {
+    const outcome = await withShoppingMutationLock(async () => {
+      await refreshSystemValuesFromActiveDb();
+      const sysVals = getSystemValuesMap();
+      const lists = getStoredShoppingLists();
+      const target = lists.find((l) => String(l['id'] || '') === req.params.id);
+      if (!target) return { status: 404 as const, error: 'Список покупок не знайдено' };
+      if (!canAccessShoppingList(target, userId)) {
+        return { status: 403 as const, error: 'Немає доступу до цього списку покупок' };
+      }
+      const audience = getShoppingListAudienceUserIds(target);
+      const now = new Date().toISOString();
+      const isOwnerDelete = String(target['ownerUserId'] || '') === userId;
+      if (isOwnerDelete) {
+        sysVals['shoppingLists'] = lists.filter((l) => String(l['id'] || '') !== req.params.id);
+      } else {
+        const participants = Array.isArray(target['participantIds']) ? (target['participantIds'] as string[]) : [];
+        target['participantIds'] = participants.filter((pid) => pid !== userId);
+        target['updatedAt'] = now;
+      }
+      await persistSystemValues();
+      bumpVersion();
+      broadcastShoppingEvent(
+        audience,
+        {
+          type: isOwnerDelete ? 'list:deleted' : 'list:updated',
+          listId: req.params.id,
+          ...(isOwnerDelete ? {} : { list: target }),
+          actorUserId: userId,
+          actorName: userName,
+          updatedAt: now,
+        },
+        getClientInstanceId(req)
+      );
+      return { status: 200 as const };
+    });
+
+    if (outcome.status !== 200) {
+      res.status(outcome.status).json({ error: outcome.error });
+      return;
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[Shopping] Failed to delete shopping list:', err);
+    res.status(500).json({ error: 'Не вдалося видалити список покупок із бази даних' });
+  }
+});
+
+app.post('/api/shopping/lists/:id/items', async (req, res) => {
+  setNoCacheHeaders(res);
+  const { authenticated, user } = resolveRequestUser(req);
+  if (!authenticated || !user || user['status'] === 'inactive' || user['role'] === 'new') {
+    res.status(401).json({ error: 'Необхідна авторизація' });
+    return;
+  }
+  const userId = String(user['id'] || '');
+  const userName = String(user['name'] || user['email'] || 'Користувач');
+  const body = req.body || {};
+  const name = typeof body.name === 'string' ? body.name.trim().slice(0, 120) : '';
+  if (!name) {
+    res.status(400).json({ error: 'Вкажіть назву товару' });
+    return;
+  }
+
+  try {
+    const outcome = await withShoppingMutationLock(async () => {
+      await refreshSystemValuesFromActiveDb();
+      const lists = getStoredShoppingLists();
+      const target = lists.find((l) => String(l['id'] || '') === req.params.id);
+      if (!target) return { status: 404 as const, error: 'Список покупок не знайдено' };
+      if (!canAccessShoppingList(target, userId)) {
+        return { status: 403 as const, error: 'Немає доступу до цього списку покупок' };
+      }
+
+      const category = sanitizeShoppingCategory(body.category);
+      const rawQty = Number(body.quantity);
+      const quantity = Number.isFinite(rawQty) && rawQty > 0 && rawQty <= 9999 ? Math.round(rawQty * 100) / 100 : 1;
+      const unit = typeof body.unit === 'string' && body.unit.trim() ? body.unit.trim().slice(0, 20) : 'шт';
+      const rawMode = typeof body.priceMode === 'string' ? body.priceMode.trim() : '';
+      const priceMode: 'per_100g' | 'per_kg' | 'per_unit' =
+        rawMode === 'per_100g' || rawMode === 'per_kg' || rawMode === 'per_unit'
+          ? rawMode
+          : unit.toLowerCase() === 'г'
+            ? 'per_100g'
+            : unit.toLowerCase() === 'кг'
+              ? 'per_kg'
+              : 'per_unit';
+      const rawWeight = body.weightGrams;
+      const parsedWeight = rawWeight === null || rawWeight === undefined || rawWeight === '' ? null : Number(rawWeight);
+      const weightGrams =
+        parsedWeight !== null && Number.isFinite(parsedWeight) && parsedWeight > 0 && parsedWeight <= 1_000_000
+          ? Math.round(parsedWeight * 10) / 10
+          : null;
+      const price = sanitizeMoneyValue(body.price);
+      const isBought = Boolean(body.isBought) || (price !== null && price > 0 && body.isBought !== false);
+      const now = new Date().toISOString();
+
+      const newItem: Record<string, unknown> = {
+        id: `item_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        name,
+        category,
+        quantity,
+        unit,
+        priceMode,
+        weightGrams,
+        price,
+        isBought,
+        addedByUserId: userId,
+        addedByName: userName,
+        ...(isBought ? { boughtByUserId: userId, boughtByName: userName } : {}),
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      if (!Array.isArray(target['items'])) {
+        target['items'] = [];
+      }
+      (target['items'] as Record<string, unknown>[]).unshift(newItem);
+      target['updatedAt'] = now;
+
+      let addedCatalogItem: Record<string, unknown> | null = null;
+      if (body.addToCatalog === true) {
+        addedCatalogItem = addCustomProductToCatalogIfMissing(name, category, unit, userId);
+      }
+
+      await persistSystemValues();
+      bumpVersion();
+      broadcastShoppingEvent(
+        getShoppingListAudienceUserIds(target),
+        {
+          type: 'item:added',
+          listId: target['id'],
+          itemId: newItem['id'],
+          list: target,
+          catalogItem: addedCatalogItem,
+          actorUserId: userId,
+          actorName: userName,
+          updatedAt: now,
+        },
+        getClientInstanceId(req)
+      );
+      return {
+        status: 201 as const,
+        data: {
+          item: newItem,
+          list: target,
+          catalogItem: addedCatalogItem,
+        },
+      };
+    });
+
+    if (outcome.status !== 201) {
+      res.status(outcome.status).json({ error: outcome.error });
+      return;
+    }
+    res.status(201).json(outcome.data);
+  } catch (err) {
+    console.error('[Shopping] Failed to add shopping item:', err);
+    res.status(500).json({ error: 'Не вдалося додати товар у базу даних' });
+  }
+});
+
+app.put('/api/shopping/lists/:id/items/:itemId', async (req, res) => {
+  setNoCacheHeaders(res);
+  const { authenticated, user } = resolveRequestUser(req);
+  if (!authenticated || !user || user['status'] === 'inactive' || user['role'] === 'new') {
+    res.status(401).json({ error: 'Необхідна авторизація' });
+    return;
+  }
+  const userId = String(user['id'] || '');
+  const userName = String(user['name'] || user['email'] || 'Користувач');
+  const body = req.body || {};
+
+  try {
+    const outcome = await withShoppingMutationLock(async () => {
+      await refreshSystemValuesFromActiveDb();
+      const lists = getStoredShoppingLists();
+      const target = lists.find((l) => String(l['id'] || '') === req.params.id);
+      if (!target) return { status: 404 as const, error: 'Список покупок не знайдено' };
+      if (!canAccessShoppingList(target, userId)) {
+        return { status: 403 as const, error: 'Немає доступу до цього списку покупок' };
+      }
+      const items = Array.isArray(target['items']) ? (target['items'] as Record<string, unknown>[]) : [];
+      const item = items.find((i) => String(i['id'] || '') === req.params.itemId);
+      if (!item) return { status: 404 as const, error: 'Товар у списку не знайдено' };
+
+      if (typeof body.name === 'string' && body.name.trim()) {
+        item['name'] = body.name.trim().slice(0, 120);
+      }
+      if (body.category !== undefined) {
+        item['category'] = sanitizeShoppingCategory(body.category);
+      }
+      if (body.quantity !== undefined) {
+        const q = Number(body.quantity);
+        if (Number.isFinite(q) && q > 0 && q <= 9999) {
+          item['quantity'] = Math.round(q * 100) / 100;
+        }
+      }
+      if (typeof body.unit === 'string') {
+        item['unit'] = body.unit.trim().slice(0, 20) || 'шт';
+      }
+      if (body.priceMode !== undefined) {
+        const rawMode = typeof body.priceMode === 'string' ? body.priceMode.trim() : '';
+        if (rawMode === 'per_100g' || rawMode === 'per_kg' || rawMode === 'per_unit') {
+          item['priceMode'] = rawMode;
+        }
+      }
+      if (body.weightGrams !== undefined) {
+        if (body.weightGrams === null || body.weightGrams === '') {
+          item['weightGrams'] = null;
+        } else {
+          const w = Number(body.weightGrams);
+          if (Number.isFinite(w) && w > 0 && w <= 1_000_000) {
+            item['weightGrams'] = Math.round(w * 10) / 10;
+          } else if (Number.isFinite(w) && w === 0) {
+            item['weightGrams'] = null;
+          }
+        }
+      }
+      if (body.price !== undefined) {
+        item['price'] = sanitizeMoneyValue(body.price);
+      }
+      if (body.isBought !== undefined) {
+        const nextBought = Boolean(body.isBought);
+        item['isBought'] = nextBought;
+        if (nextBought) {
+          item['boughtByUserId'] = userId;
+          item['boughtByName'] = userName;
+        } else {
+          delete item['boughtByUserId'];
+          delete item['boughtByName'];
+        }
+      }
+      const now = new Date().toISOString();
+      item['updatedAt'] = now;
+      target['updatedAt'] = now;
+      await persistSystemValues();
+      bumpVersion();
+      broadcastShoppingEvent(
+        getShoppingListAudienceUserIds(target),
+        {
+          type: 'item:updated',
+          listId: target['id'],
+          itemId: item['id'],
+          list: target,
+          actorUserId: userId,
+          actorName: userName,
+          updatedAt: now,
+        },
+        getClientInstanceId(req)
+      );
+      return { status: 200 as const, data: { item, list: target } };
+    });
+
+    if (outcome.status !== 200) {
+      res.status(outcome.status).json({ error: outcome.error });
+      return;
+    }
+    res.json(outcome.data);
+  } catch (err) {
+    console.error('[Shopping] Failed to update shopping item:', err);
+    res.status(500).json({ error: 'Не вдалося зберегти зміни товару у базі даних' });
+  }
+});
+
+app.delete('/api/shopping/lists/:id/items/:itemId', async (req, res) => {
+  setNoCacheHeaders(res);
+  const { authenticated, user } = resolveRequestUser(req);
+  if (!authenticated || !user || user['status'] === 'inactive' || user['role'] === 'new') {
+    res.status(401).json({ error: 'Необхідна авторизація' });
+    return;
+  }
+  const userId = String(user['id'] || '');
+  const userName = String(user['name'] || user['email'] || 'Користувач');
+
+  try {
+    const outcome = await withShoppingMutationLock(async () => {
+      await refreshSystemValuesFromActiveDb();
+      const lists = getStoredShoppingLists();
+      const target = lists.find((l) => String(l['id'] || '') === req.params.id);
+      if (!target) return { status: 404 as const, error: 'Список покупок не знайдено' };
+      if (!canAccessShoppingList(target, userId)) {
+        return { status: 403 as const, error: 'Немає доступу до цього списку покупок' };
+      }
+      const items = Array.isArray(target['items']) ? (target['items'] as Record<string, unknown>[]) : [];
+      target['items'] = items.filter((i) => String(i['id'] || '') !== req.params.itemId);
+      const now = new Date().toISOString();
+      target['updatedAt'] = now;
+      await persistSystemValues();
+      bumpVersion();
+      broadcastShoppingEvent(
+        getShoppingListAudienceUserIds(target),
+        {
+          type: 'item:deleted',
+          listId: target['id'],
+          itemId: req.params.itemId,
+          list: target,
+          actorUserId: userId,
+          actorName: userName,
+          updatedAt: now,
+        },
+        getClientInstanceId(req)
+      );
+      return { status: 200 as const, data: { success: true, list: target } };
+    });
+
+    if (outcome.status !== 200) {
+      res.status(outcome.status).json({ error: outcome.error });
+      return;
+    }
+    res.json(outcome.data);
+  } catch (err) {
+    console.error('[Shopping] Failed to delete shopping item:', err);
+    res.status(500).json({ error: 'Не вдалося видалити товар із бази даних' });
+  }
+});
+
+app.post('/api/shopping/catalog', async (req, res) => {
+  setNoCacheHeaders(res);
+  const { authenticated, user } = resolveRequestUser(req);
+  if (!authenticated || !user || user['status'] === 'inactive' || user['role'] === 'new') {
+    res.status(401).json({ error: 'Необхідна авторизація' });
+    return;
+  }
+  const body = req.body || {};
+  const name = typeof body.name === 'string' ? body.name.trim().slice(0, 120) : '';
+  if (!name) {
+    res.status(400).json({ error: 'Вкажіть назву товару' });
+    return;
+  }
+  const userId = String(user['id'] || '');
+  const userName = String(user['name'] || user['email'] || 'Користувач');
+
+  try {
+    const data = await withShoppingMutationLock(async () => {
+      await refreshSystemValuesFromActiveDb();
+      const entry = addCustomProductToCatalogIfMissing(
+        name,
+        typeof body.category === 'string' ? body.category : 'other',
+        typeof body.defaultUnit === 'string' ? body.defaultUnit : 'шт',
+        userId
+      );
+      await persistSystemValues();
+      bumpVersion();
+      if (entry) {
+        const householdAudience = new Set<string>([userId, ...getSharedHouseholdUserIdsForUser(userId)]);
+        broadcastShoppingEvent(
+          householdAudience,
+          {
+            type: 'catalog:added',
+            catalogItem: entry,
+            actorUserId: userId,
+            actorName: userName,
+            updatedAt: new Date().toISOString(),
+          },
+          getClientInstanceId(req)
+        );
+      }
+      return { catalogItem: entry, catalog: getStoredShoppingCatalog() };
+    });
+
+    res.status(201).json(data);
+  } catch (err) {
+    console.error('[Shopping] Failed to add catalog item:', err);
+    res.status(500).json({ error: 'Не вдалося зберегти товар у каталог бази даних' });
+  }
 });
 
 // ============================================================================
@@ -2139,6 +3640,13 @@ app.post('/api/database/custom', async (req, res) => {
   };
 
   customDatabasesRegistry.push(newDb);
+  if ((type || 'postgresql') === 'postgresql' && rawUrl.startsWith('postgres')) {
+    upsertEnvVariables({
+      EXTERNAL_DATABASE_URL: rawUrl,
+      EXTERNAL_DATABASE_HOST: host,
+      EXTERNAL_DATABASE_NAME: database,
+    });
+  }
   dbBenchmarkCache[newDb.id] = {
     latencyMs: Math.floor(Math.random() * 20) + 12,
     status: 'online',
@@ -2695,18 +4203,44 @@ app.delete('/api/payments/:id', async (req, res) => {
 // SETTINGS & STATS API
 // ============================================================================
 
-app.get('/api/settings', (_req, res) => {
-  res.set('Cache-Control', 'private, no-store');
+function setNoCacheHeaders(res: express.Response): void {
+  res.set('Cache-Control', 'private, no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+}
+
+app.get('/api/settings', async (_req, res) => {
+  setNoCacheHeaders(res);
+  try {
+    const activeMode = await loadPersistedDbMode();
+    if (activeMode !== 'sqlite_local') {
+      const dbSettings = await getSettingsFromCloudSql(activeMode);
+      if (dbSettings) {
+        state.settings = sanitizeSettingsForClient({ ...DEFAULT_SETTINGS_OBJ, ...dbSettings });
+      }
+    }
+  } catch (err) {
+    console.warn('[Settings] Direct DB read warning:', err instanceof Error ? err.message : String(err));
+  }
   res.json(sanitizeSettingsForClient(state.settings));
 });
 
 app.post('/api/settings', async (req, res) => {
+  setNoCacheHeaders(res);
   try {
     const { user } = resolveRequestUser(req);
     if (!userHasSettingsPermission(user)) {
       res.status(403).json({ error: 'Доступ до зміни системних налаштувань закрито адміністратором' });
       return;
     }
+    const activeMode = await loadPersistedDbMode();
+    if (activeMode !== 'sqlite_local') {
+      const currentDbSettings = await getSettingsFromCloudSql(activeMode);
+      if (currentDbSettings) {
+        state.settings = sanitizeSettingsForClient({ ...DEFAULT_SETTINGS_OBJ, ...currentDbSettings });
+      }
+    }
+
     const incoming = sanitizeSettingsForClient((req.body || {}) as Record<string, unknown>);
     state.settings = sanitizeSettingsForClient({ ...state.settings, ...incoming });
 
@@ -2728,12 +4262,34 @@ app.post('/api/settings', async (req, res) => {
       await persistSystemValues();
     }
 
-    const dbSaved = await saveSettingsToCloudSql(state.settings);
-    if (!dbSaved && getCloudSqlDbStatus().activeMode !== 'sqlite_local') {
+    const dbSaved = await saveSettingsToCloudSql(state.settings, activeMode);
+    if (!dbSaved && activeMode !== 'sqlite_local') {
       res.status(500).json({ error: 'Не вдалося зберегти налаштування у PostgreSQL' });
       return;
     }
+
+    const standbyMode: DatabaseMode = activeMode === 'cloudsql' ? 'external' : 'cloudsql';
+    const isStandbyReady =
+      standbyMode === 'cloudsql' ? isCloudSqlEnvConfigured() : isExternalDbConfigured();
+    if (isStandbyReady) {
+      void saveSettingsToCloudSql(state.settings, standbyMode).catch(() => {});
+    }
+
+    if (activeMode !== 'sqlite_local') {
+      const freshDbSettings = await getSettingsFromCloudSql(activeMode);
+      if (freshDbSettings) {
+        state.settings = sanitizeSettingsForClient({ ...DEFAULT_SETTINGS_OBJ, ...freshDbSettings });
+      }
+    }
+
     bumpVersion();
+    emitAppSignal({
+      scope: 'settings',
+      action: 'settings:updated',
+      audience: getAllConnectedUserIds(),
+      originClientId: getClientInstanceId(req),
+      actorUserId: String(user['id'] || ''),
+    });
     res.json(sanitizeSettingsForClient(state.settings));
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Помилка збереження налаштувань';
@@ -2741,11 +4297,49 @@ app.post('/api/settings', async (req, res) => {
   }
 });
 
-app.get('/api/user-settings', (req, res) => {
+app.get('/api/user-settings', async (req, res) => {
+  setNoCacheHeaders(res);
   const { user, realAdmin } = resolveRequestUser(req);
   const isAdmin = user['role'] === 'admin' || Boolean(realAdmin);
   const queryUserId = typeof req.query['userId'] === 'string' ? req.query['userId'] : '';
   const targetUserId = isAdmin && queryUserId ? queryUserId : String(user['id'] || 'anonymous');
+
+  try {
+    const activeMode = await loadPersistedDbMode();
+    if (activeMode !== 'sqlite_local') {
+      const [dbUserSettings, dbSysConfig] = await Promise.all([
+        loadUserSettingsDirectlyFromDb(activeMode),
+        loadSystemSettingsConfigDirectlyFromDb(activeMode),
+      ]);
+      if (Array.isArray(dbUserSettings)) {
+        const nextMap: Record<string, Record<string, unknown>> = {};
+        for (const row of dbUserSettings) {
+          const uid = String(row['userId'] || '');
+          if (uid) {
+            nextMap[uid] = { ...row };
+          }
+        }
+        state.userSettings = nextMap;
+      }
+      if (dbSysConfig) {
+        const loadedScopes =
+          dbSysConfig['scopesConfig'] && typeof dbSysConfig['scopesConfig'] === 'object'
+            ? (dbSysConfig['scopesConfig'] as Record<string, 'user' | 'system'>)
+            : {};
+        state.systemSettingsConfig = {
+          ...DEFAULT_SYSTEM_SETTINGS_CONFIG,
+          ...dbSysConfig,
+          scopesConfig: {
+            ...DEFAULT_SCOPES_CONFIG,
+            ...loadedScopes,
+          },
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('[UserSettings] Direct DB read warning:', err instanceof Error ? err.message : String(err));
+  }
+
   const entry = getOrCreateUserSettingsEntry(targetUserId);
 
   res.json({
@@ -2756,6 +4350,7 @@ app.get('/api/user-settings', (req, res) => {
 });
 
 const handleSaveUserSettings = async (req: express.Request, res: express.Response) => {
+  setNoCacheHeaders(res);
   try {
     const { user, realAdmin } = resolveRequestUser(req);
     const isAdmin = user['role'] === 'admin' || Boolean(realAdmin);
@@ -2763,6 +4358,17 @@ const handleSaveUserSettings = async (req: express.Request, res: express.Respons
     const requestedUserId = body.targetUserId || body.userId;
     const targetUserId =
       isAdmin && requestedUserId ? String(requestedUserId) : String(user['id'] || 'anonymous');
+
+    const activeMode = await loadPersistedDbMode();
+    if (activeMode !== 'sqlite_local') {
+      const dbUserSettings = await loadUserSettingsDirectlyFromDb(activeMode);
+      if (Array.isArray(dbUserSettings)) {
+        const freshRow = dbUserSettings.find((r) => String(r['userId'] || '') === targetUserId);
+        if (freshRow) {
+          state.userSettings[targetUserId] = { ...freshRow };
+        }
+      }
+    }
 
     const current = getOrCreateUserSettingsEntry(targetUserId);
     const updated: Record<string, unknown> = {
@@ -2795,23 +4401,56 @@ const handleSaveUserSettings = async (req: express.Request, res: express.Respons
       updatedAt: new Date().toISOString(),
     };
 
+    const dbSaved = await saveUserSettingsToCloudSql(updated, activeMode);
+    if (!dbSaved && activeMode !== 'sqlite_local') {
+      res.status(500).json({ success: false, error: 'Не вдалося зберегти тарифи та налаштування користувача у PostgreSQL' });
+      return;
+    }
+
     state.userSettings[targetUserId] = updated;
+
+    const standbyMode: DatabaseMode = activeMode === 'cloudsql' ? 'external' : 'cloudsql';
+    const isStandbyReady =
+      standbyMode === 'cloudsql' ? isCloudSqlEnvConfigured() : isExternalDbConfigured();
+    if (isStandbyReady) {
+      void saveUserSettingsToCloudSql(updated, standbyMode).catch(() => {});
+    }
 
     // Also keep user's outageScheduleViewVariant synced on user object for backward compatibility
     const targetUserObj = state.users.find((u) => String(u['id']) === targetUserId);
     if (targetUserObj && body.outageScheduleViewVariant !== undefined) {
       targetUserObj['outageScheduleViewVariant'] = String(body.outageScheduleViewVariant);
-      await saveUserToCloudSql(targetUserObj);
+      await saveUserToCloudSql(targetUserObj, activeMode);
     }
 
-    await saveUserSettingsToCloudSql(updated);
+    if (activeMode !== 'sqlite_local') {
+      const dbUserSettings = await loadUserSettingsDirectlyFromDb(activeMode);
+      if (Array.isArray(dbUserSettings)) {
+        const nextMap: Record<string, Record<string, unknown>> = {};
+        for (const row of dbUserSettings) {
+          const uid = String(row['userId'] || '');
+          if (uid) nextMap[uid] = { ...row };
+        }
+        state.userSettings = nextMap;
+      }
+    }
+
+    const persistedEntry = state.userSettings[targetUserId] || updated;
     bumpVersion();
+    emitAppSignal({
+      scope: 'settings',
+      action: 'user_settings:updated',
+      entityId: targetUserId,
+      audience: new Set<string>([targetUserId, ...getAdminUserIds()]),
+      originClientId: getClientInstanceId(req),
+      actorUserId: String(user['id'] || ''),
+    });
 
     res.json({
       success: true,
-      userSettings: updated,
-      allUserSettings: isAdmin ? state.userSettings : { [targetUserId]: updated },
-      message: 'Користувацькі налаштування збережено у базу даних',
+      userSettings: persistedEntry,
+      allUserSettings: isAdmin ? state.userSettings : { [targetUserId]: persistedEntry },
+      message: 'Користувацькі налаштування та тарифи збережено у базу даних',
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Помилка збереження користувацьких налаштувань';
@@ -2823,11 +4462,35 @@ app.post('/api/user-settings', handleSaveUserSettings);
 app.put('/api/user-settings', handleSaveUserSettings);
 app.patch('/api/user-settings', handleSaveUserSettings);
 
-app.get('/api/system-settings-config', (_req, res) => {
+app.get('/api/system-settings-config', async (_req, res) => {
+  setNoCacheHeaders(res);
+  try {
+    const activeMode = await loadPersistedDbMode();
+    if (activeMode !== 'sqlite_local') {
+      const dbSysConfig = await loadSystemSettingsConfigDirectlyFromDb(activeMode);
+      if (dbSysConfig) {
+        const loadedScopes =
+          dbSysConfig['scopesConfig'] && typeof dbSysConfig['scopesConfig'] === 'object'
+            ? (dbSysConfig['scopesConfig'] as Record<string, 'user' | 'system'>)
+            : {};
+        state.systemSettingsConfig = {
+          ...DEFAULT_SYSTEM_SETTINGS_CONFIG,
+          ...dbSysConfig,
+          scopesConfig: {
+            ...DEFAULT_SCOPES_CONFIG,
+            ...loadedScopes,
+          },
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('[SystemSettingsConfig] Direct DB read warning:', err instanceof Error ? err.message : String(err));
+  }
   res.json(state.systemSettingsConfig);
 });
 
 const handleSaveSystemSettingsConfig = async (req: express.Request, res: express.Response) => {
+  setNoCacheHeaders(res);
   try {
     const { user, realAdmin } = resolveRequestUser(req);
     const isAdmin = user['role'] === 'admin' || Boolean(realAdmin);
@@ -2890,6 +4553,23 @@ const handleSaveSystemSettingsConfig = async (req: express.Request, res: express
 
     await saveSystemSettingsConfigToCloudSql(state.systemSettingsConfig);
     bumpVersion();
+    const allOnline = getAllConnectedUserIds();
+    emitAppSignal({
+      scope: 'settings',
+      action: 'system_config:updated',
+      audience: allOnline,
+      originClientId: getClientInstanceId(req),
+      actorUserId: String(user['id'] || ''),
+    });
+    if (body.systemValues && typeof body.systemValues === 'object' && 'appRelease' in body.systemValues) {
+      emitAppSignal({
+        scope: 'app_release',
+        action: 'release:updated',
+        audience: allOnline,
+        originClientId: getClientInstanceId(req),
+        actorUserId: String(user['id'] || ''),
+      });
+    }
 
     res.json({
       success: true,
@@ -3730,6 +5410,14 @@ app.post('/api/budget/deposits', async (req, res) => {
   state.providerDeposits.unshift(deposit);
   await saveProviderDepositToCloudSql(deposit);
   bumpVersion();
+  emitAppSignal({
+    scope: 'budget',
+    action: 'deposit:created',
+    entityId: String(deposit['id'] || ''),
+    audience: getBudgetAudienceUserIds(String(user['id'] || '')),
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(user['id'] || ''),
+  });
   res.json(deposit);
 });
 
@@ -3749,6 +5437,14 @@ app.put('/api/budget/deposits/:id', async (req, res) => {
   state.providerDeposits[idx] = updated;
   await saveProviderDepositToCloudSql(updated);
   bumpVersion();
+  emitAppSignal({
+    scope: 'budget',
+    action: 'deposit:updated',
+    entityId: id,
+    audience: getBudgetAudienceUserIds(String(user['id'] || '')),
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(user['id'] || ''),
+  });
   res.json(updated);
 });
 
@@ -3762,6 +5458,14 @@ app.delete('/api/budget/deposits/:id', async (req, res) => {
   state.providerDeposits = state.providerDeposits.filter((d) => d['id'] !== id);
   await deleteProviderDepositFromCloudSql(id);
   bumpVersion();
+  emitAppSignal({
+    scope: 'budget',
+    action: 'deposit:deleted',
+    entityId: id,
+    audience: getBudgetAudienceUserIds(String(user['id'] || '')),
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(user['id'] || ''),
+  });
   res.json({ success: true });
 });
 
@@ -3792,6 +5496,14 @@ app.post('/api/budget/ledger', async (req, res) => {
   state.customLedgerEntries.unshift(entry);
   await saveCustomLedgerEntryToCloudSql(entry);
   bumpVersion();
+  emitAppSignal({
+    scope: 'budget',
+    action: 'ledger:created',
+    entityId: String(entry['id'] || ''),
+    audience: getBudgetAudienceUserIds(String(user['id'] || '')),
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(user['id'] || ''),
+  });
   res.json(entry);
 });
 
@@ -3808,6 +5520,14 @@ app.put('/api/budget/ledger/:id', async (req, res) => {
     state.customLedgerEntries[idx] = updated;
     await saveCustomLedgerEntryToCloudSql(updated);
     bumpVersion();
+    emitAppSignal({
+      scope: 'budget',
+      action: 'ledger:updated',
+      entityId: id,
+      audience: getBudgetAudienceUserIds(String(user['id'] || '')),
+      originClientId: getClientInstanceId(req),
+      actorUserId: String(user['id'] || ''),
+    });
     res.json(updated);
     return;
   }
@@ -3823,6 +5543,14 @@ app.put('/api/budget/ledger/:id', async (req, res) => {
       state.payments[pIdx] = updatedPay;
       await savePaymentToCloudSql(updatedPay);
       bumpVersion();
+      emitAppSignal({
+        scope: 'budget',
+        action: 'ledger:updated',
+        entityId: id,
+        audience: getBudgetAudienceUserIds(String(user['id'] || '')),
+        originClientId: getClientInstanceId(req),
+        actorUserId: String(user['id'] || ''),
+      });
       res.json(updatedPay);
       return;
     }
@@ -3840,6 +5568,14 @@ app.put('/api/budget/ledger/:id', async (req, res) => {
       state.providerDeposits[dIdx] = updatedDep;
       await saveProviderDepositToCloudSql(updatedDep);
       bumpVersion();
+      emitAppSignal({
+        scope: 'budget',
+        action: 'ledger:updated',
+        entityId: id,
+        audience: getBudgetAudienceUserIds(String(user['id'] || '')),
+        originClientId: getClientInstanceId(req),
+        actorUserId: String(user['id'] || ''),
+      });
       res.json(updatedDep);
       return;
     }
@@ -3857,6 +5593,14 @@ app.put('/api/budget/ledger/:id', async (req, res) => {
   }
   await saveAccountDeductionOverrideToCloudSql(override);
   bumpVersion();
+  emitAppSignal({
+    scope: 'budget',
+    action: 'ledger:updated',
+    entityId: id,
+    audience: getBudgetAudienceUserIds(String(user['id'] || '')),
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(user['id'] || ''),
+  });
   res.json(override);
 });
 
@@ -3894,6 +5638,14 @@ app.delete('/api/budget/ledger/:id', async (req, res) => {
     await saveAccountDeductionOverrideToCloudSql(override);
   }
   bumpVersion();
+  emitAppSignal({
+    scope: 'budget',
+    action: 'ledger:deleted',
+    entityId: id,
+    audience: getBudgetAudienceUserIds(String(user['id'] || '')),
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(user['id'] || ''),
+  });
   res.json({ success: true });
 });
 
@@ -3919,6 +5671,14 @@ app.post('/api/budget/provider-balance/adjust', async (req, res) => {
   state.providerBalanceAdjustments.unshift(adj);
   await saveProviderBalanceAdjustmentToCloudSql(adj);
   bumpVersion();
+  emitAppSignal({
+    scope: 'budget',
+    action: 'balance:adjusted',
+    entityId: String(adj['id'] || ''),
+    audience: getBudgetAudienceUserIds(String(user['id'] || '')),
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(user['id'] || ''),
+  });
   res.json(adj);
 });
 
@@ -3932,6 +5692,14 @@ app.delete('/api/budget/provider-balance/adjust/:id', async (req, res) => {
   state.providerBalanceAdjustments = state.providerBalanceAdjustments.filter((a) => a['id'] !== id);
   await deleteProviderBalanceAdjustmentFromCloudSql(id);
   bumpVersion();
+  emitAppSignal({
+    scope: 'budget',
+    action: 'balance:adjustment_deleted',
+    entityId: id,
+    audience: getBudgetAudienceUserIds(String(user['id'] || '')),
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(user['id'] || ''),
+  });
   res.json({ success: true });
 });
 
@@ -3946,30 +5714,46 @@ app.get('/api/utility/data', async (req, res) => {
     return;
   }
 
-  try {
-    const activeMode = await loadPersistedDbMode();
-    const standbyMode: DatabaseMode = activeMode === 'cloudsql' ? 'external' : 'cloudsql';
-    const isStandbyReady =
-      standbyMode === 'cloudsql' ? isCloudSqlEnvConfigured() : isExternalDbConfigured();
-    const [activeUtil, standbyUtil] = await Promise.all([
-      loadUtilityOnlyFromCloudSql(activeMode),
-      isStandbyReady ? loadUtilityOnlyFromCloudSql(standbyMode) : Promise.resolve(null),
-    ]);
-    if (activeUtil || standbyUtil) {
-      const mergedAccounts = mergeRecordsById(
-        activeUtil?.utilityAccounts || [],
-        standbyUtil?.utilityAccounts || []
-      );
-      const mergedReadings = mergeRecordsById(
-        activeUtil?.utilityReadings || [],
-        standbyUtil?.utilityReadings || []
-      );
-      cleanUtilityAccountsHiddenTabs(mergedAccounts);
-      state.utilityAccounts = mergedAccounts;
-      state.utilityReadings = mergedReadings;
+  const forceDbRefresh = String(req.query['refresh'] || '').toLowerCase() === 'true';
+  const isCacheFresh =
+    !forceDbRefresh &&
+    state.utilityAccounts.length > 0 &&
+    Date.now() - lastUtilityDbRefreshAt < 15_000;
+
+  if (!isCacheFresh) {
+    if (!inFlightUtilityDbRefresh) {
+      inFlightUtilityDbRefresh = (async () => {
+        try {
+          const activeMode = await loadPersistedDbMode();
+          const standbyMode: DatabaseMode = activeMode === 'cloudsql' ? 'external' : 'cloudsql';
+          const isStandbyReady =
+            standbyMode === 'cloudsql' ? isCloudSqlEnvConfigured() : isExternalDbConfigured();
+          const [activeUtil, standbyUtil] = await Promise.all([
+            loadUtilityOnlyFromCloudSql(activeMode),
+            isStandbyReady ? loadUtilityOnlyFromCloudSql(standbyMode) : Promise.resolve(null),
+          ]);
+          if (activeUtil || standbyUtil) {
+            const mergedAccounts = mergeRecordsById(
+              activeUtil?.utilityAccounts || [],
+              standbyUtil?.utilityAccounts || []
+            );
+            const mergedReadings = mergeRecordsById(
+              activeUtil?.utilityReadings || [],
+              standbyUtil?.utilityReadings || []
+            );
+            cleanUtilityAccountsHiddenTabs(mergedAccounts);
+            state.utilityAccounts = mergedAccounts;
+            state.utilityReadings = mergedReadings;
+            lastUtilityDbRefreshAt = Date.now();
+          }
+        } catch (err) {
+          console.warn('[Utility] Refresh warning:', err instanceof Error ? err.message : String(err));
+        } finally {
+          inFlightUtilityDbRefresh = null;
+        }
+      })();
     }
-  } catch (err) {
-    console.warn('[Utility] Refresh warning:', err instanceof Error ? err.message : String(err));
+    await inFlightUtilityDbRefresh;
   }
 
   const userIdStr = String(user['id'] || '');
@@ -4062,6 +5846,14 @@ app.post('/api/utility/accounts', async (req, res) => {
 
   await saveUtilityAccountToCloudSql(account);
   bumpVersion();
+  emitAppSignal({
+    scope: 'utility',
+    action: isNewHouse ? 'account:created' : 'account:updated',
+    entityId: id,
+    audience: getUtilityHouseAudienceUserIds(account, [userIdStr]),
+    originClientId: getClientInstanceId(req),
+    actorUserId: userIdStr,
+  });
   res.json({ success: true, account: sanitizeUtilityAccountForClient(account) });
 });
 
@@ -4073,10 +5865,19 @@ app.delete('/api/utility/accounts/:id', async (req, res) => {
     res.status(403).json({ error: 'Недостатньо прав для видалення цього будинку' });
     return;
   }
+  const deleteAudience = getUtilityHouseAudienceUserIds(target, [String(user['id'] || '')]);
   state.utilityAccounts = state.utilityAccounts.filter((a) => a['id'] !== id);
   state.utilityReadings = state.utilityReadings.filter((r) => r['accountId'] !== id);
   await deleteUtilityAccountFromCloudSql(id);
   bumpVersion();
+  emitAppSignal({
+    scope: 'utility',
+    action: 'account:deleted',
+    entityId: id,
+    audience: deleteAudience,
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(user['id'] || ''),
+  });
   res.json({ success: true });
 });
 
@@ -4138,6 +5939,14 @@ const handleSaveAccountDevices = async (req: express.Request, res: express.Respo
     }
     await saveUtilityAccountToCloudSql(acc);
     bumpVersion();
+    emitAppSignal({
+      scope: 'utility',
+      action: 'devices:updated',
+      entityId: String(id || ''),
+      audience: getUtilityHouseAudienceUserIds(acc, [reqUserId]),
+      originClientId: getClientInstanceId(req),
+      actorUserId: reqUserId,
+    });
     res.status(200).json({ success: true, account: sanitizeUtilityAccountForClient(acc), devices: acc['devices'] });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Помилка збереження пристроїв електроенергії';
@@ -4596,6 +6405,307 @@ function parseOoekAccountsHtml(html: string): OoekParsedAccountItem[] {
   return results;
 }
 
+function buildOoekEasyPayAccountCandidates(rawPrimary: string, rawSecondary?: string): string[] {
+  const candidates: string[] = [];
+  const addCandidate = (val: string) => {
+    const clean = val
+      .replace(/^№\s*/i, '')
+      .replace(/&nbsp;/gi, '')
+      .replace(/\s+/g, '')
+      .trim();
+    if (!clean) return;
+    if (!candidates.includes(clean)) {
+      candidates.push(clean);
+    }
+    // If 9+ digits without slash (e.g. "340231560"), try 5-digit prefix + "/" + 8-digit zero-padded suffix -> "34023/00001560"
+    if (/^\d{8,13}$/.test(clean) && !clean.includes('/')) {
+      const prefix = clean.slice(0, 5);
+      const rest = clean.slice(5).replace(/^0+/, '') || '0';
+      const formattedSlash = `${prefix}/${rest.padStart(8, '0')}`;
+      if (!candidates.includes(formattedSlash)) {
+        candidates.push(formattedSlash);
+      }
+    }
+    // If contains slash (e.g. "34023/1305"), also try 8-digit zero-padded suffix ("34023/00001305")
+    if (clean.includes('/')) {
+      const [prefix, suffix] = clean.split('/');
+      if (prefix && suffix && /^\d+$/.test(prefix) && /^\d+$/.test(suffix)) {
+        const paddedSuffix = suffix.replace(/^0+/, '').padStart(8, '0');
+        const formattedPadded = `${prefix}/${paddedSuffix}`;
+        if (!candidates.includes(formattedPadded)) {
+          candidates.push(formattedPadded);
+        }
+      }
+    }
+  };
+
+  if (rawSecondary) addCandidate(rawSecondary);
+  if (rawPrimary) addCandidate(rawPrimary);
+  return candidates;
+}
+
+interface EasyPayOoekRequisitesExtract {
+  iban: string | null;
+  edrpou: string | null;
+  mfo: string | null;
+  recipientName: string | null;
+  purpose: string | null;
+  payerName: string;
+  address: string;
+  matchedAccountNumber: string;
+  source: 'easypay' | 'fallback';
+  hasEasyPayIban: boolean;
+  checkedAt: string;
+  rawFields: Record<string, string>;
+}
+
+interface EasyPayOoekCheckResult {
+  matchedAccountNumber: string;
+  address: string;
+  userName: string;
+  balanceAmountUah: number; // raw product.amount (negative = overpayment, positive = debt)
+  amountToPayUah: number; // product.paymentAmount (>= 0 recommended to pay)
+  billUpdatedAt: string;
+  paymentRequisites: EasyPayOoekRequisitesExtract;
+}
+
+function extractEasyPayPaymentRequisites(
+  checkData: Record<string, unknown>,
+  product: Record<string, unknown>,
+  matchedAccountNumber: string,
+  address: string,
+  userName: string,
+  checkedAt: string
+): EasyPayOoekRequisitesExtract {
+  let iban: string | null = null;
+  let edrpou: string | null = null;
+  let mfo: string | null = null;
+  let recipientName: string | null = null;
+  let purpose: string | null = null;
+  const rawFields: Record<string, string> = {};
+
+  const recordRawField = (path: string, val: string): void => {
+    const trimmed = val.trim();
+    if (!trimmed) return;
+    if (Object.keys(rawFields).length >= 30) return;
+    rawFields[path] = trimmed.length > 160 ? `${trimmed.slice(0, 157)}...` : trimmed;
+  };
+
+  const inspectValue = (key: string, val: unknown, path: string, depth: number): void => {
+    if (val === null || val === undefined || depth > 4) return;
+    if (typeof val === 'string' || typeof val === 'number' || typeof val === 'boolean') {
+      const str = String(val).trim();
+      if (!str) return;
+      recordRawField(path, str);
+      const keyLower = key.toLowerCase();
+
+      if (!iban) {
+        const ibanMatch = str.replace(/\s+/g, '').match(/UA\d{27}/i);
+        if (ibanMatch) {
+          iban = ibanMatch[0].toUpperCase();
+        }
+      }
+      if (!edrpou && /(edrpou|okpo|egrpou|company.?code|recipient.?code|єдрпоу|едрпоу)/i.test(keyLower)) {
+        const digits = str.replace(/\D+/g, '');
+        if (digits.length === 8 || digits.length === 10) {
+          edrpou = digits;
+        }
+      }
+      if (!mfo && /(^|[^a-z])(mfo|мфо)($|[^a-z])/i.test(keyLower)) {
+        const digits = str.replace(/\D+/g, '');
+        if (digits.length === 6) {
+          mfo = digits;
+        }
+      }
+      if (
+        !recipientName &&
+        /(recipient|receiver|company|provider|supplier|payee|orgname|отримувач|постачальник)/i.test(keyLower) &&
+        !/(user|payer|client|abonent)/i.test(keyLower)
+      ) {
+        recipientName = str;
+      }
+      if (!purpose && /(purpose|destination|призначення)/i.test(keyLower)) {
+        purpose = str;
+      }
+      return;
+    }
+
+    if (Array.isArray(val)) {
+      val.slice(0, 10).forEach((item, idx) => {
+        inspectValue(`${key}[${idx}]`, item, `${path}[${idx}]`, depth + 1);
+      });
+      return;
+    }
+
+    if (typeof val === 'object') {
+      for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+        inspectValue(k, v, path ? `${path}.${k}` : k, depth + 1);
+      }
+    }
+  };
+
+  if (checkData['accountInfo'] && typeof checkData['accountInfo'] === 'object') {
+    inspectValue('accountInfo', checkData['accountInfo'], 'accountInfo', 0);
+  }
+  inspectValue('product', product, 'product', 0);
+  for (const [k, v] of Object.entries(checkData)) {
+    if (k === 'products' || k === 'accountInfo' || k === 'error') continue;
+    inspectValue(k, v, k, 0);
+  }
+
+  return {
+    iban,
+    edrpou,
+    mfo,
+    recipientName,
+    purpose,
+    payerName: userName,
+    address,
+    matchedAccountNumber,
+    source: iban ? 'easypay' : 'fallback',
+    hasEasyPayIban: Boolean(iban),
+    checkedAt,
+    rawFields,
+  };
+}
+
+async function fetchOoekBillViaEasyPay(candidates: string[]): Promise<EasyPayOoekCheckResult> {
+  const USER_AGENT =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:159.0) Gecko/20100101 Firefox/159.0';
+
+  const createAppResp = await fetch('https://api.easypay.ua/api/system/createApp', {
+    method: 'POST',
+    headers: {
+      'User-Agent': USER_AGENT,
+      'Accept': 'application/json, text/plain, */*',
+      'Content-Length': '0',
+      'Origin': 'https://easypay.ua',
+      'Referer': 'https://easypay.ua/ua/catalog/utility/odesa-oek-new',
+    },
+  });
+
+  if (!createAppResp.ok) {
+    throw new Error(`Помилка ініціалізації сесії EasyPay (HTTP ${createAppResp.status})`);
+  }
+
+  const appData = (await createAppResp.json()) as {
+    appId?: string;
+    pageId?: string;
+    error?: { errorMessage?: string; description?: string } | null;
+  };
+
+  if (!appData?.appId || !appData?.pageId) {
+    throw new Error(appData?.error?.errorMessage || 'Не вдалося отримати сесію EasyPay (appId/pageId)');
+  }
+
+  let lastErrorMsg = 'Особовий рахунок не знайдено у базі ТОВ «ООЕК»';
+
+  for (const candidate of candidates) {
+    await throttleOoekRequest();
+    const checkResp = await fetch('https://api.easypay.ua/api/genericCommunalFlow/check', {
+      method: 'POST',
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept': 'application/json, text/plain, */*',
+        'Content-Type': 'application/json; charset=UTF-8',
+        'AppId': appData.appId,
+        'PageId': appData.pageId,
+        'PartnerKey': 'easypay-v2',
+        'locale': 'ua',
+        'Origin': 'https://easypay.ua',
+        'Referer': 'https://easypay.ua/ua/catalog/utility/odesa-oek-new',
+      },
+      body: JSON.stringify({
+        serviceKey: 'ODESA-OEK-NEW',
+        fields: [
+          {
+            fieldName: 'Account',
+            fieldValue: candidate,
+            fieldKey: null,
+            fieldValueDescription: null,
+          },
+        ],
+        multyCheckPaymentStepIndex: 0,
+      }),
+    });
+
+    const checkData = (await checkResp.json().catch(() => ({}))) as Record<string, unknown> & {
+      accountInfo?: Record<string, string>;
+      products?: (Record<string, unknown> & {
+        account?: string;
+        address?: string;
+        userName?: string;
+        date?: string;
+        amount?: number;
+        paymentAmount?: number;
+        debt?: number;
+      })[];
+      error?: {
+        errorCode?: string;
+        errorMessage?: string;
+        description?: string;
+        title?: string;
+      } | null;
+    };
+
+    const product = Array.isArray(checkData?.products) ? checkData.products[0] : undefined;
+    if (checkResp.ok && product) {
+      const rawAmount = Number(product.amount ?? 0);
+      const rawPaymentAmount = Number(product.paymentAmount ?? (rawAmount > 0 ? rawAmount : 0));
+      const amountToPayUah =
+        !Number.isNaN(rawPaymentAmount) && rawPaymentAmount > 0
+          ? Math.round(rawPaymentAmount * 100) / 100
+          : !Number.isNaN(rawAmount) && rawAmount > 0
+            ? Math.round(rawAmount * 100) / 100
+            : 0;
+      const balanceAmountUah = !Number.isNaN(rawAmount) ? Math.round(rawAmount * 100) / 100 : amountToPayUah;
+      const address = String(product.address || checkData.accountInfo?.['Адреса'] || '').trim();
+      const matchedAccountNumber = String(product.account || candidate).trim();
+      const userName = String(
+        product.userName ||
+          checkData.accountInfo?.['ПІБ'] ||
+          checkData.accountInfo?.['ФІО'] ||
+          checkData.accountInfo?.['Абонент'] ||
+          ''
+      ).trim();
+
+      const nowKyiv = new Date().toLocaleString('uk-UA', {
+        timeZone: 'Europe/Kyiv',
+        day: '2-digit',
+        month: '2-digit',
+        year: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+
+      const paymentRequisites = extractEasyPayPaymentRequisites(
+        checkData,
+        product,
+        matchedAccountNumber,
+        address,
+        userName,
+        nowKyiv
+      );
+
+      return {
+        matchedAccountNumber,
+        address,
+        userName,
+        balanceAmountUah,
+        amountToPayUah,
+        billUpdatedAt: nowKyiv,
+        paymentRequisites,
+      };
+    }
+
+    if (checkData?.error?.errorMessage || checkData?.error?.description) {
+      lastErrorMsg = `${checkData.error.errorMessage || checkData.error.description} (О/Р: ${candidate})`;
+    }
+  }
+
+  throw new Error(lastErrorMsg);
+}
+
 app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
   const { user, realAdmin } = resolveRequestUser(req);
   const { id } = req.params;
@@ -4610,7 +6720,7 @@ app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
     return;
   }
 
-  // Update credentials if provided in the sync request
+  // Update optional fields if provided in the sync request
   if (typeof body.ooekLogin === 'string' && body.ooekLogin.trim()) {
     acc['ooekLogin'] = body.ooekLogin.trim();
   }
@@ -4622,253 +6732,449 @@ app.post('/api/utility/accounts/:id/ooek-sync', async (req, res) => {
     acc['hasOoekPassword'] = true;
   }
 
-  const username = String(acc['ooekLogin'] || '').trim();
-  const password = body.ooekPassword
-    ? String(body.ooekPassword)
-    : decryptStoredPassword(acc['ooekPasswordEnc']);
-  const targetAccountNumber = String(acc['accountNumber'] || acc['ooekAccountNumber'] || '').trim();
+  const rawPrimaryAccount = String(acc['accountNumber'] || '').trim();
+  const rawOoekAccount = String(body.ooekAccountNumber || acc['ooekAccountNumber'] || '').trim();
+  const candidates = buildOoekEasyPayAccountCandidates(rawPrimaryAccount, rawOoekAccount);
 
-  if (!targetAccountNumber) {
+  if (candidates.length === 0) {
     res.status(400).json({
       success: false,
-      error: 'Особовий рахунок не вказано у налаштуваннях будинку. Будь ласка, заповніть особовий рахунок для синхронізації з ТОВ «ООЕК».',
+      error: 'Особовий рахунок не вказано у налаштуваннях будинку. Будь ласка, заповніть особовий рахунок для перевірки нарахувань ТОВ «ООЕК».',
       statusMessage: 'Відсутній особовий рахунок',
       account: sanitizeUtilityAccountForClient(acc),
     });
     return;
   }
 
-  if (!username || !password) {
+  try {
+    const checkResult = await fetchOoekBillViaEasyPay(candidates);
+    const syncTimestampIso = new Date().toISOString();
+    const amount = checkResult.amountToPayUah;
+
+    acc['ooekCabinetLastSync'] = syncTimestampIso;
+    acc['ooekBalanceUah'] = amount;
+    acc['ooekLastBillUah'] = amount;
+    acc['ooekAccountNumber'] = checkResult.matchedAccountNumber;
+    acc['ooekBillUpdatedAt'] = checkResult.billUpdatedAt;
+    acc['ooekPaymentRequisites'] = checkResult.paymentRequisites;
+
+    const overpaymentPart =
+      checkResult.balanceAmountUah < 0
+        ? ` (переплата ${Math.abs(checkResult.balanceAmountUah).toFixed(2)} грн)`
+        : '';
+    const addressPart = checkResult.address ? ` • ${checkResult.address}` : '';
+    const dateLabel = `Перевірено: ${checkResult.billUpdatedAt}`;
+
+    acc['ooekCabinetStatus'] = `Рахунок № ${checkResult.matchedAccountNumber}${addressPart} • До сплати: ${amount.toFixed(2)} грн${overpaymentPart} • ${dateLabel}`;
+
+    if (amount <= 0) {
+      // If OOEK confirms 0.0 due, automatically mark billing electricity readings for this house as paid
+      for (const r of state.utilityReadings) {
+        if (
+          r['accountId'] === acc['id'] &&
+          (r['utilityType'] === 'electricity' || !r['utilityType']) &&
+          !r['isControlOnly'] &&
+          !r['isPaid']
+        ) {
+          r['isPaid'] = true;
+          r['paidAmount'] = r['totalCost'];
+          r['paidDate'] = new Date().toISOString().split('T')[0];
+          await saveUtilityReadingToCloudSql(r).catch(() => {});
+        }
+      }
+    }
+
+    await saveUtilityAccountToCloudSql(acc);
+    bumpVersion();
+
+    res.json({
+      success: true,
+      account: sanitizeUtilityAccountForClient(acc),
+      amountToPayUah: amount,
+      balanceAmountUah: checkResult.balanceAmountUah,
+      address: checkResult.address,
+      billUpdatedAt: checkResult.billUpdatedAt,
+      paymentRequisites: checkResult.paymentRequisites,
+      statusMessage: acc['ooekCabinetStatus'],
+      message: `ООЕК оновлено! Рахунок № ${checkResult.matchedAccountNumber}: до сплати ${amount.toFixed(2)} грн${overpaymentPart}`,
+    });
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : 'Помилка отримання рахунку ООЕК через EasyPay';
+    acc['ooekCabinetLastSync'] = new Date().toISOString();
+    acc['ooekCabinetStatus'] = `Помилка перевірки рахунку ООЕК: ${errMsg}`;
+    await saveUtilityAccountToCloudSql(acc);
+    bumpVersion();
     res.status(400).json({
       success: false,
-      error: 'Вкажіть логін та пароль від особистого кабінету ТОВ «ООЕК» (personal.ooek.od.ua)',
-      statusMessage: 'Відсутній логін або пароль ООЕК',
       account: sanitizeUtilityAccountForClient(acc),
+      statusMessage: String(acc['ooekCabinetStatus']),
+      error: String(acc['ooekCabinetStatus']),
+    });
+  }
+});
+
+const OOEK_DEFAULT_PORTMONE_PAYEE_ID = '119174';
+const OOEK_DEFAULT_PORTMONE_ATTR3 = '0_2';
+
+function formatOoekAccountForPortmone(
+  rawPrimary: string,
+  rawSecondary?: string
+): { descriptionSlash: string; contractNumber12: string } {
+  const raw = String(rawSecondary || rawPrimary || '')
+    .replace(/^№\s*/i, '')
+    .replace(/&nbsp;/gi, '')
+    .replace(/\s+/g, '')
+    .trim();
+
+  if (!raw) {
+    return { descriptionSlash: '', contractNumber12: '' };
+  }
+
+  // Case 1: Already has slash (e.g. "34023/00002729" or "34023/2729")
+  if (raw.includes('/')) {
+    const [prefixRaw, suffixRaw] = raw.split('/');
+    const prefix = (prefixRaw || '').replace(/\D+/g, '');
+    const suffixDigits = (suffixRaw || '').replace(/\D+/g, '');
+    if (prefix && suffixDigits) {
+      const unpaddedSuffix = suffixDigits.replace(/^0+/, '') || '0';
+      const descriptionSlash = `${prefix}/${unpaddedSuffix.padStart(8, '0')}`;
+      const combined = `${prefix}${unpaddedSuffix}`;
+      const contractNumber12 = combined.length <= 12 ? combined.padStart(12, '0') : combined;
+      return { descriptionSlash, contractNumber12 };
+    }
+    return { descriptionSlash: raw, contractNumber12: raw.replace(/\D+/g, '') };
+  }
+
+  // Case 2: Digits only
+  const digits = raw.replace(/\D+/g, '');
+  if (!digits) {
+    return { descriptionSlash: raw, contractNumber12: '' };
+  }
+
+  // 12 digits with leading "000" (ONDO format, e.g. "000340232729")
+  if (digits.length === 12 && digits.startsWith('000')) {
+    const nine = digits.slice(3);
+    const prefix = nine.slice(0, 5);
+    const unpaddedSuffix = nine.slice(5).replace(/^0+/, '') || '0';
+    return {
+      descriptionSlash: `${prefix}/${unpaddedSuffix.padStart(8, '0')}`,
+      contractNumber12: digits,
+    };
+  }
+
+  // 9..13 digits without slash (e.g. "340232729" or "3402300002729")
+  if (digits.length >= 8 && digits.length <= 13) {
+    const prefix = digits.slice(0, 5);
+    const unpaddedSuffix = digits.slice(5).replace(/^0+/, '') || '0';
+    const descriptionSlash = `${prefix}/${unpaddedSuffix.padStart(8, '0')}`;
+    const combined = `${prefix}${unpaddedSuffix}`;
+    const contractNumber12 = combined.length <= 12 ? combined.padStart(12, '0') : combined;
+    return { descriptionSlash, contractNumber12 };
+  }
+
+  return {
+    descriptionSlash: digits,
+    contractNumber12: digits.length === 9 ? `000${digits}` : digits,
+  };
+}
+
+function sanitizePortmoneParamValue(val: string): string {
+  return String(val || '')
+    .replace(/[&=]/g, ' ')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildPortmonePayShopUrl(opts: {
+  payeeId?: string;
+  descriptionSlash: string;
+  amountUah?: number | null;
+  address?: string;
+  attribute2?: string;
+  attribute3?: string;
+}): {
+  url: string;
+  id: string;
+  rawQuery: string;
+  payeeId: string;
+  amountFormatted: string;
+  attribute1: string;
+  attribute3: string;
+} {
+  const payeeId = String(opts.payeeId || OOEK_DEFAULT_PORTMONE_PAYEE_ID).replace(/\D+/g, '') || OOEK_DEFAULT_PORTMONE_PAYEE_ID;
+  const description = sanitizePortmoneParamValue(opts.descriptionSlash);
+  const numericAmount =
+    typeof opts.amountUah === 'number' && Number.isFinite(opts.amountUah) && opts.amountUah > 0
+      ? Math.round(opts.amountUah * 100) / 100
+      : 0;
+  const amountFormatted = numericAmount > 0 ? numericAmount.toFixed(2) : '0.0';
+  const attribute1 = sanitizePortmoneParamValue(opts.address || '');
+  const attribute2 = sanitizePortmoneParamValue(opts.attribute2 || '0') || '0';
+  const attribute3 = sanitizePortmoneParamValue(opts.attribute3 || OOEK_DEFAULT_PORTMONE_ATTR3) || OOEK_DEFAULT_PORTMONE_ATTR3;
+
+  const rawQuery = [
+    'bill_currency=UAH',
+    'edit=ba',
+    `amount=${amountFormatted}`,
+    `payeeId=${payeeId}`,
+    `description=${description}`,
+    `attribute1=${attribute1}`,
+    `attribute2=${attribute2}`,
+    `attribute3=${attribute3}`,
+    `attribute4=${amountFormatted}`,
+    'check=Y',
+    'gs=Y',
+  ].join('&');
+
+  const id = gzipSync(Buffer.from(rawQuery, 'utf8')).toString('base64');
+  const url = `https://www.portmone.com.ua/r3/uk/pay-shop?id=${encodeURIComponent(id)}`;
+
+  return {
+    url,
+    id,
+    rawQuery,
+    payeeId,
+    amountFormatted,
+    attribute1,
+    attribute3,
+  };
+}
+
+function decodePortmonePayShopUrl(urlOrId: string): {
+  rawQuery: string;
+  params: Record<string, string>;
+  payeeId: string;
+  description: string;
+  amount: string;
+  attribute1: string;
+  attribute2: string;
+  attribute3: string;
+  attribute4: string;
+} {
+  let rawId = String(urlOrId || '').trim();
+  if (!rawId) {
+    throw new Error('Порожнє посилання або параметр id Portmone');
+  }
+
+  if (rawId.includes('id=')) {
+    try {
+      const parsed = new URL(rawId);
+      rawId = parsed.searchParams.get('id') || rawId;
+    } catch {
+      const match = rawId.match(/[?&]id=([^&#]+)/i);
+      if (match?.[1]) {
+        rawId = decodeURIComponent(match[1]);
+      }
+    }
+  } else if (rawId.includes('%')) {
+    try {
+      rawId = decodeURIComponent(rawId);
+    } catch {
+      // keep raw
+    }
+  }
+
+  // Restore '+' signs if URL query decoding turned them into spaces
+  const base64Id = rawId.replace(/ /g, '+').trim();
+  const rawQuery = gunzipSync(Buffer.from(base64Id, 'base64')).toString('utf8');
+
+  const params: Record<string, string> = {};
+  for (const part of rawQuery.split('&')) {
+    const eqIdx = part.indexOf('=');
+    if (eqIdx > 0) {
+      const key = part.slice(0, eqIdx).trim();
+      const value = part.slice(eqIdx + 1);
+      params[key] = value;
+    }
+  }
+
+  return {
+    rawQuery,
+    params,
+    payeeId: params['payeeId'] || '',
+    description: params['description'] || '',
+    amount: params['amount'] || '0.0',
+    attribute1: params['attribute1'] || '',
+    attribute2: params['attribute2'] || '0',
+    attribute3: params['attribute3'] || OOEK_DEFAULT_PORTMONE_ATTR3,
+    attribute4: params['attribute4'] || params['amount'] || '0.0',
+  };
+}
+
+app.post('/api/utility/accounts/:id/portmone-link', async (req, res) => {
+  const { user, realAdmin } = resolveRequestUser(req);
+  const { id } = req.params;
+  const body = (req.body || {}) as {
+    amountUah?: number | null;
+    description?: string;
+    address?: string;
+    payeeId?: string;
+    attribute3?: string;
+    tryOndo?: boolean;
+    decodeUrl?: string;
+  };
+
+  const acc = state.utilityAccounts.find((a) => a['id'] === id);
+  if (!acc) {
+    res.status(404).json({ success: false, error: 'Акаунт не знайдено' });
+    return;
+  }
+  if (!userCanAccessUtilityAccount(user, realAdmin, acc)) {
+    res.status(403).json({ success: false, error: 'Недостатньо прав доступу до цього будинку' });
+    return;
+  }
+
+  // Utility mode: decode an existing Portmone URL pasted by the user (e.g. from ooek.ondo.energy/oplata)
+  if (typeof body.decodeUrl === 'string' && body.decodeUrl.trim()) {
+    try {
+      const decoded = decodePortmonePayShopUrl(body.decodeUrl);
+      res.json({
+        success: true,
+        decoded,
+      });
+    } catch (err: unknown) {
+      res.status(400).json({
+        success: false,
+        error:
+          err instanceof Error
+            ? `Не вдалося декодувати посилання Portmone: ${err.message}`
+            : 'Некоректне посилання Portmone (очікується параметр ?id=H4sI...)',
+      });
+    }
+    return;
+  }
+
+  const rawPrimary = String(acc['accountNumber'] || '').trim();
+  const rawSecondary = String(body.description || acc['ooekAccountNumber'] || '').trim();
+  const { descriptionSlash, contractNumber12 } = formatOoekAccountForPortmone(rawPrimary, rawSecondary);
+
+  if (!descriptionSlash) {
+    res.status(400).json({
+      success: false,
+      error: 'Особовий рахунок не вказано для цього будинку.',
     });
     return;
   }
 
-  const DEFAULT_AUTH_TOKEN = process.env['OOEK_FALLBACK_AUTH_TOKEN'] || '';
-  const FIXED_X_CSRF_TOKEN = process.env['OOEK_FALLBACK_CSRF_TOKEN'] || '';
-  const INITIAL_SESSION_COOKIE = process.env['OOEK_FALLBACK_SESSION_COOKIE'] || '';
-  const USER_AGENT =
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:159.0) Gecko/20100101 Firefox/159.0';
+  const reqInfo = acc['ooekPaymentRequisites'] as { address?: string } | undefined;
+  const defaultAddressParts = [
+    String(acc['city'] || '').trim(),
+    String(acc['street'] || '').trim(),
+    acc['houseNum'] ? `буд.${String(acc['houseNum']).trim()}` : '',
+  ].filter(Boolean);
+  let resolvedAddress = String(
+    body.address !== undefined
+      ? body.address
+      : reqInfo?.address || defaultAddressParts.join(', ') || String(acc['name'] || '')
+  ).trim();
 
-  try {
-    let sessionCookie = INITIAL_SESSION_COOKIE;
-    let authenticityToken = DEFAULT_AUTH_TOKEN;
-    let csrfMetaToken = FIXED_X_CSRF_TOKEN;
+  let resolvedPayeeId =
+    String(body.payeeId || OOEK_DEFAULT_PORTMONE_PAYEE_ID).replace(/\D+/g, '') ||
+    OOEK_DEFAULT_PORTMONE_PAYEE_ID;
+  let resolvedAttr3 = String(body.attribute3 || OOEK_DEFAULT_PORTMONE_ATTR3).trim() || OOEK_DEFAULT_PORTMONE_ATTR3;
+  let resolvedDescription = descriptionSlash;
 
-    // 1. Fetch initial /home/ page to obtain a fresh session cookie and authenticity_token
-    await throttleOoekRequest();
+  const requestedAmount =
+    typeof body.amountUah === 'number' && Number.isFinite(body.amountUah) && body.amountUah >= 0
+      ? Math.round(body.amountUah * 100) / 100
+      : typeof acc['ooekBalanceUah'] === 'number' && Number(acc['ooekBalanceUah']) > 0
+        ? Math.round(Number(acc['ooekBalanceUah']) * 100) / 100
+        : 0;
+
+  let resolvedAmount = requestedAmount;
+  let source: 'ondo_live' | 'local_gzip' = 'local_gzip';
+  let ondoError: string | null = null;
+  let ondoConsumer: Record<string, unknown> | null = null;
+  let ondoDirectLink: string | null = null;
+
+  if (body.tryOndo && /^\d{12}$/.test(contractNumber12)) {
     try {
-      const initPageResp = await fetch('https://personal.ooek.od.ua/home/', {
-        method: 'GET',
+      const ondoResp = await fetch('https://ooek.ondo.energy/api/portmone/payment-link', {
+        method: 'POST',
         headers: {
-          'User-Agent': USER_AGENT,
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'locale': 'uk',
+          'Origin': 'https://ooek.ondo.energy',
+          'Referer': 'https://ooek.ondo.energy/oplata',
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         },
+        body: JSON.stringify({ contractNumber: contractNumber12 }),
+        signal: AbortSignal.timeout(5000),
       });
-      const initCookie = extractSessionCookie(initPageResp.headers);
-      if (initCookie) {
-        sessionCookie = initCookie;
-      }
-      const initHtml = await initPageResp.text();
-      const authMatch = initHtml.match(/name=["']authenticity_token["'][^>]*value=["']([^"']+)["']/i);
-      if (authMatch && authMatch[1]) {
-        authenticityToken = authMatch[1];
-      }
-      const metaMatch =
-        initHtml.match(/<meta[^>]*name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i) ||
-        initHtml.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']csrf-token["']/i);
-      if (metaMatch && metaMatch[1]) {
-        csrfMetaToken = metaMatch[1];
-      }
-    } catch {
-      // Fallback to optional .env token and cookie if initial GET fails
-    }
 
-    // 2. POST credentials to https://personal.ooek.od.ua/home/login (rate-limited <= 1 req/sec)
-    await throttleOoekRequest();
+      if (ondoResp.ok) {
+        const ondoJson = (await ondoResp.json().catch(() => null)) as {
+          data?: {
+            paymentLink?: string;
+            consumer?: Record<string, unknown>;
+          };
+        } | null;
 
-    const formBody = new URLSearchParams();
-    formBody.set('utf8', '✓');
-    formBody.set('authenticity_token', authenticityToken);
-    formBody.set('username', username);
-    formBody.set('password', password);
-    formBody.set('pwa_mode', 'browser');
-    formBody.set('pwa_client_id', randomUUID());
-    formBody.set('pwa_session_id', randomUUID());
-
-    const loginResponse = await fetch('https://personal.ooek.od.ua/home/login', {
-      method: 'POST',
-      redirect: 'manual',
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Referer': 'https://personal.ooek.od.ua/home/',
-        'Origin': 'https://personal.ooek.od.ua',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'same-origin',
-        'Sec-Fetch-User': '?1',
-        'Connection': 'keep-alive',
-        'Cookie': sessionCookie,
-        'Priority': 'u=0, i',
-        'Pragma': 'no-cache',
-        'Cache-Control': 'no-cache',
-      },
-      body: formBody.toString(),
-    });
-
-    const newCookie = extractSessionCookie(loginResponse.headers);
-    if (newCookie) {
-      sessionCookie = newCookie;
-    }
-
-    const loginHtml = await loginResponse.text();
-    let parsedItems = parseOoekAccountsHtml(loginHtml);
-
-    // Update csrfMetaToken if returned in the login HTML
-    const postMetaMatch =
-      loginHtml.match(/<meta[^>]*name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i) ||
-      loginHtml.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']csrf-token["']/i);
-    if (postMetaMatch && postMetaMatch[1]) {
-      csrfMetaToken = postMetaMatch[1];
-    }
-
-    // 3. Wait at least 1 second (rate limit) then GET https://personal.ooek.od.ua/home/accounts
-    await throttleOoekRequest();
-
-    const accountsResp = await fetch('https://personal.ooek.od.ua/home/accounts', {
-      method: 'GET',
-      headers: {
-        'User-Agent': USER_AGENT,
-        'Accept': '*/*',
-        'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Referer': 'https://personal.ooek.od.ua/home/',
-        'X-CSRF-Token': csrfMetaToken || FIXED_X_CSRF_TOKEN,
-        'X-Requested-With': 'XMLHttpRequest',
-        'Cookie': sessionCookie,
-        'Connection': 'keep-alive',
-        'Pragma': 'no-cache',
-        'Cache-Control': 'no-cache',
-      },
-    });
-
-    const accountsHtml = await accountsResp.text();
-    const accountsPageItems = parseOoekAccountsHtml(accountsHtml);
-    if (accountsPageItems.length > 0) {
-      parsedItems = accountsPageItems;
-    }
-
-    const discoveredAccountNumbers = parsedItems.map((item) => item.accountNumber);
-
-    if (discoveredAccountNumbers.length > 0) {
-      acc['ooekDiscoveredAccounts'] = discoveredAccountNumbers;
-    }
-
-    // Find matching account by Personal Account Number (Особовий рахунок)
-    const cleanTarget = targetAccountNumber.replace(/\s+/g, '');
-    let matchedItem = parsedItems.find((item) => {
-      const cleanItem = item.accountNumber.replace(/\s+/g, '');
-      return (
-        cleanItem === cleanTarget ||
-        (cleanTarget && cleanItem.includes(cleanTarget)) ||
-        (cleanTarget && cleanTarget.includes(cleanItem))
-      );
-    });
-
-    if (!matchedItem && parsedItems.length === 1) {
-      matchedItem = parsedItems[0];
-    }
-
-    const syncTimestampIso = new Date().toISOString();
-    acc['ooekCabinetLastSync'] = syncTimestampIso;
-
-    if (matchedItem) {
-      const amount = matchedItem.amountToPayUah ?? 0;
-      acc['ooekBalanceUah'] = amount;
-      acc['ooekLastBillUah'] = amount;
-      acc['ooekAccountNumber'] = matchedItem.accountNumber;
-      const dateLabel = matchedItem.billUpdatedAt
-        ? `Дата рахунку: ${matchedItem.billUpdatedAt}`
-        : `Оновлено: ${new Date().toLocaleString('uk-UA')}`;
-      acc['ooekCabinetStatus'] = `Рахунок № ${matchedItem.accountNumber} • До сплати: ${amount.toFixed(2)} грн • ${dateLabel}`;
-      acc['ooekBillUpdatedAt'] = matchedItem.billUpdatedAt || null;
-
-      if (amount <= 0) {
-        // If OOEK confirms 0.0 due, automatically mark billing electricity readings for this house as paid
-        for (const r of state.utilityReadings) {
-          if (
-            r['accountId'] === acc['id'] &&
-            (r['utilityType'] === 'electricity' || !r['utilityType']) &&
-            !r['isControlOnly'] &&
-            !r['isPaid']
-          ) {
-            r['isPaid'] = true;
-            r['paidAmount'] = r['totalCost'];
-            r['paidDate'] = new Date().toISOString().split('T')[0];
-            await saveUtilityReadingToCloudSql(r).catch(() => {});
+        const liveLink = ondoJson?.data?.paymentLink;
+        if (typeof liveLink === 'string' && liveLink.includes('portmone.com.ua')) {
+          ondoDirectLink = liveLink;
+          ondoConsumer = ondoJson?.data?.consumer || null;
+          source = 'ondo_live';
+          try {
+            const decodedOndo = decodePortmonePayShopUrl(liveLink);
+            if (decodedOndo.payeeId) resolvedPayeeId = decodedOndo.payeeId;
+            if (decodedOndo.description) resolvedDescription = decodedOndo.description;
+            if (decodedOndo.attribute1) resolvedAddress = decodedOndo.attribute1;
+            if (decodedOndo.attribute3) resolvedAttr3 = decodedOndo.attribute3;
+            const parsedOndoAmount = Number(decodedOndo.amount);
+            if (body.amountUah === undefined && Number.isFinite(parsedOndoAmount) && parsedOndoAmount >= 0) {
+              resolvedAmount = Math.round(parsedOndoAmount * 100) / 100;
+            }
+          } catch {
+            // keep defaults if decode fails
           }
+        } else {
+          ondoError = 'Сервер ooek.ondo.energy не повернув paymentLink у відповіді.';
         }
+      } else {
+        ondoError = `ooek.ondo.energy повернув HTTP ${ondoResp.status} (ймовірно, гео-обмеження для хмарного сервера) — згенеровано пряме посилання Portmone локально.`;
       }
-
-      await saveUtilityAccountToCloudSql(acc);
-      bumpVersion();
-
-      res.json({
-        success: true,
-        account: sanitizeUtilityAccountForClient(acc),
-        amountToPayUah: amount,
-        billUpdatedAt: matchedItem.billUpdatedAt,
-        statusMessage: acc['ooekCabinetStatus'],
-        message: `ООЕК синхронізовано! Рахунок № ${matchedItem.accountNumber}: до сплати ${amount.toFixed(2)} грн (${dateLabel})`,
-      });
-      return;
+    } catch (err: unknown) {
+      ondoError =
+        err instanceof Error
+          ? `ooek.ondo.energy недоступний (${err.message}) — згенеровано пряме посилання Portmone локально.`
+          : 'ooek.ondo.energy недоступний — згенеровано пряме посилання Portmone локально.';
     }
-
-    if (parsedItems.length > 0) {
-      const availableList = discoveredAccountNumbers.join(', ');
-      acc['ooekCabinetStatus'] = `Особовий рахунок "${targetAccountNumber}" не знайдено серед рахунків у кабінеті (${availableList}). Оберіть потрібний рахунок нижче.`;
-      await saveUtilityAccountToCloudSql(acc);
-      bumpVersion();
-
-      res.json({
-        success: false,
-        account: sanitizeUtilityAccountForClient(acc),
-        statusMessage: String(acc['ooekCabinetStatus']),
-        error: String(acc['ooekCabinetStatus']),
-      });
-      return;
-    }
-
-    acc['ooekCabinetStatus'] =
-      'Не вдалося знайти список особових рахунків у відповіді personal.ooek.od.ua/home/accounts. Перевірте правильність логіну та паролю.';
-    await saveUtilityAccountToCloudSql(acc);
-    bumpVersion();
-
-    res.status(400).json({
-      success: false,
-      account: sanitizeUtilityAccountForClient(acc),
-      statusMessage: String(acc['ooekCabinetStatus']),
-      error: String(acc['ooekCabinetStatus']),
-    });
-  } catch (err: unknown) {
-    const errMsg = err instanceof Error ? err.message : 'Помилка мережі при зверненні до personal.ooek.od.ua';
-    acc['ooekCabinetStatus'] = `Помилка синхронізації з ООЕК: ${errMsg}`;
-    await saveUtilityAccountToCloudSql(acc);
-    res.status(500).json({
-      success: false,
-      account: sanitizeUtilityAccountForClient(acc),
-      statusMessage: String(acc['ooekCabinetStatus']),
-      error: String(acc['ooekCabinetStatus']),
-    });
   }
+
+  const built = buildPortmonePayShopUrl({
+    payeeId: resolvedPayeeId,
+    descriptionSlash: resolvedDescription,
+    amountUah: resolvedAmount,
+    address: resolvedAddress,
+    attribute3: resolvedAttr3,
+  });
+
+  // If ONDO returned a live link and caller didn't override amount/payeeId, return ONDO's exact link
+  const shouldUseRawOndoLink =
+    Boolean(ondoDirectLink) &&
+    body.amountUah === undefined &&
+    !body.payeeId &&
+    body.address === undefined;
+
+  res.json({
+    success: true,
+    paymentLink: shouldUseRawOndoLink && ondoDirectLink ? ondoDirectLink : built.url,
+    rawQuery: built.rawQuery,
+    payeeId: built.payeeId,
+    descriptionSlash: resolvedDescription,
+    contractNumber12,
+    amountUah: resolvedAmount,
+    amountFormatted: built.amountFormatted,
+    address: built.attribute1,
+    attribute3: built.attribute3,
+    source,
+    consumer: ondoConsumer,
+    ondoError,
+  });
 });
 
 app.post('/api/utility/accounts/:id/dtek-cabinet-sync', async (req, res) => {
@@ -4937,19 +7243,61 @@ function formatDtekMeterAccountNumber(rawNumber: string): string {
   return clean;
 }
 
-function getDtekMeterEnvCredentials(): { csrfToken: string; cookies: string; userAgent: string } {
+function getDtekMeterEnvCredentials(): {
+  csrfToken: string;
+  cookies: string;
+  userAgent: string;
+  blockId: number;
+} {
+  const blockIdNum = Number((process.env['DTEK_METER_BLOCK_ID'] || '237').trim());
   return {
     csrfToken: (process.env['DTEK_METER_CSRF_TOKEN'] || '').trim(),
     cookies: (process.env['DTEK_METER_COOKIES'] || '').trim(),
     userAgent: (process.env['DTEK_METER_USER_AGENT'] || '').trim() || DTEK_USER_AGENT,
+    blockId: !isNaN(blockIdNum) && blockIdNum > 0 ? blockIdNum : 237,
   };
 }
 
-async function fetchFreshDtekMeterSession(): Promise<{ csrfToken: string; cookies: string; userAgent: string }> {
+function mergeDtekCookieStrings(baseCookies: string, setCookieHeaders: string[]): string {
+  const cookieMap = new Map<string, string>();
+  for (const part of baseCookies.split(';')) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx > 0) {
+      cookieMap.set(trimmed.slice(0, eqIdx).trim(), trimmed.slice(eqIdx + 1).trim());
+    }
+  }
+  for (const sc of setCookieHeaders) {
+    const firstPart = sc.split(';')[0]?.trim();
+    if (!firstPart) continue;
+    const eqIdx = firstPart.indexOf('=');
+    if (eqIdx > 0) {
+      cookieMap.set(firstPart.slice(0, eqIdx).trim(), firstPart.slice(eqIdx + 1).trim());
+    }
+  }
+  return Array.from(cookieMap.entries())
+    .map(([k, v]) => `${k}=${v}`)
+    .join('; ');
+}
+
+function toDtekEscapedJson(value: unknown): string {
+  return JSON.stringify(value).replace(/[\u0080-\uffff]/g, (ch) => {
+    return '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0');
+  });
+}
+
+async function fetchFreshDtekMeterSession(): Promise<{
+  csrfToken: string;
+  cookies: string;
+  userAgent: string;
+  blockId: number;
+}> {
   const envCreds = getDtekMeterEnvCredentials();
   let csrfToken = envCreds.csrfToken;
   let cookies = envCreds.cookies;
   const userAgent = envCreds.userAgent;
+  const blockId = envCreds.blockId;
   try {
     const pageResp = await fetch('https://www.dtek-oem.com.ua/ua/meter', {
       method: 'GET',
@@ -4967,24 +7315,24 @@ async function fetchFreshDtekMeterSession(): Promise<{ csrfToken: string; cookie
         : pageResp.headers.get('set-cookie')
           ? [pageResp.headers.get('set-cookie')!]
           : [];
-    const extractedCookies = setCookies
-      .map((c) => c.split(';')[0]?.trim())
-      .filter(Boolean)
-      .join('; ');
     const html = await pageResp.text();
     const csrfMatch =
       html.match(/<meta[^>]*name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i) ||
       html.match(/<meta[^>]*content=["']([^"']+)["'][^>]*name=["']csrf-token["']/i);
     if (csrfMatch?.[1]) {
       csrfToken = csrfMatch[1];
-      if (extractedCookies) {
-        cookies = extractedCookies;
+      if (setCookies.length > 0) {
+        cookies = mergeDtekCookieStrings(envCreds.cookies, setCookies);
       }
+      upsertEnvVariables({
+        DTEK_METER_CSRF_TOKEN: csrfToken,
+        ...(cookies ? { DTEK_METER_COOKIES: cookies } : {}),
+      });
     }
   } catch {
     // Fallback to .env values if available
   }
-  return { csrfToken, cookies, userAgent };
+  return { csrfToken, cookies, userAgent, blockId };
 }
 
 async function postDtekMeterAjax(
@@ -5014,6 +7362,166 @@ async function postDtekMeterAjax(
   });
 }
 
+async function postDtekMeterSaveReception(
+  dataItems: Record<string, unknown>[],
+  profileWithBlockId: Record<string, unknown>,
+  creds: { csrfToken: string; cookies: string; userAgent: string }
+): Promise<Response> {
+  const boundary = '----geckoformboundaryc4bc8efd287d1e645f16a4660e0a414a';
+  const dataJson = toDtekEscapedJson(dataItems);
+  const profileJson = toDtekEscapedJson(profileWithBlockId);
+
+  const multipartBody =
+    `--${boundary}\r\n` +
+    `Content-Disposition: form-data; name="method"\r\n\r\n` +
+    `saveReceptionMeter\r\n` +
+    `--${boundary}\r\n` +
+    `Content-Disposition: form-data; name="data"\r\n\r\n` +
+    `${dataJson}\r\n` +
+    `--${boundary}\r\n` +
+    `Content-Disposition: form-data; name="profile"\r\n\r\n` +
+    `${profileJson}\r\n` +
+    `--${boundary}--\r\n`;
+
+  return await fetch('https://www.dtek-oem.com.ua/ua/ajax', {
+    method: 'POST',
+    headers: {
+      'User-Agent': creds.userAgent,
+      Accept: '*/*',
+      'Accept-Language': 'uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7',
+      'Accept-Encoding': 'gzip, deflate, br, zstd',
+      Referer: 'https://www.dtek-oem.com.ua/ua/meter',
+      ...(creds.csrfToken ? { 'X-CSRF-Token': creds.csrfToken } : {}),
+      'X-Requested-With': 'XMLHttpRequest',
+      'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      Origin: 'https://www.dtek-oem.com.ua',
+      Connection: 'keep-alive',
+      ...(creds.cookies ? { Cookie: creds.cookies } : {}),
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-origin',
+      Priority: 'u=0',
+      Pragma: 'no-cache',
+      'Cache-Control': 'no-cache',
+    },
+    body: multipartBody,
+    signal: AbortSignal.timeout(12000),
+  });
+}
+
+async function performDtekMeterCheckAddress(formattedNumber: string): Promise<{
+  ok: boolean;
+  status?: number;
+  parsedData: Record<string, unknown> | null;
+  rawText?: string;
+  activeCreds: { csrfToken: string; cookies: string; userAgent: string; blockId: number };
+}> {
+  const envCreds = getDtekMeterEnvCredentials();
+  let activeCreds = envCreds;
+
+  if (envCreds.csrfToken && envCreds.cookies) {
+    try {
+      const resp = await postDtekMeterAjax('checkAddress', formattedNumber, envCreds);
+      if (resp.ok) {
+        const setCookies =
+          typeof (resp.headers as unknown as { getSetCookie?: () => string[] }).getSetCookie === 'function'
+            ? (resp.headers as unknown as { getSetCookie: () => string[] }).getSetCookie()
+            : resp.headers.get('set-cookie')
+              ? [resp.headers.get('set-cookie')!]
+              : [];
+        if (setCookies.length > 0) {
+          activeCreds = {
+            ...envCreds,
+            cookies: mergeDtekCookieStrings(envCreds.cookies, setCookies),
+          };
+          upsertEnvVariables({ DTEK_METER_COOKIES: activeCreds.cookies });
+        }
+        const ct = resp.headers.get('content-type') || '';
+        const txt = await resp.text();
+        if (ct.includes('json') || txt.trim().startsWith('{')) {
+          return {
+            ok: true,
+            status: resp.status,
+            parsedData: JSON.parse(txt) as Record<string, unknown>,
+            rawText: txt,
+            activeCreds,
+          };
+        }
+      }
+    } catch {
+      // Fall through to fresh session fetch
+    }
+  }
+
+  const freshCreds = await fetchFreshDtekMeterSession();
+  activeCreds = freshCreds;
+  const dtekAjaxResp = await postDtekMeterAjax('checkAddress', formattedNumber, freshCreds);
+  const freshSetCookies =
+    typeof (dtekAjaxResp.headers as unknown as { getSetCookie?: () => string[] }).getSetCookie === 'function'
+      ? (dtekAjaxResp.headers as unknown as { getSetCookie: () => string[] }).getSetCookie()
+      : dtekAjaxResp.headers.get('set-cookie')
+        ? [dtekAjaxResp.headers.get('set-cookie')!]
+        : [];
+  if (freshSetCookies.length > 0) {
+    activeCreds = {
+      ...freshCreds,
+      cookies: mergeDtekCookieStrings(freshCreds.cookies, freshSetCookies),
+    };
+    upsertEnvVariables({ DTEK_METER_COOKIES: activeCreds.cookies });
+  }
+  const txt = await dtekAjaxResp.text();
+  if (!dtekAjaxResp.ok) {
+    return {
+      ok: false,
+      status: dtekAjaxResp.status,
+      parsedData: null,
+      rawText: txt,
+      activeCreds,
+    };
+  }
+  try {
+    return {
+      ok: true,
+      status: dtekAjaxResp.status,
+      parsedData: JSON.parse(txt) as Record<string, unknown>,
+      rawText: txt,
+      activeCreds,
+    };
+  } catch {
+    return {
+      ok: false,
+      status: dtekAjaxResp.status,
+      parsedData: null,
+      rawText: txt,
+      activeCreds,
+    };
+  }
+}
+
+function sanitizeDtekReadingValue(val: unknown): string {
+  if (val === null || val === undefined) return '';
+  const rawStr = String(val).trim().replace(',', '.');
+  if (!rawStr) return '';
+  const num = Number(rawStr);
+  if (!isNaN(num) && isFinite(num) && num >= 0) {
+    return String(Math.round(num));
+  }
+  return rawStr.replace(/[^0-9]/g, '');
+}
+
+function cleanDtekHtmlMessage(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<\/p>/gi, ' ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&quot;/gi, '"')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 app.post('/api/utility/dtek-meter-check', async (req, res) => {
   try {
     const body = req.body || {};
@@ -5037,63 +7545,26 @@ app.post('/api/utility/dtek-meter-check', async (req, res) => {
     }
 
     const formattedNumber = formatDtekMeterAccountNumber(rawNumber);
-    const envCreds = getDtekMeterEnvCredentials();
-    let dtekAjaxResp: Response | null = null;
-    let parsedData: Record<string, unknown> | null = null;
+    const checkRes = await performDtekMeterCheckAddress(formattedNumber);
 
-    // 1. Try .env session tokens first when configured
-    if (envCreds.csrfToken && envCreds.cookies) {
-      try {
-        const resp = await postDtekMeterAjax('checkAddress', formattedNumber, envCreds);
-        if (resp.ok) {
-          const ct = resp.headers.get('content-type') || '';
-          const txt = await resp.text();
-          if (ct.includes('json') || txt.trim().startsWith('{')) {
-            dtekAjaxResp = resp;
-            parsedData = JSON.parse(txt) as Record<string, unknown>;
-          }
-        }
-      } catch {
-        // Fall through to fresh session fetch
-      }
+    if (!checkRes.parsedData) {
+      res.json({
+        success: false,
+        error: checkRes.status
+          ? `ДТЕК ОЕМ повернув HTTP ${checkRes.status} (можливо, потрібне оновлення cookies у .env)`
+          : 'ДТЕК ОЕМ повернув невалідну відповідь (можливо, потрібне оновлення cookies у .env)',
+        details: (checkRes.rawText || '').slice(0, 300),
+        rawNumber,
+        formattedNumber,
+      });
+      return;
     }
 
-    // 2. Refresh session via GET /ua/meter if .env tokens missing or rejected
-    if (!parsedData) {
-      const freshCreds = await fetchFreshDtekMeterSession();
-      dtekAjaxResp = await postDtekMeterAjax('checkAddress', formattedNumber, freshCreds);
-      if (!dtekAjaxResp.ok) {
-        const errText = await dtekAjaxResp.text();
-        res.json({
-          success: false,
-          error: `ДТЕК ОЕМ повернув HTTP ${dtekAjaxResp.status}`,
-          details: errText.slice(0, 300),
-          rawNumber,
-          formattedNumber,
-        });
-        return;
-      }
-      const txt = await dtekAjaxResp.text();
-      try {
-        parsedData = JSON.parse(txt) as Record<string, unknown>;
-      } catch {
-        res.json({
-          success: false,
-          error: 'ДТЕК ОЕМ повернув невалідну відповідь (можливо, потрібне оновлення cookies у .env)',
-          details: txt.slice(0, 200),
-          rawNumber,
-          formattedNumber,
-        });
-        return;
-      }
-    }
-
-    const data = parsedData;
+    const data = checkRes.parsedData;
     if (data && data['result'] === false) {
       const addressMsg =
-        typeof data['address'] === 'string'
-          ? data['address']
-          : 'Особовий рахунок не знайдено або вказано невірно в базі ДТЕК ОЕМ';
+        cleanDtekHtmlMessage(data['address']) ||
+        'Особовий рахунок не знайдено або вказано невірно в базі ДТЕК ОЕМ';
       res.json({
         success: false,
         error: addressMsg,
@@ -5112,6 +7583,209 @@ app.post('/api/utility/dtek-meter-check', async (req, res) => {
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Помилка запиту до ДТЕК ОЕМ';
+    res.json({ success: false, error: msg });
+  }
+});
+
+app.post('/api/utility/dtek-meter-submit', async (req, res) => {
+  try {
+    const body = req.body || {};
+    let rawNumber = String(body.accountNumber || '').trim();
+    const accountId = String(body.accountId || '').trim();
+    const cleanT1 = sanitizeDtekReadingValue(body.readingT1 ?? body.value);
+    const cleanT2 = sanitizeDtekReadingValue(body.readingT2);
+
+    if (!rawNumber && accountId) {
+      const acc = state.utilityAccounts.find((a) => a['id'] === accountId);
+      if (acc) {
+        rawNumber = String(acc['accountNumber'] || acc['dtekLogin'] || '').trim();
+      }
+    }
+
+    if (!rawNumber) {
+      res.json({
+        success: false,
+        error: 'Особовий рахунок не вказано у налаштуваннях будинку.',
+      });
+      return;
+    }
+
+    if (!cleanT1) {
+      res.json({
+        success: false,
+        error: 'Введіть нове значення показів лічильника для передачі.',
+      });
+      return;
+    }
+
+    const formattedNumber = formatDtekMeterAccountNumber(rawNumber);
+    let activeCreds = getDtekMeterEnvCredentials();
+    let zonesList: Record<string, unknown>[] = Array.isArray(body.zonesData)
+      ? (body.zonesData as Record<string, unknown>[])
+      : [];
+    let profileObj: Record<string, unknown> | null =
+      body.profile && typeof body.profile === 'object' ? (body.profile as Record<string, unknown>) : null;
+
+    // If full zones array or profile wasn't passed by the client, perform checkAddress automatically
+    if (zonesList.length === 0 || !profileObj) {
+      const checkRes = await performDtekMeterCheckAddress(formattedNumber);
+      activeCreds = checkRes.activeCreds;
+      if (!checkRes.parsedData || checkRes.parsedData['result'] === false) {
+        const errMsg =
+          cleanDtekHtmlMessage(checkRes.parsedData?.['address']) ||
+          'Не вдалося отримати дані лічильника з ДТЕК ОЕМ перед передачею показів';
+        res.json({
+          success: false,
+          error: errMsg,
+          data: checkRes.parsedData,
+        });
+        return;
+      }
+      const dataArr = Array.isArray(checkRes.parsedData['data'])
+        ? (checkRes.parsedData['data'] as Record<string, unknown>[])
+        : [];
+      if (dataArr.length > 0) {
+        zonesList = dataArr;
+      } else if (body.zoneData && typeof body.zoneData === 'object') {
+        zonesList = [body.zoneData as Record<string, unknown>];
+      }
+      if (!profileObj && checkRes.parsedData['profile'] && typeof checkRes.parsedData['profile'] === 'object') {
+        profileObj = checkRes.parsedData['profile'] as Record<string, unknown>;
+      }
+    }
+
+    if (zonesList.length === 0 || !profileObj) {
+      res.json({
+        success: false,
+        error: 'У відповіді ДТЕК ОЕМ відсутні необхідні поля data або profile для формування запиту saveReceptionMeter.',
+      });
+      return;
+    }
+
+    if (zonesList.length >= 2 && !cleanT2) {
+      res.json({
+        success: false,
+        error: 'Цей лічильник у базі ДТЕК ОЕМ є двозонним (День/Ніч). Будь ласка, введіть покази для обох зон (День та Ніч).',
+      });
+      return;
+    }
+
+    const dataPayload: Record<string, unknown>[] = zonesList.map((zone, idx) => {
+      if (zonesList.length === 1) {
+        return {
+          ...zone,
+          value: cleanT1,
+        };
+      }
+      const alias = String(zone['alias'] || '').toLowerCase();
+      const codeZone = String(zone['codeZone'] || '');
+      const codeScale = String(zone['codeScale'] || '');
+      const name = String(zone['name'] || '').toLowerCase();
+
+      const isNight =
+        alias === 'night' ||
+        codeZone === '05' ||
+        codeScale === '002' ||
+        name.includes('ніч') ||
+        name.includes('ночь');
+      const isDay =
+        alias === 'day' ||
+        codeZone === '04' ||
+        codeScale === '001' ||
+        name.includes('день');
+
+      const zoneValue = isNight ? cleanT2 || cleanT1 : isDay ? cleanT1 : idx === 0 ? cleanT1 : cleanT2 || cleanT1;
+      return {
+        ...zone,
+        value: zoneValue,
+      };
+    });
+
+    const profilePayload: Record<string, unknown> = {
+      ...profileObj,
+      'block-id': activeCreds.blockId,
+    };
+
+    let saveResp: Response | null = null;
+    let parsedSaveData: Record<string, unknown> | null = null;
+    let rawSaveText = '';
+
+    // 1. Try with current .env credentials
+    if (activeCreds.csrfToken && activeCreds.cookies) {
+      try {
+        const resp = await postDtekMeterSaveReception(dataPayload, profilePayload, activeCreds);
+        rawSaveText = await resp.text();
+        const ct = resp.headers.get('content-type') || '';
+        if (resp.ok && (ct.includes('json') || rawSaveText.trim().startsWith('{'))) {
+          saveResp = resp;
+          parsedSaveData = JSON.parse(rawSaveText) as Record<string, unknown>;
+        }
+      } catch {
+        // Fall through to fresh session retry
+      }
+    }
+
+    // 2. Retry with refreshed session if needed
+    if (!parsedSaveData) {
+      const freshCheck = await performDtekMeterCheckAddress(formattedNumber);
+      saveResp = await postDtekMeterSaveReception(dataPayload, profilePayload, freshCheck.activeCreds);
+      rawSaveText = await saveResp.text();
+      try {
+        parsedSaveData = JSON.parse(rawSaveText) as Record<string, unknown>;
+      } catch {
+        res.json({
+          success: false,
+          error: saveResp.ok
+            ? 'ДТЕК ОЕМ повернув невалідну відповідь при збереженні показів (перевірте cookies у .env)'
+            : `ДТЕК ОЕМ повернув HTTP ${saveResp.status} при передачі показів`,
+          details: rawSaveText.slice(0, 300),
+          sentPayload: {
+            method: 'saveReceptionMeter',
+            data: dataPayload,
+            profile: profilePayload,
+          },
+        });
+        return;
+      }
+    }
+
+    if (parsedSaveData && parsedSaveData['result'] === false) {
+      const dtekErr =
+        cleanDtekHtmlMessage(parsedSaveData['address']) ||
+        cleanDtekHtmlMessage(parsedSaveData['error']) ||
+        cleanDtekHtmlMessage(parsedSaveData['message']) ||
+        cleanDtekHtmlMessage(parsedSaveData['text']) ||
+        'Сайт ДТЕК ОЕМ відхилив передані покази';
+      res.json({
+        success: false,
+        error: dtekErr,
+        data: parsedSaveData,
+        sentPayload: {
+          method: 'saveReceptionMeter',
+          data: dataPayload,
+          profile: profilePayload,
+        },
+      });
+      return;
+    }
+
+    const dtekSuccessMsg =
+      cleanDtekHtmlMessage(parsedSaveData?.['address']) ||
+      cleanDtekHtmlMessage(parsedSaveData?.['message']) ||
+      'Покази успішно передано до ДТЕК ОЕМ!';
+
+    res.json({
+      success: true,
+      message: dtekSuccessMsg,
+      data: parsedSaveData,
+      sentPayload: {
+        method: 'saveReceptionMeter',
+        data: dataPayload,
+        profile: profilePayload,
+      },
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Помилка відправки показів до ДТЕК ОЕМ';
     res.json({ success: false, error: msg });
   }
 });
@@ -5144,6 +7818,14 @@ app.post('/api/utility/readings', async (req, res) => {
   state.utilityReadings.unshift(reading);
   await saveUtilityReadingToCloudSql(reading);
   bumpVersion();
+  emitAppSignal({
+    scope: 'utility',
+    action: 'reading:created',
+    entityId: String(reading['id'] || ''),
+    audience: getUtilityHouseAudienceUserIds(String(reading['accountId'] || ''), [userIdStr]),
+    originClientId: getClientInstanceId(req),
+    actorUserId: userIdStr,
+  });
   res.json({ success: true, reading });
 });
 
@@ -5172,6 +7854,14 @@ app.put('/api/utility/readings/:id', async (req, res) => {
   state.utilityReadings[idx] = reading;
   await saveUtilityReadingToCloudSql(reading);
   bumpVersion();
+  emitAppSignal({
+    scope: 'utility',
+    action: 'reading:updated',
+    entityId: id,
+    audience: getUtilityHouseAudienceUserIds(targetAcc || String(reading['accountId'] || ''), [String(user['id'] || '')]),
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(user['id'] || ''),
+  });
   res.json({ success: true, reading });
 });
 
@@ -5183,8 +7873,9 @@ app.delete('/api/utility/readings/:id', async (req, res) => {
   }
   const { id } = req.params;
   const existing = state.utilityReadings.find((r) => r['id'] === id);
+  let targetAcc: Record<string, unknown> | undefined;
   if (existing) {
-    const targetAcc = state.utilityAccounts.find((a) => a['id'] === existing['accountId']);
+    targetAcc = state.utilityAccounts.find((a) => a['id'] === existing['accountId']);
     if (targetAcc && !userCanAccessUtilityAccount(user, realAdmin, targetAcc)) {
       res.status(403).json({ error: 'У вас немає доступу до цього будинку' });
       return;
@@ -5193,6 +7884,14 @@ app.delete('/api/utility/readings/:id', async (req, res) => {
   state.utilityReadings = state.utilityReadings.filter((r) => r['id'] !== id);
   await deleteUtilityReadingFromCloudSql(id);
   bumpVersion();
+  emitAppSignal({
+    scope: 'utility',
+    action: 'reading:deleted',
+    entityId: id,
+    audience: getUtilityHouseAudienceUserIds(targetAcc || String(existing?.['accountId'] || ''), [String(user['id'] || '')]),
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(user['id'] || ''),
+  });
   res.json({ success: true });
 });
 
@@ -5223,6 +7922,14 @@ app.post('/api/utility/readings/:id/pay', async (req, res) => {
   state.utilityReadings[idx] = reading;
   await saveUtilityReadingToCloudSql(reading);
   bumpVersion();
+  emitAppSignal({
+    scope: 'utility',
+    action: 'reading:paid',
+    entityId: id,
+    audience: getUtilityHouseAudienceUserIds(targetAcc || String(reading['accountId'] || ''), [String(user['id'] || '')]),
+    originClientId: getClientInstanceId(req),
+    actorUserId: String(user['id'] || ''),
+  });
   res.json({ success: true, reading });
 });
 
@@ -5336,6 +8043,8 @@ function getKyivTimeParts(now = new Date()) {
 
 function getDtekScheduleDbCache(): DtekScheduleDbCache {
   const sysVals = getSystemValuesMap();
+  const envScheduleCookies = (process.env['DTEK_SCHEDULE_COOKIES'] || process.env['DTEK_METER_COOKIES'] || '').trim();
+  const envScheduleCsrf = (process.env['DTEK_SCHEDULE_CSRF_TOKEN'] || process.env['DTEK_METER_CSRF_TOKEN'] || '').trim();
   const raw = sysVals['dtekScheduleDbCache'] as Partial<DtekScheduleDbCache> | undefined;
   if (raw && typeof raw === 'object') {
     if (!raw.streets || typeof raw.streets !== 'object') raw.streets = {};
@@ -5344,12 +8053,16 @@ function getDtekScheduleDbCache(): DtekScheduleDbCache {
     if (!raw.addressHousesCache || typeof raw.addressHousesCache !== 'object') {
       raw.addressHousesCache = {};
     }
+    if (!raw.cookies && envScheduleCookies) raw.cookies = envScheduleCookies;
+    if (!raw.csrfToken && envScheduleCsrf) raw.csrfToken = envScheduleCsrf;
     return raw as DtekScheduleDbCache;
   }
   const initial: DtekScheduleDbCache = {
     lastFetchedAtMs: 0,
     lastFetchedAtIso: '',
     lastFetchedAtKyiv: '',
+    cookies: envScheduleCookies,
+    csrfToken: envScheduleCsrf,
     streets: {},
     fact: {},
     preset: {},
@@ -5594,6 +8307,12 @@ async function syncDtekScheduleWithDatabase(options?: {
           dbCache.lastFetchedAtKyiv = fullKyivDateTime;
           dbCache.cookies = cookies;
           dbCache.csrfToken = csrfToken;
+          if (cookies || csrfToken) {
+            upsertEnvVariables({
+              ...(csrfToken ? { DTEK_SCHEDULE_CSRF_TOKEN: csrfToken } : {}),
+              ...(cookies ? { DTEK_SCHEDULE_COOKIES: cookies } : {}),
+            });
+          }
           if (Object.keys(streets).length > 0) {
             dbCache.streets = streets;
           }
@@ -5611,7 +8330,7 @@ async function syncDtekScheduleWithDatabase(options?: {
           for (const acc of state.utilityAccounts) {
             const c = String(acc['city'] || '').trim();
             const s = String(acc['street'] || '').trim();
-            if (c && s && addressPairs.size < 6) {
+            if (c && s && addressPairs.size < 15) {
               addressPairs.add(`${c}||${s}`);
             }
           }
@@ -5632,12 +8351,13 @@ async function syncDtekScheduleWithDatabase(options?: {
           sysVals['dtekScheduleDbCache'] = dbCache;
           await persistSystemValues();
 
-          // Evaluate schedule changes across all queues and send Web Push notifications if slots changed
+          // Evaluate schedule changes across all queues + per-address emergency outages and send Web Push notifications
           const { allQueuesSchedules, resolvedTodayDateStr } = buildAllQueuesSchedulesFromFactData(
             fact.data,
             new Date(fetchCompletedMs)
           );
-          void evaluateDtekScheduleChangesAndPush(allQueuesSchedules, resolvedTodayDateStr);
+          void evaluateDtekScheduleChangesAndPush(allQueuesSchedules, resolvedTodayDateStr, dbCache);
+          void evaluateDtekAddressEmergencyChangesAndPush(dbCache, fetchCompletedMs);
 
           return {
             dbCache,
@@ -5832,13 +8552,13 @@ app.get('/api/utility/dtek-shutdowns', async (req, res) => {
   const addrCacheKey = `${city.toLowerCase()}|${street.toLowerCase()}`;
   let addrEntry = dbCache.addressHousesCache[addrCacheKey];
 
-  // If this specific city+street is not yet cached in the DB (or was refreshed alongside a live DTEK sync),
-  // resolve it once and persist in the DB cache so future requests read from DB.
-  if (
-    (!addrEntry || (didFetchLiveFromDtek && Date.now() - addrEntry.fetchedAtMs > 60_000)) &&
-    dbCache.csrfToken &&
-    dbCache.cookies
-  ) {
+  // If this specific city+street is not yet cached in the DB, or refreshed on live sync / manual refresh after 15s,
+  // resolve it and persist in the DB cache so future requests read from DB.
+  const shouldRefreshAddressHouses =
+    !addrEntry ||
+    (didFetchLiveFromDtek && Date.now() - addrEntry.fetchedAtMs > 60_000) ||
+    (requestedManualRefresh && Date.now() - addrEntry.fetchedAtMs > 15_000);
+  if (shouldRefreshAddressHouses && dbCache.csrfToken && dbCache.cookies) {
     const lookedUp = await fetchDtekAjaxHomeNums(dbCache.cookies, dbCache.csrfToken, city, street);
     if (lookedUp && Object.keys(lookedUp.housesMap).length > 0) {
       addrEntry = {
@@ -5946,14 +8666,17 @@ app.get('/api/utility/dtek-shutdowns', async (req, res) => {
     });
   }
 
+  const houseEmergency = parseDtekHouseOutageInfoServer(houseData, now.getTime());
+
   const todaySchedule = dailySchedules[0];
   const tomorrowSchedule = dailySchedules.length > 1 ? dailySchedules[1] : null;
   const currentSlot =
     todaySchedule.hourlySchedule.find((item) => item.hour === currentKyivHour) ||
     todaySchedule.hourlySchedule[0];
-  const isPowerAvailableNow = Boolean(
+  const isScheduledPowerOn = Boolean(
     kyivMinute < 30 ? currentSlot?.firstHalfPower : currentSlot?.secondHalfPower
   );
+  const isPowerAvailableNow = !houseEmergency.isActiveNow && isScheduledPowerOn;
 
   const { allQueuesSchedules } = buildAllQueuesSchedulesFromFactData(factDataMap, now);
 
@@ -5988,6 +8711,13 @@ app.get('/api/utility/dtek-shutdowns', async (req, res) => {
     endDate: (houseData?.['end_date'] as string) || null,
     subType: (houseData?.['type'] as string) || null,
     subStatus: (houseData?.['sub_type'] as string) || null,
+    isEmergencyOutage: houseEmergency.hasFactOutage,
+    isFactOutageNow: houseEmergency.isActiveNow,
+    isEmergencyUpcoming: houseEmergency.isUpcoming,
+    emergencyOutageReason: houseEmergency.hasFactOutage ? houseEmergency.reason : null,
+    emergencyStartDate: houseEmergency.startDate || null,
+    emergencyEndDate: houseEmergency.endDate || null,
+    emergencyWindowLabel: houseEmergency.windowLabel || null,
     queueGroup,
     scheduleDate: todaySchedule.scheduleDate,
     hourlySchedule: todaySchedule.hourlySchedule,
@@ -5997,7 +8727,9 @@ app.get('/api/utility/dtek-shutdowns', async (req, res) => {
     isPowerAvailableNow,
     currentKyivHour,
     kyivTime: kyivTimeStr,
-    recentScheduleChanges: getScheduleChangesLogList().slice(0, 15),
+    recentScheduleChanges: getScheduleChangesLogList()
+      .filter((c) => c.queueKey === queueGroup || c.queueKey === queueGroup.replace(/^GPV/, ''))
+      .slice(0, 100),
     raw: addrEntry?.housesMap ? { data: addrEntry.housesMap, updateTimestamp } : null,
   });
 });
@@ -6043,12 +8775,33 @@ let vapidInitialized = false;
 
 function ensureVapidKeys(): { publicKey: string; privateKey: string } {
   const sysVals = getSystemValuesMap();
+  const envPub = (process.env['VAPID_PUBLIC_KEY'] || '').trim();
+  const envPriv = (process.env['VAPID_PRIVATE_KEY'] || '').trim();
+  const vapidSubject = (process.env['VAPID_SUBJECT'] || 'mailto:admin@homehub.ai.studio').trim();
+
+  if (envPub && envPriv) {
+    if (!vapidInitialized) {
+      try {
+        webpush.setVapidDetails(vapidSubject, envPub, envPriv);
+        vapidInitialized = true;
+      } catch (e) {
+        console.warn('[WebPush] Failed to set .env VAPID details:', e);
+      }
+    }
+    const existing = sysVals['vapidKeys'] as { publicKey?: string; privateKey?: string } | undefined;
+    if (existing?.publicKey !== envPub || existing?.privateKey !== envPriv) {
+      sysVals['vapidKeys'] = { publicKey: envPub, privateKey: envPriv };
+      void persistSystemValues();
+    }
+    return { publicKey: envPub, privateKey: envPriv };
+  }
+
   const existing = sysVals['vapidKeys'] as { publicKey?: string; privateKey?: string } | undefined;
   if (existing?.publicKey && existing?.privateKey) {
     if (!vapidInitialized) {
       try {
         webpush.setVapidDetails(
-          'mailto:admin@homehub.ai.studio',
+          vapidSubject,
           existing.publicKey,
           existing.privateKey
         );
@@ -6057,14 +8810,22 @@ function ensureVapidKeys(): { publicKey: string; privateKey: string } {
         console.warn('[WebPush] Failed to set existing VAPID details:', e);
       }
     }
+    upsertEnvVariables({
+      VAPID_PUBLIC_KEY: existing.publicKey,
+      VAPID_PRIVATE_KEY: existing.privateKey,
+    });
     return { publicKey: existing.publicKey, privateKey: existing.privateKey };
   }
 
   const generated = webpush.generateVAPIDKeys();
   sysVals['vapidKeys'] = generated;
+  upsertEnvVariables({
+    VAPID_PUBLIC_KEY: generated.publicKey,
+    VAPID_PRIVATE_KEY: generated.privateKey,
+  });
   try {
     webpush.setVapidDetails(
-      'mailto:admin@homehub.ai.studio',
+      vapidSubject,
       generated.publicKey,
       generated.privateKey
     );
@@ -6106,14 +8867,250 @@ function computeHourlySignature(
 interface ScheduleChangeLogEntry {
   id: string;
   detectedAt: string;
+  detectedAtKyiv?: string;
   queueKey: string;
   queueTitle: string;
-  changeType: 'today_changed' | 'tomorrow_appeared' | 'tomorrow_changed' | 'schedule_updated';
+  changeType:
+    | 'today_changed'
+    | 'new_day_schedule'
+    | 'tomorrow_appeared'
+    | 'tomorrow_changed'
+    | 'schedule_updated'
+    | 'emergency_outage';
   title: string;
   body: string;
   scheduleDate: string;
   oldIntervals: string[];
   newIntervals: string[];
+  totalPowerHours?: number;
+  totalOutageHours?: number;
+  oldTotalOutageHours?: number;
+  addressLabel?: string;
+  emergencyReason?: string;
+  emergencyStartDate?: string;
+  emergencyEndDate?: string;
+}
+
+function formatKyivDateParts(nowMs = Date.now()): {
+  kyivDate: string;
+  kyivTime: string;
+  kyivDateTime: string;
+} {
+  try {
+    const dt = new Date(nowMs);
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Europe/Kyiv',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(dt);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value || '00';
+    const kyivDate = `${get('day')}.${get('month')}.${get('year')}`;
+    const kyivTime = `${get('hour')}:${get('minute')}`;
+    return { kyivDate, kyivTime, kyivDateTime: `${kyivDate} ${kyivTime}` };
+  } catch {
+    const iso = new Date(nowMs).toISOString();
+    return { kyivDate: iso.slice(0, 10), kyivTime: iso.slice(11, 16), kyivDateTime: iso };
+  }
+}
+
+function extractOutageIntervalsFromHourly(
+  hours: { hour: number; firstHalfPower: boolean; secondHalfPower: boolean }[]
+): string[] {
+  const intervals: string[] = [];
+  let start: string | null = null;
+  const pad2 = (n: number) => String(n).padStart(2, '0');
+  for (const h of hours) {
+    const hZero = Math.max(0, h.hour - 1);
+    const t0 = `${pad2(hZero)}:00`;
+    const t30 = `${pad2(hZero)}:30`;
+    if (!h.firstHalfPower) {
+      if (start === null) start = t0;
+    } else if (start !== null) {
+      intervals.push(`${start} - ${t0}`);
+      start = null;
+    }
+    if (!h.secondHalfPower) {
+      if (start === null) start = t30;
+    } else if (start !== null) {
+      intervals.push(`${start} - ${t30}`);
+      start = null;
+    }
+  }
+  if (start !== null) {
+    intervals.push(`${start} - 24:00`);
+  }
+  return intervals;
+}
+
+interface ParsedServerEmergencyOutage {
+  hasFactOutage: boolean;
+  isActiveNow: boolean;
+  isUpcoming: boolean;
+  reason: string;
+  typeCode: string;
+  startDate: string;
+  endDate: string;
+  windowLabel: string;
+  signature: string;
+}
+
+function parseDtekDateTimeMsServer(raw?: string | null): number | null {
+  const s = (raw || '').trim();
+  if (!s) return null;
+  let day = 0;
+  let month = 0;
+  let year = 0;
+  let hour = 0;
+  let minute = 0;
+  const m1 = s.match(/^(\d{1,2}):(\d{2})\s+(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  const m2 = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})\s+(\d{1,2}):(\d{2})$/);
+  if (m1) {
+    hour = Number(m1[1]);
+    minute = Number(m1[2]);
+    day = Number(m1[3]);
+    month = Number(m1[4]);
+    year = Number(m1[5]);
+  } else if (m2) {
+    day = Number(m2[1]);
+    month = Number(m2[2]);
+    year = Number(m2[3]);
+    hour = Number(m2[4]);
+    minute = Number(m2[5]);
+  } else {
+    const parsed = Date.parse(s);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  if (!year || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59) {
+    return null;
+  }
+  const targetUtc = Date.UTC(year, month - 1, day, hour, minute, 0, 0);
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Kyiv',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date(targetUtc));
+    const getPart = (t: string) => Number(parts.find((p) => p.type === t)?.value || 0);
+    let kyivH = getPart('hour');
+    if (kyivH === 24) kyivH = 0;
+    const kyivAsUtc = Date.UTC(
+      getPart('year'),
+      getPart('month') - 1,
+      getPart('day'),
+      kyivH,
+      getPart('minute'),
+      0,
+      0
+    );
+    return targetUtc - (kyivAsUtc - targetUtc);
+  } catch {
+    return targetUtc - 2 * 3600 * 1000;
+  }
+}
+
+function parseDtekHouseOutageInfoServer(
+  houseData: Record<string, unknown> | null | undefined,
+  nowMs = Date.now()
+): ParsedServerEmergencyOutage {
+  const subStatus = String(houseData?.['sub_type'] || '').trim();
+  const typeCode = String(houseData?.['type'] || '').trim();
+  const startDate = String(houseData?.['start_date'] || '').trim();
+  const endDate = String(houseData?.['end_date'] || '').trim();
+  if (!subStatus && !startDate && !endDate) {
+    return {
+      hasFactOutage: false,
+      isActiveNow: false,
+      isUpcoming: false,
+      reason: '',
+      typeCode: '',
+      startDate: '',
+      endDate: '',
+      windowLabel: '',
+      signature: 'NONE',
+    };
+  }
+  const startMs = parseDtekDateTimeMsServer(startDate);
+  const endMs = parseDtekDateTimeMsServer(endDate);
+  const isExpired = endMs !== null && nowMs > endMs;
+  let isActiveNow = false;
+  if (!isExpired) {
+    if (startMs !== null && endMs !== null) {
+      isActiveNow = nowMs >= startMs && nowMs <= endMs;
+    } else if (startMs !== null) {
+      isActiveNow = nowMs >= startMs && nowMs - startMs < 48 * 3600 * 1000;
+    } else if (endMs !== null) {
+      isActiveNow = nowMs <= endMs;
+    } else if (subStatus) {
+      isActiveNow = true;
+    }
+  }
+  const isUpcoming = !isActiveNow && !isExpired && startMs !== null && nowMs < startMs;
+  const hasFactOutage = isActiveNow || isUpcoming;
+  const reason = subStatus || 'Аварійне відключення електроенергії';
+  const sTime = startDate.match(/^(\d{1,2}:\d{2})/)?.[1] || startDate;
+  const eTime = endDate.match(/^(\d{1,2}:\d{2})/)?.[1] || endDate;
+  const windowLabel =
+    sTime && eTime ? `${sTime} – ${eTime}` : startDate || endDate || '';
+  const signature = hasFactOutage ? `${reason}|${typeCode}|${startDate}|${endDate}` : 'NONE';
+  return {
+    hasFactOutage,
+    isActiveNow,
+    isUpcoming,
+    reason,
+    typeCode,
+    startDate,
+    endDate,
+    windowLabel,
+    signature,
+  };
+}
+
+function resolveHouseEntryFromMap(
+  housesMap: Record<string, Record<string, unknown>> | undefined,
+  houseNum: string
+): Record<string, unknown> | null {
+  if (!housesMap) return null;
+  if (housesMap[houseNum]) return housesMap[houseNum];
+  const cleanTarget = houseNum.trim().toLowerCase();
+  const key =
+    Object.keys(housesMap).find((k) => k.trim().toLowerCase() === cleanTarget) ||
+    Object.keys(housesMap).find((k) => k.trim().toLowerCase().startsWith(cleanTarget));
+  return key ? housesMap[key] : null;
+}
+
+function getDtekEmergencyFingerprintsMap(): Record<
+  string,
+  {
+    signature: string;
+    queueKey: string;
+    addressLabel: string;
+    updatedAt: string;
+  }
+> {
+  const sysVals = getSystemValuesMap();
+  if (
+    !sysVals['dtekEmergencyFingerprints'] ||
+    typeof sysVals['dtekEmergencyFingerprints'] !== 'object'
+  ) {
+    sysVals['dtekEmergencyFingerprints'] = {};
+  }
+  return sysVals['dtekEmergencyFingerprints'] as Record<
+    string,
+    {
+      signature: string;
+      queueKey: string;
+      addressLabel: string;
+      updatedAt: string;
+    }
+  >;
 }
 
 function getScheduleChangesLogList(): ScheduleChangeLogEntry[] {
@@ -6127,9 +9124,16 @@ function getScheduleChangesLogList(): ScheduleChangeLogEntry[] {
 function appendScheduleChangeLog(entry: ScheduleChangeLogEntry): void {
   const list = getScheduleChangesLogList();
   list.unshift(entry);
-  if (list.length > 40) {
-    list.length = 40;
+  if (list.length > 300) {
+    list.length = 300;
   }
+  emitAppSignal({
+    scope: 'schedule',
+    action: entry.changeType || 'schedule:changed',
+    entityId: entry.id,
+    queueKey: entry.queueKey,
+    audience: getAllConnectedUserIds(),
+  });
 }
 
 async function sendWebPushToSubscription(
@@ -6164,6 +9168,138 @@ async function sendWebPushToSubscription(
   }
 }
 
+async function evaluateDtekAddressEmergencyChangesAndPush(
+  dbCache: DtekScheduleDbCache,
+  nowMs = Date.now()
+): Promise<void> {
+  const fingerprints = getDtekEmergencyFingerprintsMap();
+  const subs = getPushSubscriptionsList();
+  let updated = false;
+
+  const seenAddresses = new Set<string>();
+  for (const acc of state.utilityAccounts) {
+    const city = String(acc['city'] || '').trim();
+    const street = String(acc['street'] || '').trim();
+    const houseNum = String(acc['houseNum'] || '').trim();
+    if (!city || !street || !houseNum) continue;
+
+    const addrKey = `${city.toLowerCase()}|${street.toLowerCase()}|${houseNum.toLowerCase()}`;
+    if (seenAddresses.has(addrKey)) continue;
+    seenAddresses.add(addrKey);
+
+    const addrEntry = dbCache.addressHousesCache[`${city.toLowerCase()}|${street.toLowerCase()}`];
+    if (!addrEntry?.housesMap) continue;
+
+    const houseData = resolveHouseEntryFromMap(addrEntry.housesMap, houseNum);
+    if (!houseData) continue;
+
+    const em = parseDtekHouseOutageInfoServer(houseData, nowMs);
+    const rawQ =
+      Array.isArray(houseData['sub_type_reason']) && houseData['sub_type_reason'].length > 0
+        ? String(houseData['sub_type_reason'][0])
+        : String(acc['dtekQueueGroup'] || 'GPV4.1');
+    const queueKey = rawQ.startsWith('GPV') ? rawQ : `GPV${rawQ}`;
+    const queueNumber = queueKey.replace(/^GPV/, '');
+    const queueTitle = `Черга ${queueNumber}`;
+    const houseName = String(acc['name'] || '').trim() || `${city}, ${street}, буд. ${houseNum}`;
+    const addressLabel = `${city}, ${street}, буд. ${houseNum}`;
+
+    const prev = fingerprints[addrKey];
+    const isNewOrUpdatedEmergency = em.hasFactOutage && prev?.signature !== em.signature;
+
+    if (isNewOrUpdatedEmergency) {
+      const changeId = `emg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const title = `🚨 Аварійне відключення (${houseName})`;
+      const periodText = em.windowLabel || `${em.startDate || '—'} – ${em.endDate || '—'}`;
+      const body = `${em.reason} за адресою ${addressLabel}. Період: ${periodText}. Діє поза стабілізаційним графіком (${queueTitle}).`;
+
+      const kyivNow = formatKyivDateParts(nowMs);
+      appendScheduleChangeLog({
+        id: changeId,
+        detectedAt: new Date(nowMs).toISOString(),
+        detectedAtKyiv: kyivNow.kyivDateTime,
+        queueKey,
+        queueTitle,
+        changeType: 'emergency_outage',
+        title,
+        body,
+        scheduleDate: em.startDate || kyivNow.kyivDate,
+        oldIntervals: [],
+        newIntervals: [],
+        addressLabel,
+        emergencyReason: em.reason,
+        emergencyStartDate: em.startDate,
+        emergencyEndDate: em.endDate,
+      });
+
+      const targetSubs = subs.filter(
+        (s) =>
+          !s.queueGroup ||
+          s.queueGroup === 'ALL' ||
+          s.queueGroup === queueKey ||
+          s.queueGroup.replace('GPV', '') === queueNumber
+      );
+      for (const sub of targetSubs) {
+        await sendWebPushToSubscription(sub, {
+          title,
+          body,
+          tag: `dtek-emergency-${queueKey}-${Date.now()}`,
+          url: '/?tab=outage_schedule',
+          queueGroup: queueKey,
+          changeId,
+        });
+      }
+      updated = true;
+    }
+
+    if (!prev || prev.signature !== em.signature) {
+      fingerprints[addrKey] = {
+        signature: em.signature,
+        queueKey,
+        addressLabel,
+        updatedAt: new Date(nowMs).toISOString(),
+      };
+      updated = true;
+    }
+  }
+
+  if (updated) {
+    await persistSystemValues();
+  }
+}
+
+function collectActiveEmergencySummaryByQueue(
+  dbCache: DtekScheduleDbCache | undefined,
+  nowMs = Date.now()
+): Record<string, { addressLabel: string; reason: string; windowLabel: string }> {
+  const result: Record<string, { addressLabel: string; reason: string; windowLabel: string }> = {};
+  if (!dbCache) return result;
+  for (const acc of state.utilityAccounts) {
+    const city = String(acc['city'] || '').trim();
+    const street = String(acc['street'] || '').trim();
+    const houseNum = String(acc['houseNum'] || '').trim();
+    if (!city || !street || !houseNum) continue;
+    const addrEntry = dbCache.addressHousesCache[`${city.toLowerCase()}|${street.toLowerCase()}`];
+    const houseData = resolveHouseEntryFromMap(addrEntry?.housesMap, houseNum);
+    if (!houseData) continue;
+    const em = parseDtekHouseOutageInfoServer(houseData, nowMs);
+    if (!em.hasFactOutage) continue;
+    const rawQ =
+      Array.isArray(houseData['sub_type_reason']) && houseData['sub_type_reason'].length > 0
+        ? String(houseData['sub_type_reason'][0])
+        : String(acc['dtekQueueGroup'] || '');
+    const queueKey = rawQ ? (rawQ.startsWith('GPV') ? rawQ : `GPV${rawQ}`) : '';
+    if (queueKey && !result[queueKey]) {
+      result[queueKey] = {
+        addressLabel: String(acc['name'] || `${city}, ${street}, ${houseNum}`),
+        reason: em.reason,
+        windowLabel: em.windowLabel || `${em.startDate} – ${em.endDate}`,
+      };
+    }
+  }
+  return result;
+}
+
 async function evaluateDtekScheduleChangesAndPush(
   allQueuesSchedules: {
     queueKey: string;
@@ -6181,10 +9317,12 @@ async function evaluateDtekScheduleChangesAndPush(
       hourlySchedule: { hour: number; firstHalfPower: boolean; secondHalfPower: boolean }[];
     } | null;
   }[],
-  todayDateStr: string
+  todayDateStr: string,
+  dbCache?: DtekScheduleDbCache
 ): Promise<{ changedQueues: string[]; notificationsSent: number }> {
   const fingerprints = getScheduleFingerprintsMap();
   const subs = getPushSubscriptionsList();
+  const activeEmergencyByQueue = collectActiveEmergencySummaryByQueue(dbCache);
   const changedQueues: string[] = [];
   let notificationsSent = 0;
   let fingerprintsUpdated = false;
@@ -6198,36 +9336,57 @@ async function evaluateDtekScheduleChangesAndPush(
       : '';
 
     const prev = fingerprints[qKey];
+    const activeEmergency = activeEmergencyByQueue[qKey];
+    const emergencySuffix = activeEmergency
+      ? ` 🚨 Також за адресою (${activeEmergency.addressLabel}) діє ${activeEmergency.reason}: ${activeEmergency.windowLabel}.`
+      : '';
 
     if (prev) {
-      const sameDayTodayChanged = prev.scheduleDate === q.scheduleDate && prev.todaySignature !== todaySig;
-      // Also detect if yesterday's forecast for today changed after midnight rollover
-      const rolloverChanged =
-        prev.scheduleDate !== q.scheduleDate &&
-        prev.tomorrowDate === q.scheduleDate &&
-        Boolean(prev.tomorrowSignature) &&
-        prev.tomorrowSignature !== todaySig;
-      const todayChanged = sameDayTodayChanged || rolloverChanged;
+      const isNewDay = Boolean(prev.scheduleDate && q.scheduleDate && prev.scheduleDate !== q.scheduleDate);
+      const sameDayTodayChanged = !isNewDay && prev.scheduleDate === q.scheduleDate && prev.todaySignature !== todaySig;
       const tomorrowChanged = Boolean(
-        tomSig &&
+        !isNewDay &&
+          tomSig &&
           prev.tomorrowDate === tomSchedule?.scheduleDate &&
           prev.tomorrowSignature &&
           prev.tomorrowSignature !== tomSig
       );
       const tomorrowAppeared = Boolean(
-        tomSig &&
+        !isNewDay &&
+          tomSig &&
           (!prev.tomorrowSignature || prev.tomorrowDate !== tomSchedule?.scheduleDate) &&
           tomSchedule &&
           tomSchedule.totalOutageHours > 0
       );
 
-      if (todayChanged || tomorrowChanged || tomorrowAppeared) {
+      if (isNewDay || sameDayTodayChanged || tomorrowChanged || tomorrowAppeared) {
         changedQueues.push(qKey);
 
-        let title = `⚡ Зміна графіку ДТЕК (${q.queueTitle})`;
+        let title = activeEmergency
+          ? `🚨 Зміна графіку та аварійне відкл. (${q.queueTitle})`
+          : `⚡ Зміна графіку ДТЕК (${q.queueTitle})`;
         let body = '';
         let changeType: ScheduleChangeLogEntry['changeType'] = 'today_changed';
-        if (todayChanged) {
+        let oldIntervalsForLog: string[] = [];
+        let newIntervalsForLog: string[] = q.outageIntervals || [];
+        let powerHoursForLog: number | undefined = q.totalPowerHours;
+        let outageHoursForLog: number | undefined = q.totalOutageHours;
+        let oldOutageHoursForLog: number | undefined = prev.todayOutageHours;
+        const tomOutageIntervals = tomSchedule
+          ? extractOutageIntervalsFromHourly(tomSchedule.hourlySchedule || [])
+          : [];
+
+        if (isNewDay) {
+          changeType = 'new_day_schedule';
+          title = activeEmergency
+            ? `🚨 Новий графік та аварійне відкл. (${q.queueTitle})`
+            : `📅 Новий графік ДТЕК на сьогодні (${q.queueTitle})`;
+          const newIntervals =
+            q.outageIntervals.length > 0 ? q.outageIntervals.join(', ') : 'Без відключень';
+          body = `Новий графік на сьогодні (${q.scheduleDate}): відключення ${newIntervals} (Світло: ${q.totalPowerHours} год, Відкл.: ${q.totalOutageHours} год).${emergencySuffix}`;
+          oldIntervalsForLog = [];
+          oldOutageHoursForLog = undefined;
+        } else if (sameDayTodayChanged) {
           changeType = 'today_changed';
           const newIntervals =
             q.outageIntervals.length > 0 ? q.outageIntervals.join(', ') : 'Без відключень';
@@ -6235,29 +9394,55 @@ async function evaluateDtekScheduleChangesAndPush(
             prev.todayOutageIntervals && prev.todayOutageIntervals.length > 0
               ? prev.todayOutageIntervals.join(', ')
               : 'Без відключень';
-          body = `Графік на сьогодні (${q.scheduleDate}) змінився! Нові відключення: ${newIntervals} (Світло: ${q.totalPowerHours} год, Відкл.: ${q.totalOutageHours} год). Було: ${oldIntervals}.`;
+          body = `Графік на сьогодні (${q.scheduleDate}) змінився! Нові відключення: ${newIntervals} (Світло: ${q.totalPowerHours} год, Відкл.: ${q.totalOutageHours} год). Було: ${oldIntervals}.${emergencySuffix}`;
+          oldIntervalsForLog = prev.todayOutageIntervals || [];
         } else if (tomorrowAppeared && tomSchedule) {
           changeType = 'tomorrow_appeared';
           title = `📅 Графік ДТЕК на завтра (${q.queueTitle})`;
-          body = `З'явився графік на завтра (${tomSchedule.scheduleDate}): без світла ${tomSchedule.totalOutageHours} год, зі світлом ${tomSchedule.totalPowerHours} год.`;
+          body = `З'явився графік на завтра (${tomSchedule.scheduleDate}): без світла ${tomSchedule.totalOutageHours} год, зі світлом ${tomSchedule.totalPowerHours} год.${emergencySuffix}`;
+          oldIntervalsForLog = [];
+          newIntervalsForLog = tomOutageIntervals;
+          powerHoursForLog = tomSchedule.totalPowerHours;
+          outageHoursForLog = tomSchedule.totalOutageHours;
+          oldOutageHoursForLog = undefined;
         } else if (tomorrowChanged && tomSchedule) {
           changeType = 'tomorrow_changed';
           title = `⚡ Оновився графік на завтра (${q.queueTitle})`;
-          body = `Змінився графік на завтра (${tomSchedule.scheduleDate}): без світла ${tomSchedule.totalOutageHours} год (було ${prev.tomorrowOutageHours ?? 0} год).`;
+          body = `Змінився графік на завтра (${tomSchedule.scheduleDate}): без світла ${tomSchedule.totalOutageHours} год (було ${prev.tomorrowOutageHours ?? 0} год).${emergencySuffix}`;
+          oldIntervalsForLog = prev.tomorrowOutageIntervals || [];
+          newIntervalsForLog = tomOutageIntervals;
+          powerHoursForLog = tomSchedule.totalPowerHours;
+          outageHoursForLog = tomSchedule.totalOutageHours;
+          oldOutageHoursForLog = prev.tomorrowOutageHours;
         }
 
-        const changeId = `chg_${qKey}_${Date.now()}`;
+        const nowMsLog = Date.now();
+        const kyivNowLog = formatKyivDateParts(nowMsLog);
+        const changeId = `chg_${qKey}_${nowMsLog}`;
         appendScheduleChangeLog({
           id: changeId,
-          detectedAt: new Date().toISOString(),
+          detectedAt: new Date(nowMsLog).toISOString(),
+          detectedAtKyiv: kyivNowLog.kyivDateTime,
           queueKey: qKey,
           queueTitle: q.queueTitle,
           changeType,
           title,
           body,
-          scheduleDate: q.scheduleDate || todayDateStr,
-          oldIntervals: prev.todayOutageIntervals || [],
-          newIntervals: q.outageIntervals || [],
+          scheduleDate:
+            changeType === 'tomorrow_appeared' || changeType === 'tomorrow_changed'
+              ? tomSchedule?.scheduleDate || q.scheduleDate || todayDateStr
+              : q.scheduleDate || todayDateStr,
+          oldIntervals: oldIntervalsForLog,
+          newIntervals: newIntervalsForLog,
+          totalPowerHours: powerHoursForLog,
+          totalOutageHours: outageHoursForLog,
+          oldTotalOutageHours: oldOutageHoursForLog,
+          ...(activeEmergency
+            ? {
+                addressLabel: activeEmergency.addressLabel,
+                emergencyReason: activeEmergency.reason,
+              }
+            : {}),
         });
 
         const targetSubs = subs.filter(
@@ -6284,6 +9469,9 @@ async function evaluateDtekScheduleChangesAndPush(
     }
 
     if (!prev || prev.todaySignature !== todaySig || prev.tomorrowSignature !== tomSig) {
+      const tomIntervalsSave = tomSchedule
+        ? extractOutageIntervalsFromHourly(tomSchedule.hourlySchedule || [])
+        : undefined;
       fingerprints[qKey] = {
         queueKey: qKey,
         scheduleDate: q.scheduleDate || todayDateStr,
@@ -6293,6 +9481,7 @@ async function evaluateDtekScheduleChangesAndPush(
         todayPowerHours: q.totalPowerHours,
         tomorrowDate: tomSchedule?.scheduleDate,
         tomorrowSignature: tomSig || undefined,
+        tomorrowOutageIntervals: tomIntervalsSave,
         tomorrowOutageHours: tomSchedule?.totalOutageHours,
         updatedAt: new Date().toISOString(),
       };
@@ -6309,14 +9498,26 @@ async function evaluateDtekScheduleChangesAndPush(
 
 app.get('/api/push/changes', (req, res) => {
   const queueFilter = String(req.query['queue'] || '').trim();
+  const todayOnly = String(req.query['todayOnly'] || '').trim().toLowerCase() === 'true';
   const subs = getPushSubscriptionsList();
+  const todayKyivDate = formatKyivDateParts(Date.now()).kyivDate;
   let changes = getScheduleChangesLogList();
   if (queueFilter && queueFilter !== 'ALL') {
     const norm = queueFilter.startsWith('GPV') ? queueFilter : `GPV${queueFilter}`;
-    changes = changes.filter((c) => c.queueKey === norm || c.queueKey === queueFilter);
+    const shortQ = norm.replace(/^GPV/, '');
+    changes = changes.filter(
+      (c) => c.queueKey === norm || c.queueKey === queueFilter || c.queueKey === shortQ
+    );
+  }
+  if (todayOnly) {
+    changes = changes.filter((c) => {
+      const kyivDate = c.detectedAtKyiv?.split(' ')[0] || formatKyivDateParts(Date.parse(c.detectedAt) || 0).kyivDate;
+      return kyivDate === todayKyivDate;
+    });
   }
   res.json({
-    changes: changes.slice(0, 20),
+    changes: changes.slice(0, 100),
+    todayKyivDate,
     serverTimeIso: new Date().toISOString(),
     subscriptionsCount: subs.length,
   });
@@ -6586,42 +9787,213 @@ setTimeout(() => {
   void syncDtekScheduleWithDatabase();
 }, 4000);
 
+function extractGeminiErrorMessage(err: unknown): string {
+  if (!err) return '';
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  if (typeof err === 'object') {
+    const rec = err as Record<string, unknown>;
+    if (typeof rec['message'] === 'string' && rec['message']) return rec['message'];
+    if (typeof rec['error'] === 'string' && rec['error']) return rec['error'];
+    if (rec['error'] && typeof rec['error'] === 'object') {
+      const inner = rec['error'] as Record<string, unknown>;
+      if (typeof inner['message'] === 'string' && inner['message']) return inner['message'];
+      if (typeof inner['error'] === 'string' && inner['error']) return inner['error'];
+    }
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return '';
+    }
+  }
+  return String(err);
+}
+
+function formatGeminiErrorUa(err: unknown): string {
+  const raw = extractGeminiErrorMessage(err);
+  if (
+    raw.includes('prepayment credits are depleted') ||
+    raw.includes('"code":402') ||
+    raw.includes('RESOURCE_EXHAUSTED') ||
+    raw.includes('"code":429')
+  ) {
+    return 'Вичерпано ліміт або передоплачені кредити Gemini API. Оновіть ключ GEMINI_API_KEY у панелі Settings > Secrets, або введіть покази вручну нижче.';
+  }
+  if (
+    raw.includes('GEMINI_API_KEY не налаштовано') ||
+    raw.includes('API key should be set') ||
+    raw.includes('API_KEY_INVALID') ||
+    raw.includes('PERMISSION_DENIED') ||
+    raw.includes('"code":403')
+  ) {
+    return 'Ключ GEMINI_API_KEY не налаштовано або недійсний у панелі Settings > Secrets. Ви можете ввести покази з фото вручну у полях нижче.';
+  }
+  if (!raw || raw === '[object Object]') {
+    return 'Не вдалося розпізнати покази автоматично. Введіть значення з фото вручну нижче.';
+  }
+  return raw;
+}
+
+function resolveServerGeminiApiKey(): string {
+  const fromEnv = (
+    process.env['GEMINI_API_KEY'] ||
+    process.env['GOOGLE_API_KEY'] ||
+    process.env['API_KEY'] ||
+    ''
+  ).trim();
+  if (fromEnv) return fromEnv;
+  const sysVals = getSystemValuesMap();
+  if (sysVals['geminiApiKeyEnc']) {
+    const decrypted = decryptStoredPassword(sysVals['geminiApiKeyEnc']).trim();
+    if (decrypted) return decrypted;
+  }
+  return '';
+}
+
+function isGeminiQuotaOrExhaustedError(err: unknown): boolean {
+  const raw = extractGeminiErrorMessage(err);
+  return (
+    raw.includes('"code":402') ||
+    raw.includes('"code":429') ||
+    raw.includes('RESOURCE_EXHAUSTED') ||
+    raw.includes('QUOTA_EXCEEDED') ||
+    raw.includes('prepayment credits are depleted') ||
+    raw.includes('rate limit')
+  );
+}
+
+const USER_DAILY_FREE_HYDROGEN_TOKENS = 50_000;
+
+async function generateGeminiForUserWithAdminFallback(
+  _req: express.Request,
+  user: Record<string, unknown> | null,
+  params: Omit<Parameters<GoogleGenAI['models']['generateContent']>[0], 'model'>
+) {
+  const apiKey = resolveServerGeminiApiKey();
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY не налаштовано у файлі .env або Settings > Secrets');
+  }
+
+  const uid = String(user?.['id'] || 'anonymous');
+  const userEmail = String(user?.['email'] || '');
+  const isUserAdmin = user?.['role'] === 'admin' || ADMIN_EMAILS_SET.has(userEmail.toLowerCase());
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const us = uid !== 'anonymous' ? getOrCreateUserSettingsEntry(uid) : null;
+  const customPrefs =
+    us && us['customPreferences'] && typeof us['customPreferences'] === 'object'
+      ? { ...(us['customPreferences'] as Record<string, unknown>) }
+      : {};
+
+  const existingQuota = (customPrefs['geminiHydrogenQuota'] || {}) as {
+    date?: string;
+    usedTokens?: number;
+    freeTokenLimit?: number;
+    exhausted?: boolean;
+  };
+
+  const quota = {
+    date: todayStr,
+    usedTokens: existingQuota.date === todayStr ? Number(existingQuota.usedTokens || 0) : 0,
+    freeTokenLimit: Number(existingQuota.freeTokenLimit || USER_DAILY_FREE_HYDROGEN_TOKENS),
+    exhausted: existingQuota.date === todayStr ? Boolean(existingQuota.exhausted) : false,
+  };
+
+  const ai = new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
+
+  // 1. First attempt: Use `gemini-4-hydrogen` while free tokens remain
+  if (!quota.exhausted && quota.usedTokens < quota.freeTokenLimit) {
+    try {
+      const response = await ai.models.generateContent({
+        ...params,
+        model: 'gemini-4-hydrogen',
+      });
+      const tokensUsed = Number(response.usageMetadata?.totalTokenCount || 1200);
+      quota.usedTokens += tokensUsed;
+      if (quota.usedTokens >= quota.freeTokenLimit) {
+        quota.exhausted = true;
+      }
+      if (us) {
+        customPrefs['geminiHydrogenQuota'] = quota;
+        us['customPreferences'] = customPrefs;
+        us['updatedAt'] = new Date().toISOString();
+        void saveUserSettingsToCloudSql(us);
+      }
+      return response;
+    } catch (userErr: unknown) {
+      if (isGeminiQuotaOrExhaustedError(userErr) || !isUserAdmin) {
+        quota.exhausted = true;
+        if (us) {
+          customPrefs['geminiHydrogenQuota'] = quota;
+          us['customPreferences'] = customPrefs;
+          us['updatedAt'] = new Date().toISOString();
+          void saveUserSettingsToCloudSql(us);
+        }
+      }
+      // Fall through to model fallback below
+    }
+  }
+
+  // 2. Fallback models
+  const adminModelsToTry = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+  let lastError: unknown = null;
+  for (const modelName of adminModelsToTry) {
+    try {
+      return await ai.models.generateContent({
+        ...params,
+        model: modelName,
+      });
+    } catch (err: unknown) {
+      lastError = err;
+    }
+  }
+  throw lastError;
+}
+
 app.post('/api/utility/recognize-meter', async (req, res) => {
   try {
     const { user } = resolveRequestUser(req);
     const rateKey = `gemini:${String(user?.['id'] || req.ip || 'anon')}`;
     if (!checkRateLimit(rateKey, 15, 60_000)) {
-      res.status(429).json({ success: false, error: 'Забагато запитів розпізнавання. Зачекайте 1 хвилину.' });
-      return;
-    }
-    const apiKey = process.env['GEMINI_API_KEY'];
-    if (!apiKey) {
-      res.status(400).json({ success: false, error: 'GEMINI_API_KEY не налаштовано на сервері' });
+      res.json({ success: false, error: 'Забагато запитів розпізнавання. Зачекайте 1 хвилину.' });
       return;
     }
     const { imageBase64, utilityType, electricityTariffType } = req.body || {};
     const mimeMatch = String(imageBase64 || '').match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,/);
     const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
     const cleanBase64 = String(imageBase64 || '').replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '');
-    const ai = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: [
-        {
-          inlineData: {
-            mimeType,
-            data: cleanBase64,
+    if (!cleanBase64) {
+      res.json({ success: false, error: 'Зображення лічильника порожнє або пошкоджене.' });
+      return;
+    }
+    const promptText = `Розпізнай покази лічильника на фото (${
+      utilityType === 'water'
+        ? 'лічильник води в м³'
+        : electricityTariffType === 'dual'
+        ? 'двозонний електролічильник: День (readingT1) та Ніч (readingT2) у кВт·год; якщо на табло видно одне основне число показника, запиши його в readingT1'
+        : 'однозонний електролічильник у кВт·год'
+    }). Поверни JSON українською мовою.`;
+    const response = await generateGeminiForUserWithAdminFallback(req, user, {
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              mimeType,
+              data: cleanBase64,
+            },
           },
-        },
-        `Розпізнай покази лічильника (${utilityType === 'water' ? 'вода м³' : electricityTariffType === 'dual' ? 'двозонний електро День T1 / Ніч T2' : 'електро кВт·год'}). Поверни JSON українською мовою.`,
-      ],
+          {
+            text: promptText,
+          },
+        ],
+      },
       config: {
         responseMimeType: 'application/json',
         responseSchema: {
@@ -6641,47 +10013,36 @@ app.post('/api/utility/recognize-meter', async (req, res) => {
     const parsed = JSON.parse(response.text || '{}');
     res.json({ success: true, ...parsed });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Помилка розпізнавання фото';
-    res.status(500).json({ success: false, error: msg });
+    res.json({ success: false, error: formatGeminiErrorUa(err) });
   }
 });
 
 app.post('/api/utility/analyze-device-screenshot', async (req, res) => {
+  const { imageBase64, comment, deviceName, date } = req.body || {};
   try {
     const { user } = resolveRequestUser(req);
     const rateKey = `gemini:${String(user?.['id'] || req.ip || 'anon')}`;
     if (!checkRateLimit(rateKey, 15, 60_000)) {
-      res.status(429).json({ success: false, error: 'Забагато запитів аналізу. Зачекайте 1 хвилину.' });
+      res.json({ success: false, error: 'Забагато запитів аналізу. Зачекайте 1 хвилину.' });
       return;
     }
-    const apiKey = process.env['GEMINI_API_KEY'];
-    if (!apiKey) {
-      res.status(400).json({ success: false, error: 'GEMINI_API_KEY не налаштовано' });
-      return;
-    }
-    const { imageBase64, comment, deviceName, date } = req.body || {};
     const mimeMatch = String(imageBase64 || '').match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,/);
     const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
     const cleanBase64 = String(imageBase64 || '').replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '');
-    const ai = new GoogleGenAI({
-      apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
-    });
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: [
-        {
-          inlineData: {
-            mimeType,
-            data: cleanBase64,
+    const response = await generateGeminiForUserWithAdminFallback(req, user, {
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              mimeType,
+              data: cleanBase64,
+            },
           },
-        },
-        `Проаналізуй скріншот споживання електроенергії приладу "${deviceName || 'Пристрій'}" (базова дата: ${date || 'сьогодні'}). Коментар користувача: "${comment || 'немає'}". Витягни спожиті кВт·год (consumedKwh), режим запису (valueType: 'cumulative_month' якщо це накопичувальний підсумок за місяць, 'single_day' якщо за 1 день, 'period_range' якщо за діапазон дат/часу, 'delta' якщо це різниця), дату (YYYY-MM-DD), час початку/закінчення (HH:mm), тривалість у годинах, потужність у Вт та детальне пояснення українською мовою. Якщо значення у Вт·год (Wh), переведи у кВт·год (поділи на 1000).`,
-      ],
+          {
+            text: `Проаналізуй скріншот споживання електроенергії приладу "${deviceName || 'Пристрій'}" (базова дата: ${date || 'сьогодні'}). Коментар користувача: "${comment || 'немає'}". Витягни спожиті кВт·год (consumedKwh), режим запису (valueType: 'cumulative_month' якщо це накопичувальний підсумок за місяць, 'single_day' якщо за 1 день, 'period_range' якщо за діапазон дат/часу, 'delta' якщо це різниця), дату (YYYY-MM-DD), час початку/закінчення (HH:mm), тривалість у годинах, потужність у Вт та детальне пояснення українською мовою. Якщо значення у Вт·год (Wh), переведи у кВт·год (поділи на 1000).`,
+          },
+        ],
+      },
       config: {
         responseMimeType: 'application/json',
         responseSchema: {
@@ -6764,8 +10125,25 @@ app.post('/api/utility/analyze-device-screenshot', async (req, res) => {
       confidence: String(parsed['confidence'] || 'high'),
     });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Помилка аналізу скріншота';
-    res.status(500).json({ success: false, error: msg });
+    const commentStr = String(comment || '').trim();
+    const numMatch = commentStr.match(/(\d+(?:[.,]\d+)?)\s*(квт|kwh|вт|wh)?/i);
+    if (numMatch) {
+      let val = parseFloat(numMatch[1].replace(',', '.'));
+      const unit = (numMatch[2] || '').toLowerCase();
+      if (unit === 'вт' || unit === 'wh') {
+        val = val / 1000;
+      }
+      res.json({
+        success: true,
+        consumedKwh: Math.round(val * 1000) / 1000,
+        valueType: 'single_day',
+        detectedDate: typeof date === 'string' ? date : undefined,
+        explanation: `Визначено за вашим коментарем (${Math.round(val * 1000) / 1000} кВт·год). Ви можете скоригувати значення перед збереженням.`,
+        confidence: 'medium',
+      });
+      return;
+    }
+    res.status(500).json({ success: false, error: formatGeminiErrorUa(err) });
   }
 });
 
@@ -6785,6 +10163,17 @@ app.use(
     redirect: false,
   })
 );
+
+// Prevent missing/stale hashed JS/CSS chunks or asset requests from falling through to Angular SSR HTML
+app.use((req, res, next) => {
+  const cleanPath = (req.path || '').split('?')[0];
+  if (/\.(js|mjs|css|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|webmanifest)$/i.test(cleanPath)) {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+    res.status(404).type('text/plain').send('Asset not found');
+    return;
+  }
+  next();
+});
 
 app.use((req, res, next) => {
   angularApp

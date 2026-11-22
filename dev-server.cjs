@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+require('dotenv').config();
 const { spawn, execSync } = require('child_process');
 const http = require('http');
 const net = require('net');
@@ -283,6 +284,12 @@ const server = http.createServer((req, res) => {
           res.end(JSON.stringify({ error: 'Сервер тимчасово перезавантажується, спробуйте за секунду.' }));
         });
 
+        res.on('close', () => {
+          if (!res.writableEnded) {
+            apiProxyReq.destroy();
+          }
+        });
+
         if (bodyBuffer.length > 0) {
           apiProxyReq.write(bodyBuffer);
         }
@@ -311,6 +318,15 @@ const server = http.createServer((req, res) => {
   proxyReq.on('error', () => {
     if (res.headersSent) {
       res.end();
+      return;
+    }
+    const cleanPath = (req.url || '').split('?')[0];
+    if (/\.(js|mjs|css|map|json|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|webmanifest)$/i.test(cleanPath)) {
+      res.writeHead(503, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0',
+      });
+      res.end('Dev server restarting — retry asset request');
       return;
     }
     res.writeHead(200, {

@@ -1,3 +1,5 @@
+import appletConfigJson from '../../firebase-applet-config.json';
+
 export interface FirebaseAppletConfig {
   projectId: string;
   appId: string;
@@ -11,47 +13,78 @@ export interface FirebaseAppletConfig {
   recaptchaSiteKey: string;
 }
 
+const cleanStr = (val: unknown): string => {
+  if (typeof val !== 'string') return '';
+  return val.trim().replace(/^["']+|["']+$/g, '').trim();
+};
+
 const getEnv = (key: string): string => {
   if (typeof process !== 'undefined' && process && process.env && process.env[key]) {
-    return process.env[key]!.trim();
+    return cleanStr(process.env[key]);
   }
   return '';
 };
 
+const isValidFirebaseApiKey = (val: string): boolean => {
+  return val.startsWith('AIza') && val.length >= 30;
+};
+
+const envApiKey = getEnv('FIREBASE_API_KEY');
+const jsonApiKey = cleanStr(appletConfigJson?.apiKey);
+
 export const FIREBASE_APPLET_CONFIG: FirebaseAppletConfig = {
-  projectId: getEnv('FIREBASE_PROJECT_ID'),
-  appId: getEnv('FIREBASE_APP_ID'),
-  apiKey: getEnv('FIREBASE_API_KEY'),
-  authDomain: getEnv('FIREBASE_AUTH_DOMAIN'),
-  firestoreDatabaseId: getEnv('FIREBASE_FIRESTORE_DATABASE_ID'),
-  storageBucket: getEnv('FIREBASE_STORAGE_BUCKET'),
-  messagingSenderId: getEnv('FIREBASE_MESSAGING_SENDER_ID'),
-  measurementId: getEnv('FIREBASE_MEASUREMENT_ID'),
-  oAuthClientId: getEnv('FIREBASE_OAUTH_CLIENT_ID') || getEnv('GOOGLE_CLIENT_ID'),
-  recaptchaSiteKey: getEnv('FIREBASE_RECAPTCHA_SITE_KEY'),
+  projectId: getEnv('FIREBASE_PROJECT_ID') || cleanStr(appletConfigJson?.projectId),
+  appId: getEnv('FIREBASE_APP_ID') || cleanStr(appletConfigJson?.appId),
+  apiKey: isValidFirebaseApiKey(envApiKey) ? envApiKey : jsonApiKey,
+  authDomain: getEnv('FIREBASE_AUTH_DOMAIN') || cleanStr(appletConfigJson?.authDomain),
+  firestoreDatabaseId:
+    getEnv('FIREBASE_FIRESTORE_DATABASE_ID') || cleanStr(appletConfigJson?.firestoreDatabaseId),
+  storageBucket: getEnv('FIREBASE_STORAGE_BUCKET') || cleanStr(appletConfigJson?.storageBucket),
+  messagingSenderId:
+    getEnv('FIREBASE_MESSAGING_SENDER_ID') || cleanStr(appletConfigJson?.messagingSenderId),
+  measurementId: getEnv('FIREBASE_MEASUREMENT_ID') || cleanStr(appletConfigJson?.measurementId),
+  oAuthClientId:
+    getEnv('FIREBASE_OAUTH_CLIENT_ID') ||
+    getEnv('GOOGLE_CLIENT_ID') ||
+    cleanStr(appletConfigJson?.oAuthClientId),
+  recaptchaSiteKey:
+    getEnv('FIREBASE_RECAPTCHA_SITE_KEY') || cleanStr(appletConfigJson?.recaptchaSiteKey),
 };
 
 export function setFirebaseAppletConfig(partial?: Partial<FirebaseAppletConfig> | null): void {
   if (!partial || typeof partial !== 'object') return;
-  if (partial.projectId) FIREBASE_APPLET_CONFIG.projectId = partial.projectId;
-  if (partial.appId) FIREBASE_APPLET_CONFIG.appId = partial.appId;
-  if (partial.apiKey) FIREBASE_APPLET_CONFIG.apiKey = partial.apiKey;
-  if (partial.authDomain) FIREBASE_APPLET_CONFIG.authDomain = partial.authDomain;
-  if (partial.firestoreDatabaseId) FIREBASE_APPLET_CONFIG.firestoreDatabaseId = partial.firestoreDatabaseId;
-  if (partial.storageBucket) FIREBASE_APPLET_CONFIG.storageBucket = partial.storageBucket;
-  if (partial.messagingSenderId) FIREBASE_APPLET_CONFIG.messagingSenderId = partial.messagingSenderId;
-  if (partial.measurementId !== undefined) FIREBASE_APPLET_CONFIG.measurementId = partial.measurementId;
-  if (partial.oAuthClientId) FIREBASE_APPLET_CONFIG.oAuthClientId = partial.oAuthClientId;
-  if (partial.recaptchaSiteKey !== undefined) FIREBASE_APPLET_CONFIG.recaptchaSiteKey = partial.recaptchaSiteKey;
+  const projectId = cleanStr(partial.projectId);
+  const appId = cleanStr(partial.appId);
+  const apiKey = cleanStr(partial.apiKey);
+  const authDomain = cleanStr(partial.authDomain);
+  const firestoreDatabaseId = cleanStr(partial.firestoreDatabaseId);
+  const storageBucket = cleanStr(partial.storageBucket);
+  const messagingSenderId = cleanStr(partial.messagingSenderId);
+  const oAuthClientId = cleanStr(partial.oAuthClientId);
+
+  if (projectId) FIREBASE_APPLET_CONFIG.projectId = projectId;
+  if (appId) FIREBASE_APPLET_CONFIG.appId = appId;
+  if (isValidFirebaseApiKey(apiKey)) FIREBASE_APPLET_CONFIG.apiKey = apiKey;
+  if (authDomain) FIREBASE_APPLET_CONFIG.authDomain = authDomain;
+  if (firestoreDatabaseId) FIREBASE_APPLET_CONFIG.firestoreDatabaseId = firestoreDatabaseId;
+  if (storageBucket) FIREBASE_APPLET_CONFIG.storageBucket = storageBucket;
+  if (messagingSenderId) FIREBASE_APPLET_CONFIG.messagingSenderId = messagingSenderId;
+  if (partial.measurementId !== undefined) {
+    FIREBASE_APPLET_CONFIG.measurementId = cleanStr(partial.measurementId);
+  }
+  if (oAuthClientId) FIREBASE_APPLET_CONFIG.oAuthClientId = oAuthClientId;
+  if (partial.recaptchaSiteKey !== undefined) {
+    FIREBASE_APPLET_CONFIG.recaptchaSiteKey = cleanStr(partial.recaptchaSiteKey);
+  }
 }
 
 let inFlightConfigLoad: Promise<FirebaseAppletConfig> | null = null;
 
 export async function ensureFirebaseClientConfigLoaded(): Promise<FirebaseAppletConfig> {
-  if (FIREBASE_APPLET_CONFIG.apiKey && FIREBASE_APPLET_CONFIG.oAuthClientId) {
+  if (typeof window === 'undefined') {
     return FIREBASE_APPLET_CONFIG;
   }
-  if (typeof window === 'undefined') {
+  if (isValidFirebaseApiKey(FIREBASE_APPLET_CONFIG.apiKey) && FIREBASE_APPLET_CONFIG.oAuthClientId) {
     return FIREBASE_APPLET_CONFIG;
   }
   if (!inFlightConfigLoad) {

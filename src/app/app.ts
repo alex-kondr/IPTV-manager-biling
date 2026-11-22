@@ -8,7 +8,7 @@ import {
 } from '@angular/core';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
-import { IptvData } from './services/iptv-data';
+import { IptvData, ScheduleChangeLogEntry } from './services/iptv-data';
 import {
   Client,
   ClientGroupView,
@@ -23,7 +23,11 @@ import {
   cleanPhoneNumber,
   DEFAULT_VIBER_REMINDER_TEMPLATE,
   interpolateViberMessage,
+  HOME_MENU_TILE_OPTIONS,
+  HomeMenuTileMeta,
 } from './models/client.model';
+import { resolveWasteRate, UtilityAccount } from './models/utility.model';
+import { ShoppingList, computeShoppingItemTotal } from './models/shopping.model';
 import { ClientModal } from './components/client-modal/client-modal';
 import { PaymentModal } from './components/payment-modal/payment-modal';
 import { AnalyticsView } from './components/analytics-view/analytics-view';
@@ -35,6 +39,7 @@ import { AuthView } from './components/auth-view/auth-view';
 import { UsersView } from './components/users-view/users-view';
 import { ElectricityView } from './components/electricity-view/electricity-view';
 import { WaterWasteView } from './components/water-waste-view/water-waste-view';
+import { ShoppingView } from './components/shopping-view/shopping-view';
 import { ThemeService } from './services/theme';
 
 export interface BeforeInstallPromptEvent extends Event {
@@ -58,6 +63,7 @@ export type ActiveTab =
   | 'water'
   | 'waste'
   | 'water_waste'
+  | 'shopping'
   | 'users'
   | 'settings';
 type FilterStatus = 'all' | 'expiring_soon' | 'expired' | 'active' | 'paused';
@@ -78,6 +84,7 @@ type FilterStatus = 'all' | 'expiring_soon' | 'expired' | 'active' | 'paused';
     UsersView,
     ElectricityView,
     WaterWasteView,
+    ShoppingView,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   templateUrl: './app.html',
@@ -88,9 +95,10 @@ export class App {
   readonly themeService = inject(ThemeService);
   readonly Math = Math;
 
-  // Application metadata for user tracking (v4.2)
-  readonly appVersion = 'v4.2';
-  readonly publishDateTime = '12.11.2026 (Київ)';
+  // Application metadata for user tracking (v6.0)
+  readonly appVersion = 'v6.0';
+  readonly appVersionNumeric = '6.0';
+  readonly publishDateTime = '22.11.2026 07:30 (Київ)';
   readonly sharedAppUrl = 'https://ais-pre-xwrvn3here3zzs7lwxjyvb-427445800479.europe-west2.run.app';
   readonly devAppUrl = 'https://ais-dev-xwrvn3here3zzs7lwxjyvb-427445800479.europe-west2.run.app';
   readonly copiedAppUrl = signal<boolean>(false);
@@ -137,16 +145,42 @@ export class App {
   readonly isViewer = this.dataService.isViewer;
   readonly isNewUser = this.dataService.isNewUser;
   readonly isUserBlocked = this.dataService.isUserBlocked;
+  readonly isLoading = this.dataService.isLoading;
   readonly canEdit = this.dataService.canEdit;
   readonly canView = this.dataService.canView;
   readonly pendingUsersCount = this.dataService.pendingUsersCount;
   readonly adminUtilityAccounts = this.dataService.adminUtilityAccounts;
+
+  readonly hasNoHousesAdded = computed<boolean>(
+    () => this.dataService.utilityAccounts().length === 0
+  );
+
+  readonly canAddFirstHouse = computed<boolean>(
+    () =>
+      this.canEdit() &&
+      (this.isTabAllowed('electricity') ||
+        this.isTabAllowed('water') ||
+        this.isTabAllowed('waste'))
+  );
+
+  openAddNewHouseFlow(): void {
+    if (!this.canAddFirstHouse()) return;
+    this.dataService.pendingOpenAddHouseModal.set(true);
+    if (this.isTabAllowed('electricity')) {
+      this.setTab('electricity');
+    } else if (this.isTabAllowed('water')) {
+      this.setTab('water');
+    } else if (this.isTabAllowed('waste')) {
+      this.setTab('waste');
+    }
+  }
 
   readonly sandboxTabs: { id: AppTabId; label: string }[] = [
     { id: 'outage_schedule', label: '💡 Графік світла' },
     { id: 'electricity', label: '⚡ Електро' },
     { id: 'water', label: '💧 Вода' },
     { id: 'waste', label: '🗑️ Вивіз сміття' },
+    { id: 'shopping', label: '🛒 Покупки' },
     { id: 'clients', label: '👥 Клієнти' },
     { id: 'accounts', label: '📺 Акаунти' },
     { id: 'budget', label: '💵 Бюджет' },
@@ -251,6 +285,15 @@ export class App {
           accentClass: 'from-slate-950/90 via-emerald-950/75 to-slate-950/90',
           pageTintClass: 'from-emerald-950/15 via-slate-100/92 to-slate-100/95',
         };
+      case 'shopping':
+        return {
+          imageUrl: '/assets/images/tile_settings_database_1794223833366.jpg',
+          title: 'Спільні покупки',
+          subtitle: 'Списки покупок з обраними людьми, контроль бюджету та швидкий каталог товарів',
+          badge: 'Покупки',
+          accentClass: 'from-slate-950/90 via-rose-950/75 to-slate-950/90',
+          pageTintClass: 'from-rose-950/15 via-slate-100/92 to-slate-100/95',
+        };
       case 'clients':
         return {
           imageUrl: '/assets/images/tile_iptv_media_1793997828251.jpg',
@@ -335,6 +378,12 @@ export class App {
   readonly utilityReadings = this.dataService.utilityReadings;
   readonly utilityTariffs = this.dataService.utilityTariffs;
   readonly dtekInfo = this.dataService.dtekShutdownInfo;
+  readonly dtekQueueDigits = computed<string>(() => {
+    const raw = (this.dtekInfo()?.queueGroup || '').trim();
+    if (!raw) return '';
+    const match = raw.match(/\d+(?:\.\d+)?/);
+    return match ? match[0] : '';
+  });
   readonly isDtekLoading = this.dataService.isDtekLoading;
   readonly activeDtekAccount = this.dataService.activeDtekAccount;
   readonly defaultDtekAccountId = this.dataService.defaultDtekAccountId;
@@ -367,6 +416,279 @@ export class App {
     const hasUnpaid = unpaidReadings.length > 0 || unpaidOoekSum > 0;
     const totalAmount = unpaidOoekSum > 0 ? unpaidOoekSum : unpaidReadingsSum;
     return { hasUnpaid, totalAmount: Math.round(totalAmount * 100) / 100 };
+  });
+
+  readonly homeDashboardSummary = computed(() => {
+    const elecAccs = this.electricityAccounts();
+    const waterAccs = this.waterAccounts();
+    const wasteAccs = this.wasteAccounts();
+    const readings = this.utilityReadings();
+    const tariffs = this.utilityTariffs();
+    const dtek = this.dtekInfo();
+    const activeDtek = this.activeDtekAccount();
+    const unpaidElec = this.unpaidElectricityInfo();
+
+    // Primary active house for address kicker
+    const primaryHouse = activeDtek || elecAccs[0] || waterAccs[0] || wasteAccs[0] || null;
+    let addressLabel = 'Ваш комунальний простір';
+    if (primaryHouse) {
+      if (primaryHouse.city && primaryHouse.street) {
+        addressLabel = `${primaryHouse.city}, ${primaryHouse.street}${primaryHouse.houseNum ? ', буд. ' + primaryHouse.houseNum : ''}`;
+      } else if (primaryHouse.address) {
+        addressLabel = primaryHouse.address;
+      } else if (primaryHouse.name) {
+        addressLabel = primaryHouse.name;
+      }
+    }
+
+    // Electricity live metrics
+    const primaryElec = activeDtek && (activeDtek.type === 'electricity' || !activeDtek.type) ? activeDtek : elecAccs[0] || null;
+    const meterTypeLabel = primaryElec
+      ? (primaryElec.electricityTariffType === 'dual' ? 'Двозонний лічильник' : 'Однозонний лічильник')
+      : 'Облік електроенергії';
+    const elecReadings = primaryElec
+      ? readings
+          .filter((r) => r.accountId === primaryElec.id && r.utilityType === 'electricity' && !r.isControlOnly && r.readingPurpose !== 'control')
+          .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+      : [];
+    const latestElecReading = elecReadings[0] || null;
+    const lastConsumedKwh = latestElecReading
+      ? Math.round(((Number(latestElecReading.consumptionT1) || 0) + (Number(latestElecReading.consumptionT2) || 0)) * 10) / 10
+      : 0;
+
+    // Outage live metrics & 8-slot mini bar (Europe/Kyiv half-hour precision across today + tomorrow)
+    const cleanQueue = (dtek?.queueGroup || '').replace(/^GPV/i, '').trim();
+    const matchedQueue = cleanQueue
+      ? (dtek?.allQueuesSchedules || []).find(
+          (q) => q.queueNumber === cleanQueue || q.queueKey === `GPV${cleanQueue}`
+        )
+      : undefined;
+    const todaySchedule = matchedQueue?.hourlySchedule?.length
+      ? matchedQueue.hourlySchedule
+      : dtek?.hourlySchedule || [];
+    const tomorrowDay =
+      matchedQueue?.tomorrowSchedule ||
+      dtek?.tomorrowSchedule ||
+      dtek?.dailySchedules?.find((day) => day.isTomorrow) ||
+      null;
+    const tomorrowSchedule = tomorrowDay?.hourlySchedule || [];
+
+    const pad2 = (n: number) => String(n).padStart(2, '0');
+    let kyivHourZero = new Date().getHours();
+    let kyivMinute = new Date().getMinutes();
+    try {
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Europe/Kyiv',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).formatToParts(new Date());
+      const hPart = Number(parts.find((p) => p.type === 'hour')?.value);
+      const mPart = Number(parts.find((p) => p.type === 'minute')?.value);
+      if (!Number.isNaN(hPart) && !Number.isNaN(mPart)) {
+        kyivHourZero = hPart === 24 ? 0 : hPart;
+        kyivMinute = mPart;
+      }
+    } catch {
+      if (dtek?.kyivTime && dtek.kyivTime.includes(':')) {
+        const [hStr, mStr] = dtek.kyivTime.split(':');
+        const parsedH = Number(hStr);
+        const parsedM = Number(mStr);
+        if (!Number.isNaN(parsedH)) kyivHourZero = parsedH === 24 ? 0 : parsedH;
+        if (!Number.isNaN(parsedM)) kyivMinute = parsedM;
+      }
+    }
+
+    interface HalfHourSlot {
+      isTomorrow: boolean;
+      startTime: string;
+      endTime: string;
+      hasPower: boolean;
+    }
+
+    const buildDayHalves = (
+      list: typeof todaySchedule,
+      isTomorrow: boolean
+    ): HalfHourSlot[] => {
+      const sorted = [...list].sort((a, b) => a.hour - b.hour);
+      const halves: HalfHourSlot[] = [];
+      for (const h of sorted) {
+        const hZero = Math.max(0, Math.min(23, (Number(h.hour) || 1) - 1));
+        const hStart = `${pad2(hZero)}:00`;
+        const hMid = `${pad2(hZero)}:30`;
+        const hEnd = `${pad2(hZero + 1)}:00`;
+        halves.push({
+          isTomorrow,
+          startTime: hStart,
+          endTime: hMid,
+          hasPower: Boolean(h.firstHalfPower),
+        });
+        halves.push({
+          isTomorrow,
+          startTime: hMid,
+          endTime: hEnd,
+          hasPower: Boolean(h.secondHalfPower),
+        });
+      }
+      return halves;
+    };
+
+    const todayHalves = buildDayHalves(todaySchedule, false);
+    const tomorrowHalves = buildDayHalves(tomorrowSchedule, true);
+    const allHalves = [...todayHalves, ...tomorrowHalves];
+    const curHalfIdx = Math.min(
+      Math.max(0, todayHalves.length - 1),
+      Math.max(0, kyivHourZero * 2 + (kyivMinute >= 30 ? 1 : 0))
+    );
+
+    const scheduledPowerNow =
+      todayHalves.length > 0 ? todayHalves[curHalfIdx].hasPower : true;
+    const isPowerNow = dtek
+      ? dtek.isPowerAvailableNow === false
+        ? false
+        : scheduledPowerNow
+      : true;
+
+    const queueGroup = cleanQueue;
+    const queuePrefix = queueGroup ? `Черга ${queueGroup} • ` : '';
+    const miniBars: Array<'on' | 'off' | 'maybe'> = [];
+    let nextChangeText = queueGroup ? `Черга ${queueGroup}` : 'Оберіть чергу або адресу';
+
+    if (todaySchedule.length > 0) {
+      const sortedToday = [...todaySchedule].sort((a, b) => a.hour - b.hour);
+      const currentHourIdx = Math.max(
+        0,
+        sortedToday.findIndex((h) => h.hour === kyivHourZero + 1)
+      );
+      for (let i = 0; i < 8; i++) {
+        const slot = sortedToday[(currentHourIdx + i) % sortedToday.length];
+        if (!slot) {
+          miniBars.push('on');
+        } else if (slot.firstHalfPower && slot.secondHalfPower) {
+          miniBars.push('on');
+        } else if (!slot.firstHalfPower && !slot.secondHalfPower) {
+          miniBars.push('off');
+        } else {
+          miniBars.push('maybe');
+        }
+      }
+
+      const findNextPlannedOutage = (fromIdx: number) => {
+        let startIdx = -1;
+        for (let i = fromIdx; i < allHalves.length; i++) {
+          if (!allHalves[i].hasPower) {
+            startIdx = i;
+            break;
+          }
+        }
+        if (startIdx < 0) return null;
+        let endIdx = startIdx;
+        while (endIdx + 1 < allHalves.length && !allHalves[endIdx + 1].hasPower) {
+          endIdx++;
+        }
+        return {
+          startTime: allHalves[startIdx].startTime,
+          endTime: allHalves[endIdx].endTime,
+          isTomorrow: allHalves[startIdx].isTomorrow,
+        };
+      };
+
+      if (scheduledPowerNow) {
+        const nextOutage = findNextPlannedOutage(curHalfIdx + 1);
+        if (nextOutage) {
+          const daySuffix = nextOutage.isTomorrow ? ' (завтра)' : '';
+          nextChangeText = `${queuePrefix}Відключення о ${nextOutage.startTime}–${nextOutage.endTime}${daySuffix}`;
+        } else if (tomorrowHalves.length > 0) {
+          nextChangeText = `${queuePrefix}Без планових відключень`;
+        } else {
+          nextChangeText = `${queuePrefix}Сьогодні без відключень`;
+        }
+      } else {
+        // Currently in a scheduled outage: find power return time and the next planned outage after it
+        let returnIdx = -1;
+        for (let i = curHalfIdx + 1; i < allHalves.length; i++) {
+          if (allHalves[i].hasPower) {
+            returnIdx = i;
+            break;
+          }
+        }
+        const returnLabel =
+          returnIdx >= 0
+            ? `Увімкнення о ${allHalves[returnIdx].startTime}${allHalves[returnIdx].isTomorrow ? ' (завтра)' : ''}`
+            : 'Світла тимчасово немає';
+        const nextOutageAfter = returnIdx >= 0 ? findNextPlannedOutage(returnIdx + 1) : null;
+        if (nextOutageAfter) {
+          const daySuffix = nextOutageAfter.isTomorrow ? ' (завтра)' : '';
+          nextChangeText = `${queuePrefix}${returnLabel} • Відключення о ${nextOutageAfter.startTime}–${nextOutageAfter.endTime}${daySuffix}`;
+        } else {
+          nextChangeText = `${queuePrefix}${returnLabel}`;
+        }
+      }
+    } else {
+      for (let i = 0; i < 8; i++) {
+        miniBars.push('on');
+      }
+    }
+
+    // Water live metrics
+    const primaryWater = waterAccs[0] || null;
+    const totalWaterBalance = Math.round(
+      waterAccs.reduce((sum, acc) => sum + (Number(acc.balanceUah) || 0), 0) * 100
+    ) / 100;
+    const waterReadings = primaryWater
+      ? readings
+          .filter((r) => r.accountId === primaryWater.id && r.utilityType === 'water')
+          .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+      : [];
+    const latestWaterM3 = waterReadings[0]?.readingT1;
+    const waterSubtitle = latestWaterM3 !== undefined
+      ? `Останній показник: ${latestWaterM3} м³${waterAccs.length > 1 ? ' • ' + waterAccs.length + ' обʼєкти' : ''}`
+      : waterAccs.length > 0
+        ? `${waterAccs.length} ${waterAccs.length === 1 ? 'обʼєкт' : 'обʼєкти'} • Прогноз балансу та показів`
+        : 'Додайте лічильник для обліку води';
+
+    // Waste live metrics
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const wasteRate = resolveWasteRate(todayIso, tariffs);
+    const totalResidents = wasteAccs.reduce((sum, acc) => sum + (Number(acc.residentsCount) || 1), 0);
+    const monthlyWasteTotal = Math.round(totalResidents * wasteRate * 100) / 100;
+    const wasteSubtitle = wasteAccs.length > 0
+      ? `Тариф ${wasteRate.toFixed(2)} ₴/особа • ${totalResidents} ${totalResidents === 1 ? 'мешканець' : 'мешканців'}`
+      : 'Щомісячні нарахування за ТПВ';
+
+    const totalDueUah = Math.round(
+      (unpaidElec.totalAmount + (totalWaterBalance < 0 ? Math.abs(totalWaterBalance) : 0)) * 100
+    ) / 100;
+
+    return {
+      addressLabel,
+      totalDueUah,
+      electricity: {
+        accountsCount: elecAccs.length,
+        activeName: primaryElec?.name || 'Електроенергія',
+        meterTypeLabel,
+        dueAmount: unpaidElec.totalAmount,
+        hasUnpaid: unpaidElec.hasUnpaid,
+        lastConsumedKwh,
+      },
+      outages: {
+        hasData: Boolean(dtek && queueGroup),
+        isPowerNow,
+        queueGroup,
+        nextChangeText,
+        miniBars,
+      },
+      water: {
+        accountsCount: waterAccs.length,
+        totalBalanceUah: totalWaterBalance,
+        subtitle: waterSubtitle,
+      },
+      waste: {
+        accountsCount: wasteAccs.length,
+        monthlyWasteTotal,
+        subtitle: wasteSubtitle,
+      },
+    };
   });
 
   readonly iptvBillingAlertStatus = computed<'critical' | 'warning' | null>(() => {
@@ -472,6 +794,13 @@ export class App {
           icon: 'delete_outline',
           iconColor: 'text-emerald-500',
         };
+      case 'shopping':
+        return {
+          category: 'Побут та родина',
+          title: 'Спільні покупки',
+          icon: 'shopping_cart',
+          iconColor: 'text-rose-500',
+        };
       case 'clients':
         return {
           category: 'IPTV Білінг',
@@ -538,6 +867,12 @@ export class App {
     });
 
     effect(() => {
+      if (this.isAuthenticated() && !this.isUserBlocked()) {
+        void this.dataService.loadShoppingData(true);
+      }
+    });
+
+    effect(() => {
       const user = this.currentUser();
       this.allowedTabs();
       this.dataService.allowedSettingsSections();
@@ -585,6 +920,12 @@ export class App {
         navigator.serviceWorker.addEventListener('message', (event) => {
           if (event.data?.type === 'OPEN_TAB' && event.data?.tab) {
             this.setTab(event.data.tab as ActiveTab);
+          } else if (event.data?.type === 'DTEK_PUSH_RECEIVED') {
+            void this.dataService.fetchRecentScheduleChanges(false);
+            const house =
+              this.dataService.activeDtekAccount() ||
+              this.dataService.utilityAccounts().find((a) => a.type === 'electricity');
+            void this.dataService.fetchDtekShutdowns(house?.city, house?.street, house?.houseNum, false);
           }
         });
       }
@@ -668,6 +1009,8 @@ export class App {
     } else if (tab === 'users') {
       void this.dataService.fetchUsers();
       void this.dataService.fetchHouseholdInvites();
+    } else if (tab === 'shopping') {
+      void this.dataService.loadShoppingData(this.dataService.shoppingLists().length > 0);
     } else if (
       tab === 'electricity' ||
       tab === 'outage_schedule' ||
@@ -675,26 +1018,105 @@ export class App {
       tab === 'waste' ||
       tab === 'water_waste'
     ) {
-      void this.dataService.fetchUtilityData();
+      void this.dataService.fetchUtilityData(false);
     }
+  }
+
+  // Home Menu Tiles Visibility (directly synced with Settings house_visibility & user_settings)
+  readonly isHomeTilesModalOpen = signal<boolean>(false);
+  readonly hiddenHomeTiles = this.dataService.hiddenHomeTiles;
+
+  readonly permittedHomeMenuTiles = computed<HomeMenuTileMeta[]>(() =>
+    HOME_MENU_TILE_OPTIONS.filter((t) => {
+      if (t.id === 'users') return this.isAdmin();
+      return this.isTabAllowed(t.id);
+    })
+  );
+
+  readonly shoppingSummary = computed(() => {
+    const lists = this.dataService.shoppingLists();
+    let totalItems = 0;
+    let todoItems = 0;
+    let totalSpentUah = 0;
+    let activeListsCount = 0;
+    for (const l of lists) {
+      if (l.isInactive) {
+        continue;
+      }
+      activeListsCount++;
+      for (const it of l.items) {
+        totalItems++;
+        if (!it.isBought) todoItems++;
+        totalSpentUah += computeShoppingItemTotal(it);
+      }
+    }
+    return {
+      listsCount: activeListsCount,
+      totalItems,
+      todoItems,
+      totalSpentUah: Math.round(totalSpentUah * 100) / 100,
+    };
+  });
+
+  isHomeTileVisible(tileId: AppTabId): boolean {
+    if (tileId === 'users') {
+      return this.isAdmin() && !this.dataService.isHomeTileHidden(tileId);
+    }
+    return this.isTabAllowed(tileId) && !this.dataService.isHomeTileHidden(tileId);
+  }
+
+  readonly hasAnyVisibleSecondaryTile = computed<boolean>(() => {
+    const secondaryIds: AppTabId[] = [
+      'clients',
+      'accounts',
+      'budget',
+      'analytics',
+      'payments',
+      'users',
+      'settings',
+    ];
+    return secondaryIds.some((id) => this.isHomeTileVisible(id));
+  });
+
+  openHomeTilesEditor(): void {
+    this.isHomeTilesModalOpen.set(true);
+  }
+
+  closeHomeTilesEditor(): void {
+    this.isHomeTilesModalOpen.set(false);
+  }
+
+  async toggleHomeTileVisibility(tileId: AppTabId): Promise<void> {
+    await this.dataService.toggleHomeTileVisibility(tileId);
+  }
+
+  async resetHiddenHomeTiles(): Promise<void> {
+    await this.dataService.resetHiddenHomeTiles();
+  }
+
+  openFullVisibilitySettings(): void {
+    this.isHomeTilesModalOpen.set(false);
+    this.dataService.openHomeTilesVisibilitySettings();
   }
 
   selectIptvSubTab(tab: ActiveTab): void {
     this.activeTab.set(tab);
+    this.dataService.setActiveUiTab(tab);
     this.isSidebarIptvOpen.set(true);
     this.isMobileIptvDrawerOpen.set(false);
     this.ensureTabDataLoaded(tab);
-    if (typeof window !== 'undefined') {
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (typeof window !== 'undefined' && window.scrollY > 0) {
+      window.scrollTo({ top: 0, behavior: 'auto' });
     }
   }
 
   setTab(tab: ActiveTab): void {
     this.activeTab.set(tab);
+    this.dataService.setActiveUiTab(tab);
     this.isMobileIptvDrawerOpen.set(false);
     this.ensureTabDataLoaded(tab);
-    if (typeof window !== 'undefined') {
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (typeof window !== 'undefined' && window.scrollY > 0) {
+      window.scrollTo({ top: 0, behavior: 'auto' });
     }
   }
 
@@ -720,84 +1142,259 @@ export class App {
   readonly isPaymentModalOpen = signal<boolean>(false);
   readonly selectedClientForPayment = signal<Client | null>(null);
   readonly isProfileModalOpen = signal<boolean>(false);
+  readonly isDesignModalOpen = signal<boolean>(false);
 
-  // App Release Update Modal (v4.0 -> v4.2)
+  // App Release Update Modal (Cumulative Changelog: Newest Top -> Older Bottom)
   readonly appReleaseInfo = this.dataService.appReleaseInfo;
   readonly isUpdateModalOpen = this.dataService.isUpdateModalOpen;
   readonly isDismissingUpdate = this.dataService.isDismissingUpdate;
 
-  readonly releaseFeaturesV4: {
-    icon: string;
-    badge: string;
-    title: string;
-    description: string;
-    colorClass: string;
-  }[] = [
+  readonly currentReleaseDateTime = computed<string>(() => {
+    const info = this.appReleaseInfo();
+    if (info.updatedAtKyiv) {
+      return `${info.updatedAtKyiv} (Київ)`;
+    }
+    return this.publishDateTime;
+  });
+
+  readonly appReleaseHistory = computed<
     {
-      icon: 'send_and_archive',
-      badge: 'ДТЕК ОЕМ Покази (Крок 1)',
-      title: 'Кнопка «Хочу передати покази» та перевірка адреси за особовим рахунком',
-      description:
-        'Прямий запит checkAddress до сервера ДТЕК ОЕМ з автоматичним очищенням нулів після скісної риски (напр. 34023/2729), отриманням моделі й номера лічильника, зон споживання та адреси.',
-      colorClass: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border-emerald-500/30',
-    },
-    {
-      icon: 'timer',
-      badge: 'Системні опції',
-      title: 'Налаштування інтервалу оновлення графіку та чисті поля нового будинку',
-      description:
-        'Можливість у системних налаштуваннях обирати період оновлення кешу графіку відключень (10, 15, 20, 30, 60 хв), а також очищені дефолтні значення населеного пункту і вулиці при створенні нового рахунку.',
-      colorClass: 'bg-purple-500/15 text-purple-600 dark:text-purple-300 border-purple-500/30',
-    },
-    {
-      icon: 'qr_code_2',
-      badge: 'Спільний дім та бюджет',
-      title: 'Приєднання за QR-кодом з вибором ролі та чисте посилання',
-      description:
-        'Миттєва генерація QR-коду для приєднання до спільного будинку й бюджету з вибором типу користувача у випадаючому списку (Дружина, Чоловік, Батько, Мати, Брат, Сестра, Бабуся, Дідусь тощо), а також окреме чисте посилання на застосунок https://homehub3.ai.studio/.',
-      colorClass: 'bg-teal-500/15 text-teal-600 dark:text-teal-300 border-teal-500/30',
-    },
-    {
-      icon: 'notifications_active',
-      badge: 'Графік світла ДТЕК',
-      title: 'Швидка кнопка «Підписатись» / «Відписатись» біля бейджа черги',
-      description:
-        'У вкладці «Графік світла» поруч із бейджем черги (напр. GPV4.1) додано кнопку швидкої підписки на push-сповіщення про зміни графіку. При активній підписці кнопка змінюється на «Відписатись» із перекресленим дзвіночком.',
-      colorClass: 'bg-amber-500/15 text-amber-600 dark:text-amber-300 border-amber-500/30',
-    },
-    {
-      icon: 'cloud_sync',
-      badge: 'Оптимізація та кеш БД',
-      title: 'Централізований кеш графіку ДТЕК у БД (оновлення раз на 20 хв)',
-      description:
-        'Графік відключень тепер централізовано кешується у PostgreSQL для кожної адреси та оновлюється сервером раз на 20 хвилин для всіх користувачів без зайвого навантаження на сайт ДТЕК.',
-      colorClass: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 border-indigo-500/30',
-    },
-    {
-      icon: 'share',
-      badge: '11 варіантів графіку',
-      title: 'Офіційний вигляд ДТЕК (#11) та шеринг обраного варіанту в PNG',
-      description:
-        'Додано 11-й офіційний табличний стиль графіку ДТЕК, а кнопка «Поділитись графіком» тепер генерує якісне PNG-зображення саме того варіанту вигляду (1–11), який ви обрали.',
-      colorClass: 'bg-sky-500/15 text-sky-600 dark:text-sky-300 border-sky-500/30',
-    },
-    {
-      icon: 'wifi_off',
-      badge: 'Мобільний інтерфейс та мережа',
-      title: 'Компактний верхній бар, вікно профілю та індикатор втрати звʼязку',
-      description:
-        'На мобільних пристроях верхній бар оптимізовано без накладань: налаштування («Опції»), «Доступ» для адміністратора та вихід зібрані у вікні профілю, а індикатор мережі стає червоним при втраті звʼязку (Офлайн).',
-      colorClass: 'bg-rose-500/15 text-rose-600 dark:text-rose-300 border-rose-500/30',
-    },
-    {
-      icon: 'electric_meter',
-      badge: 'Облік та налаштування',
-      title: 'Зони «День (Т2)» / «Ніч (Т1)», попередня дата показів та таблиця БД',
-      description:
-        'При внесенні показів автоматично підставляється попередня дата для передачі станом на 1 число, оновлено підписи зон лічильника та додано інтерактивну таблицю системних і користувацьких параметрів БД.',
-      colorClass: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border-emerald-500/30',
-    },
-  ];
+      version: string;
+      previousVersion: string;
+      releasedAt: string;
+      isLatest: boolean;
+      summary: string;
+      features: {
+        icon: string;
+        badge: string;
+        title: string;
+        description: string;
+        colorClass: string;
+        isHighlight?: boolean;
+        bullets?: string[];
+        actionLabel?: string;
+        actionIcon?: string;
+        actionId?: 'shared_home' | 'shopping';
+      }[];
+    }[]
+  >(() => {
+    const info = this.appReleaseInfo();
+    const tsMap = info.versionTimestamps || {};
+    const v60Time = tsMap['v6.0'] || info.updatedAtKyiv || '22.11.2026 07:30';
+    const v51Time = tsMap['v5.1'] || '19.11.2026 08:00';
+    const v50Time = tsMap['v5.0'] || '15.11.2026 18:00';
+    const v42Time = tsMap['v4.2'] || '10.11.2026 14:30';
+
+    return [
+      {
+        version: 'v6.0',
+        previousVersion: 'v5.1',
+        releasedAt: `${v60Time} (Київ)`,
+        isLatest: true,
+        summary: 'Оновлений «Спільний дім», спільні списки покупок із тематичними фото й ваговими товарами, миттєва синхронізація та світла/темна теми',
+        features: [
+          {
+            icon: 'family_restroom',
+            badge: 'Сімейний простір • v6.0',
+            title: 'Спільний дім став ще функціональніший та зручніший. Спробуй і ти.',
+            description:
+              'Керуйте доступом родини та близьких в один дотик: мінімалістичні плитки учасників із гнучкими правами на будинки, комунальні розділи та списки покупок, швидке запрошення за інвайт-посиланням або QR-кодом і миттєва фонова синхронізація всіх змін між пристроями в реальному часі.',
+            bullets: [
+              'Мінімалістичні плитки учасників і прав',
+              'Миттєвий QR-код та інвайт-посилання',
+              'Жива синхронізація між пристроями',
+              'Спільні будинки та покупки разом',
+            ],
+            actionLabel: 'Відкрити «Спільний дім»',
+            actionIcon: 'family_restroom',
+            actionId: 'shared_home',
+            colorClass: 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border-emerald-500/40',
+            isHighlight: true,
+          },
+          {
+            icon: 'shopping_cart',
+            badge: 'Головне оновлення • v6.0',
+            title: 'Спільний список покупок із тематичними фото, вагою та перенесенням залишку',
+            description:
+              'Створюйте спільні списки покупок із тематичними фотографіями товарів, перемикачем ціни «За 100 г / За 1 кг / За 1 шт» із введенням ваги, обʼєднаним індикатором залишку бюджету («1 500 з 2 000 ₴») та перенесенням некуплених позицій і залишку коштів у новий список в один клік.',
+            bullets: [
+              'Ціна за 100 г / 1 кг / 1 шт + вага',
+              'Перенесення залишку у новий список',
+              'Тематичні фото для кожного товару',
+            ],
+            actionLabel: 'Перейти до покупок',
+            actionIcon: 'shopping_cart',
+            actionId: 'shopping',
+            colorClass: 'bg-rose-500/20 text-rose-700 dark:text-rose-300 border-rose-500/40',
+          },
+          {
+            icon: 'auto_awesome',
+            badge: 'Дизайн • Оновлений інтерфейс',
+            title: 'Оновлений дизайн застосунку HomeHub та світла й темна теми',
+            description:
+              'Оновлено інтерфейс усіх розділів: шрифт Inter, картки з плавним заокругленням, перемикання світлої та глибокої темної теми, а також індивідуальні кольорові акценти для світла (amber), води (sky), сміття (emerald), покупок (rose) та графіка відключень (slate/indigo).',
+            colorClass: 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border-indigo-500/30',
+          },
+          {
+            icon: 'history',
+            badge: 'Електроенергія • Швидкий перегляд',
+            title: 'Історія передачі показів та розрахунків розгорнута за замовчуванням',
+            description:
+              'На вкладці «Світло» таблиця історії показів та нарахувань тепер одразу відкрита — без зайвих натискань, а в блоці «Середній темп» додано наочний індикатор динаміки споживання.',
+            colorClass: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30',
+          },
+        ],
+      },
+      {
+        version: 'v5.1',
+        previousVersion: 'v5.0',
+        releasedAt: `${v51Time} (Київ)`,
+        isLatest: false,
+        summary: 'Оплата ООЕК без комісії, історія змін графіку за сьогодні, чисті аварійні сповіщення та журнал версій',
+        features: [
+          {
+            icon: 'payments',
+            badge: '0% Комісії • Оплата ООЕК',
+            title: 'Ви просили я зробив 🥳. Зустрічайте: оплата вже у застосунку, а найголовніше БЕЗ КОМІСІЇ',
+            description:
+              'Натискайте «Сплатити» прямо у картці будинку — сторінка Portmone відкриється миттєво з уже підставленим вашим особовим рахунком, адресою та актуальною сумою до сплати (Apple Pay, Google Pay або картка).',
+            colorClass: 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border-emerald-500/40',
+            isHighlight: true,
+          },
+          {
+            icon: 'history',
+            badge: 'Графік світла • v5.1',
+            title: 'Повна історія змін графіку відключень за поточний день',
+            description:
+              'У сповіщенні при зміні графіку ДТЕК тепер відображається повна хронологія усіх змін за сьогодні (з точним часом оновлення та інтервалами). На вкладці «Світло» поруч із кнопкою «Черга» додано окрему кнопку «Історія» для перегляду змін за день у будь-який момент.',
+            colorClass: 'bg-sky-500/15 text-sky-600 dark:text-sky-300 border-sky-500/30',
+          },
+          {
+            icon: 'warning',
+            badge: 'Чистий UI • Вкладка Світло',
+            title: 'Аварійні відключення — лише у «Фокус поточного інтервалу»',
+            description:
+              'Прибрано дублювання блоку аварійних відключень на вкладці «Світло». Вся актуальна інформація (причина, час початку, орієнтовне відновлення та залишок часу) відображається компактно в одному місці — на банері «Фокус поточного інтервалу».',
+            colorClass: 'bg-rose-500/15 text-rose-600 dark:text-rose-300 border-rose-500/30',
+          },
+          {
+            icon: 'account_balance_wallet',
+            badge: 'Безпека • ООЕК без пароля',
+            title: 'Отримання актуального рахунку ООЕК без збереження логіну й пароля',
+            description:
+              'Кнопка «Оновити з ООЕК» тепер отримує актуальний баланс до сплати автоматично лише за номером особового рахунку — без потреби зберігати конфіденційний логін і пароль кабінету.',
+            colorClass: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border-emerald-500/30',
+          },
+          {
+            icon: 'storage',
+            badge: 'Тарифи та дати • v5.1',
+            title: 'Пряме збереження тарифів у БД, новий день без зайвого порівняння та розумні дати',
+            description:
+              'Тарифи на електроенергію, воду та сміття зберігаються і зчитуються напряму з бази даних без кешування. При настанні нового дня показується новий графік без порівняння з учорашнім, а для моніторингу та приладів за замовчуванням підставляється попередня дата.',
+            colorClass: 'bg-amber-500/15 text-amber-600 dark:text-amber-300 border-amber-500/30',
+          },
+          {
+            icon: 'new_releases',
+            badge: 'Журнал релізів • v5.1',
+            title: 'Накопичувальна історія оновлень HomeHub з датою та часом',
+            description:
+              'У вікні оновлень застосунку додано точну дату й час кожного оновлення та збережено накопичувальну хронологію усіх версій: новіші релізи розташовані зверху, а попередні — нижче.',
+            colorClass: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 border-indigo-500/30',
+          },
+        ],
+      },
+      {
+        version: 'v5.0',
+        previousVersion: 'v4.2',
+        releasedAt: `${v50Time} (Київ)`,
+        isLatest: false,
+        summary: 'Пряма передача показів до ДТЕК ОЕМ, AI-сканер фото, нагадування та підтвердження видалень',
+        features: [
+          {
+            icon: 'send_and_archive',
+            badge: 'Головна фішка v5.0 • ДТЕК ОЕМ',
+            title: 'Пряма передача показів до ДТЕК ОЕМ та автозбереження в журнал',
+            description:
+              'Повна двоетапна інтеграція з кабінетом ДТЕК ОЕМ (checkAddress + saveReceptionMeter): автоматична перевірка особового рахунку з підтягуванням профілю, EIC-коду, моделі й номера лічильника та попередніх показів по зонах, миттєва відправка нових показів у ДТЕК і автоматичний запис у журнал будинку.',
+            colorClass: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border-emerald-500/30',
+          },
+          {
+            icon: 'notifications_active',
+            badge: 'Сповіщення про передачу показів • v5.0',
+            title: 'Розумні сповіщення про прийом показів ДТЕК, зміни графіку та аварії',
+            description:
+              'Автоматичні нагадування у 5-денному вікні прийому показів (останні 2 дні місяця та 1–3 число наступного) з візуальною шкалою дедлайну й швидким переходом до відправки, миттєві сповіщення про прийняття показів у ДТЕК, а також сповіщення про зміни графіку світла та аварійні відключення.',
+            colorClass: 'bg-amber-500/15 text-amber-600 dark:text-amber-300 border-amber-500/30',
+          },
+          {
+            icon: 'auto_fix_high',
+            badge: 'Візуальне оновлення • Чистий інтерфейс',
+            title: 'Очищення інтерфейсу від зайвих і дублюючих кнопок та блоків',
+            description:
+              'Проведено комплексне візуальне впорядкування розділу «Електроенергія» та панелі приладів: прибрано зайву кнопку ручного внесення показів (покази фіксуються автоматично під час передачі в ДТЕК), видалено дублюючі кнопки згортання/розгортання блоків, графіків, інсайтів, історії замірів і зайві перемикачі.',
+            colorClass: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 border-indigo-500/30',
+          },
+          {
+            icon: 'photo_camera',
+            badge: 'AI-сканер та Фото з файлу',
+            title: 'Розпізнавання показів з камери або вибір готового фото з файлу',
+            description:
+              'Виправлено та розділено режими завантаження фото лічильника: кнопка «Завантажити фото з файлу» тепер відкриває системний вибір файлу з галереї або провідника без примусового запуску камери. Додано швидке AI-розпізнавання та автопідстановку зон День (Т2) і Ніч (Т1) прямо у вікні передачі показів ДТЕК.',
+            colorClass: 'bg-sky-500/15 text-sky-600 dark:text-sky-300 border-sky-500/30',
+          },
+          {
+            icon: 'verified_user',
+            badge: 'Безпека даних • v5.0',
+            title: 'Обовʼязкове вікно підтвердження для всіх дій видалення',
+            description:
+              'При натисканні будь-якої кнопки видалення (будинку, особового рахунку, запису показів електроенергії, води чи вивозу сміття, заміру споживання приладу, абонента, групи або запрошення) обовʼязково відкривається діалогове вікно підтвердження поверх усіх вікон із деталями запису, що видаляється.',
+            colorClass: 'bg-rose-500/15 text-rose-600 dark:text-rose-300 border-rose-500/30',
+          },
+          {
+            icon: 'new_releases',
+            badge: 'Верхня панель • Навігація',
+            title: 'Адаптивний індикатор версії застосунку на верхній панелі',
+            description:
+              'На стаціонарній верхній панелі додано індикатор поточної версії застосунку, який автоматично адаптується під ширину екрана (компактне «5.0» на вузьких мобільних екранах та повний індикатор на ширших дисплеях) та відкриває список оновлень в один дотик.',
+            colorClass: 'bg-teal-500/15 text-teal-600 dark:text-teal-300 border-teal-500/30',
+          },
+          {
+            icon: 'calculate',
+            badge: 'Автоматизація розрахунків',
+            title: 'Авторозрахунок споживання на останній день місяця та звірка з ООЕК',
+            description:
+              'При передачі показів до ДТЕК застосунок автоматично підставляє розрахункову дату на кінець місяця, обчислює спожиті кВт·год за денним і нічним тарифами (з урахуванням сезонного зимового ліміту), оновлює картку поточного стану будинку та звіряє нараховану суму з балансом ООЕК.',
+            colorClass: 'bg-purple-500/15 text-purple-600 dark:text-purple-300 border-purple-500/30',
+          },
+        ],
+      },
+      {
+        version: 'v4.2',
+        previousVersion: 'v4.0',
+        releasedAt: `${v42Time} (Київ)`,
+        isLatest: false,
+        summary: 'Багатокористувацький доступ, стилі графіку відключень, спільне домогосподарство та Web Push',
+        features: [
+          {
+            icon: 'view_timeline',
+            badge: 'Графік відключень • v4.2',
+            title: 'Кілька візуальних стилів відображення графіку ДТЕК та експорт у PNG',
+            description:
+              'Додано набір варіантів візуалізації 24-годинного графіку відключень (мінімалістичні капсули, лінійна шкала, офіційна таблиця ДТЕК, 6-годинні квадранти), список усіх 12 черг (1.1–6.2) та збереження/поширення графіку як зображення PNG.',
+            colorClass: 'bg-amber-500/15 text-amber-600 dark:text-amber-300 border-amber-500/30',
+          },
+          {
+            icon: 'group_add',
+            badge: 'Спільний доступ • v4.2',
+            title: 'Спільне домогосподарство з QR-запрошеннями та рівнями доступу',
+            description:
+              'Реалізовано запрошення членів родини через QR-код або посилання з налаштуванням ролі, рівня доступу та синхронізацією комунальних рахунків і сімейного бюджету у реальному часі.',
+            colorClass: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 border-indigo-500/30',
+          },
+        ],
+      },
+    ];
+  });
 
   openProfileModal(): void {
     this.isProfileModalOpen.set(true);
@@ -807,6 +1404,19 @@ export class App {
     this.isProfileModalOpen.set(false);
   }
 
+  openDesignModal(): void {
+    this.isDesignModalOpen.set(true);
+  }
+
+  closeDesignModal(): void {
+    this.isDesignModalOpen.set(false);
+  }
+
+  openHomeTilesFromDesignModal(): void {
+    this.isDesignModalOpen.set(false);
+    this.openHomeTilesEditor();
+  }
+
   openUpdateModal(): void {
     this.isProfileModalOpen.set(false);
     this.dataService.openUpdateModal();
@@ -814,6 +1424,16 @@ export class App {
 
   closeUpdateModal(): void {
     this.dataService.closeUpdateModal();
+  }
+
+  triggerReleaseFeatureAction(actionId?: 'shared_home' | 'shopping'): void {
+    if (!actionId) return;
+    this.closeUpdateModal();
+    if (actionId === 'shared_home') {
+      this.openSharedHouseholdModal();
+    } else if (actionId === 'shopping') {
+      this.setTab('shopping');
+    }
   }
 
   async dismissUpdateForever(): Promise<void> {
@@ -1118,7 +1738,17 @@ export class App {
     if (event) {
       event.stopPropagation();
     }
-    await this.dataService.deleteClient(client.id);
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Видалити абонента?',
+      message: `Ви дійсно бажаєте видалити абонента «${client.fullName}» (${client.iptvLogin})? Цю дію неможливо скасувати.`,
+      confirmText: 'Видалити',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'delete_forever',
+    });
+    if (ok) {
+      await this.dataService.deleteClient(client.id);
+    }
   }
 
   sendViberReminder(client: Client, event?: Event): void {
@@ -1241,6 +1871,15 @@ export class App {
     if (event) {
       event.stopPropagation();
     }
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Розформувати групу?',
+      message: `Ви дійсно бажаєте розформувати групу «${group.groupName}»? Усі абоненти залишаться в списку як індивідуальні.`,
+      confirmText: 'Розформувати',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'group_remove',
+    });
+    if (!ok) return;
     await this.dataService.saveClientGroup({
       groupName: '',
       previousGroupName: group.groupName,
@@ -1282,19 +1921,128 @@ export class App {
   readonly qrInviteAccessLevel = this.dataService.qrInviteAccessLevel;
   readonly isGeneratingQrInvite = this.dataService.isGeneratingQrInvite;
 
-  // Web Push signals
+  // Web Push & In-App Schedule Change Alert signals
   readonly isPushSupported = this.dataService.isPushSupported;
   readonly isPushSubscribed = this.dataService.isPushSubscribed;
   readonly isPushLoading = this.dataService.isPushLoading;
   readonly pushStatusMessage = this.dataService.pushStatusMessage;
   readonly pushCountdownSeconds = this.dataService.pushCountdownSeconds;
+  readonly inAppScheduleChangeAlert = this.dataService.inAppScheduleChangeAlert;
+  readonly activeAlertTodayChangesHistory = this.dataService.activeAlertTodayChangesHistory;
+  readonly isLoadingScheduleChangesHistory = this.dataService.isLoadingScheduleChangesHistory;
+
+  openScheduleFromChangeAlert(): void {
+    this.dataService.acknowledgeScheduleChangeAlert();
+    this.setTab('outage_schedule');
+  }
+
+  dismissScheduleChangeAlert(): void {
+    this.dataService.acknowledgeScheduleChangeAlert();
+  }
+
+  refreshTodayScheduleChangesHistory(): void {
+    const queueKey = this.inAppScheduleChangeAlert()?.queueKey;
+    void this.dataService.fetchRecentScheduleChanges(false, queueKey);
+  }
+
+  formatScheduleChangeTime(entry: ScheduleChangeLogEntry): string {
+    if (entry.detectedAtKyiv) {
+      const parts = entry.detectedAtKyiv.trim().split(' ');
+      if (parts.length >= 2 && parts[1]) {
+        return parts[1];
+      }
+    }
+    return this.dataService.getKyivTimeHHMM(entry.detectedAt) || '—';
+  }
+
+  getScheduleChangeBadgeLabel(changeType?: string): string {
+    switch (changeType) {
+      case 'new_day_schedule':
+        return 'Новий графік дня';
+      case 'today_changed':
+        return 'Зміна на сьогодні';
+      case 'tomorrow_appeared':
+        return 'Графік на завтра';
+      case 'tomorrow_changed':
+        return 'Зміна на завтра';
+      case 'emergency_outage':
+        return 'Аварійне відключення';
+      default:
+        return 'Оновлення графіку';
+    }
+  }
+
+  getScheduleChangePrevIntervals(entry: ScheduleChangeLogEntry): string[] {
+    if (entry.changeType === 'new_day_schedule' || entry.changeType === 'tomorrow_appeared') {
+      return [];
+    }
+    return entry.oldIntervals && entry.oldIntervals.length > 0
+      ? entry.oldIntervals
+      : entry.previousIntervals || [];
+  }
+
+  getScheduleChangeCountLabel(count: number): string {
+    const mod10 = count % 10;
+    const mod100 = count % 100;
+    if (count === 0) return '0 змін';
+    if (mod10 === 1 && mod100 !== 11) return `${count} зміна`;
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${count} зміни`;
+    return `${count} змін`;
+  }
+
+  readonly householdModalView = signal<'home' | 'member' | 'add' | 'qr'>('home');
+  readonly selectedHouseholdMemberId = signal<string | null>(null);
+  readonly householdQrMode = signal<'invite' | 'app'>('invite');
+  readonly showJoinByCodeInput = signal<boolean>(false);
+
+  readonly selectedHouseholdMember = computed<AppUser | null>(() => {
+    const id = this.selectedHouseholdMemberId();
+    if (!id) return null;
+    return this.sharedHouseholdMembers().find((m) => m.id === id) || null;
+  });
 
   openSharedHouseholdModal(): void {
+    this.householdModalView.set('home');
+    this.selectedHouseholdMemberId.set(null);
+    this.showJoinByCodeInput.set(false);
+    this.dataService.flushSignalScopeIfPending('household');
     this.dataService.openSharedHouseholdModal();
   }
 
   closeSharedHouseholdModal(): void {
+    this.householdModalView.set('home');
+    this.selectedHouseholdMemberId.set(null);
+    this.showJoinByCodeInput.set(false);
     this.dataService.closeSharedHouseholdModal();
+  }
+
+  openHouseholdMemberDetail(memberId: string): void {
+    this.selectedHouseholdMemberId.set(memberId);
+    this.householdModalView.set('member');
+  }
+
+  openHouseholdAddView(): void {
+    this.selectedHouseholdMemberId.set(null);
+    this.showJoinByCodeInput.set(false);
+    this.householdModalView.set('add');
+  }
+
+  openHouseholdQrView(mode: 'invite' | 'app' = 'invite'): void {
+    this.selectedHouseholdMemberId.set(null);
+    this.householdQrMode.set(mode);
+    this.householdModalView.set('qr');
+    void this.dataService.initQrInviteModalState();
+  }
+
+  backToHouseholdHome(): void {
+    this.selectedHouseholdMemberId.set(null);
+    this.showJoinByCodeInput.set(false);
+    this.householdModalView.set('home');
+  }
+
+  getMemberRelationLabel(member: AppUser): string {
+    const relId = this.getMemberPrimaryRelation(member);
+    return this.getRelationTagMeta(relId)?.label || 'Учасник';
   }
 
   getRelationTagMeta(tagId: string): MemberRelationTagMeta | undefined {
@@ -1435,7 +2183,17 @@ export class App {
   }
 
   async deleteHouseholdInviteFromModal(id: string): Promise<void> {
-    await this.dataService.deleteHouseholdInvite(id);
+    const ok = await this.dataService.openConfirmDialog({
+      title: 'Видалити запрошення?',
+      message: 'Ви дійсно бажаєте видалити це посилання-запрошення до спільного будинку?',
+      confirmText: 'Видалити',
+      cancelText: 'Скасувати',
+      tone: 'danger',
+      icon: 'delete',
+    });
+    if (ok) {
+      await this.dataService.deleteHouseholdInvite(id);
+    }
   }
 
   async previewOrJoinInviteByCode(): Promise<void> {
@@ -1487,4 +2245,81 @@ export class App {
   async toggleSharedMemberTag(member: AppUser, tagId: MemberRelationTag): Promise<void> {
     await this.setSharedMemberRelation(member, tagId);
   }
+
+  readonly manageableHouseholdHouses = computed<UtilityAccount[]>(() => {
+    const me = this.currentUser();
+    const accounts = this.dataService.utilityAccounts();
+    if (!me) return [];
+    if (this.isAdmin()) return accounts;
+    return accounts.filter((a) => !a.ownerUserId || a.ownerUserId === me.id);
+  });
+
+  readonly ownShoppingLists = computed<ShoppingList[]>(() => {
+    const me = this.currentUser();
+    const lists = this.dataService.shoppingLists();
+    if (!me) return [];
+    return lists.filter((l) => l.ownerUserId === me.id);
+  });
+
+  isMemberAssignedToHouse(member: AppUser, house: UtilityAccount): boolean {
+    const assignedOnHouse = Array.isArray(house.assignedUserIds) ? house.assignedUserIds : [];
+    const assignedOnMember = Array.isArray(member.assignedUtilityAccountIds)
+      ? member.assignedUtilityAccountIds
+      : [];
+    return assignedOnHouse.includes(member.id) || assignedOnMember.includes(house.id);
+  }
+
+  async toggleMemberHouseAccess(member: AppUser, houseId: string): Promise<void> {
+    const houses = this.manageableHouseholdHouses();
+    const currentAssignedIds = new Set<string>(
+      houses.filter((h) => this.isMemberAssignedToHouse(member, h)).map((h) => h.id)
+    );
+    if (currentAssignedIds.has(houseId)) {
+      currentAssignedIds.delete(houseId);
+    } else {
+      currentAssignedIds.add(houseId);
+    }
+    await this.dataService.updateSharedMemberHouses(member.id, Array.from(currentAssignedIds));
+  }
+
+  isMemberInShoppingList(memberId: string, list: ShoppingList): boolean {
+    const ids = Array.isArray(list.participantIds) ? list.participantIds : [];
+    return ids.includes(memberId);
+  }
+
+  async toggleMemberShoppingListAccess(memberId: string, list: ShoppingList): Promise<void> {
+    const existing = Array.isArray(list.participantIds) ? list.participantIds : [];
+    const hasMember = existing.includes(memberId);
+    const nextIds = hasMember
+      ? existing.filter((id) => id !== memberId)
+      : [...existing, memberId];
+    await this.dataService.updateShoppingList(
+      list.id,
+      { participantIds: nextIds },
+      hasMember
+        ? `Учасника відкріплено від списку «${list.title}»`
+        : `Учасника додано до списку «${list.title}»`
+    );
+  }
+
+  reloadPageForChunkRecovery(): void {
+    if (typeof window !== 'undefined') {
+      window.location.reload();
+    }
+  }
+
+  dismissMeterReadingReminder(): void {
+    this.dataService.dismissMeterReadingReminder();
+  }
+
+  openElectricityFromMeterReminder(accountId?: string): void {
+    const alert = this.dataService.meterReadingReminderAlert();
+    const targetAccId = accountId || alert?.primaryAccountId;
+    if (targetAccId) {
+      this.dataService.selectedDtekAccountId.set(targetAccId);
+    }
+    this.dataService.dismissMeterReadingReminder();
+    this.setTab('electricity');
+  }
 }
+

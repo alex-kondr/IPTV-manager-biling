@@ -1,5 +1,5 @@
 import { CommonModule } from "@angular/common";
-import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from "@angular/core";
+import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from "@angular/core";
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from "@angular/forms";
 import { MatIconModule } from "@angular/material/icon";
 import { ElectricityDeviceLogEntry, UtilityReading } from "../../../models/utility.model";
@@ -12,6 +12,7 @@ import {
   resolveElectricityDualRates,
   resolveElectricitySingleRate,
 } from "../../../models/utility.model";
+import { resolveYesterdayIsoDate } from "../electricity-reading-calc.util";
 import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
 
 @Component({
@@ -171,10 +172,10 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
                   type="button"
                   (click)="openCameraModal()"
                   class="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-amber-100 dark:bg-amber-950/80 hover:bg-amber-200 dark:hover:bg-amber-900 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 transition-colors cursor-pointer shadow-2xs"
-                  title="Сфотографувати лічильник для автоматичного заповнення"
+                  title="Розпізнати покази лічильника для автоматичного заповнення"
                 >
                   <mat-icon aria-hidden="true" class="text-sm text-amber-600 dark:text-amber-400 leading-none">photo_camera</mat-icon>
-                  <span>Зробити фото</span>
+                  <span>Розпізнати покази</span>
                 </button>
               </div>
 
@@ -522,52 +523,52 @@ export class MeterReadingModalComponent {
     effect(() => {
       const r = this.ctx.editingReadingObj();
       const isControl = this.ctx.readingModalInitialControl();
-      if (r) {
-        this.readingForm.reset({
-          date: r.date,
-          readingT1: r.readingT1,
-          readingT2: r.readingT2 ?? null,
-          isControlOnly: Boolean(r.isControlOnly),
-          isPaid: Boolean(r.isPaid),
-          note: r.note || "",
-        });
-      } else {
-        this.readingForm.reset({
-          date: this.getPreviousDayIsoDate(),
-          readingT1: null,
-          readingT2: null,
-          isControlOnly: isControl,
-          isPaid: false,
-          note: isControl ? "Контрольний замір для моніторингу" : "",
-        });
-      }
-      this.formChangeTrigger.update((v) => v + 1);
-      this.recalculateFormCost();
+      untracked(() => {
+        if (r) {
+          this.readingForm.reset({
+            date: r.date,
+            readingT1: r.readingT1,
+            readingT2: r.readingT2 ?? null,
+            isControlOnly: Boolean(r.isControlOnly),
+            isPaid: Boolean(r.isPaid),
+            note: r.note || "",
+          });
+        } else {
+          this.readingForm.reset({
+            date: this.getPreviousDayIsoDate(),
+            readingT1: null,
+            readingT2: null,
+            isControlOnly: isControl,
+            isPaid: false,
+            note: isControl ? "Контрольний замір для моніторингу" : "",
+          });
+        }
+        this.formChangeTrigger.update((v) => v + 1);
+        this.recalculateFormCost();
+      });
     });
 
     effect(() => {
       const applied = this.ctx.appliedCameraReading();
       if (applied) {
-        this.readingForm.patchValue({
-          date: this.readingForm.get("date")?.value || this.getPreviousDayIsoDate(),
-          readingT1: applied.readingT1 !== undefined ? applied.readingT1 : null,
-          readingT2: applied.readingT2 !== undefined ? applied.readingT2 : null,
-          isControlOnly: Boolean(this.readingForm.get("isControlOnly")?.value),
-          isPaid: false,
-          note: applied.note || "Розпізнано за фото лічильника",
+        untracked(() => {
+          const isControl = Boolean(this.readingForm.get("isControlOnly")?.value);
+          this.readingForm.patchValue({
+            date: this.readingForm.get("date")?.value || this.getPreviousDayIsoDate(),
+            readingT1: applied.readingT1 !== undefined ? applied.readingT1 : null,
+            readingT2: applied.readingT2 !== undefined ? applied.readingT2 : null,
+            isControlOnly: isControl,
+            isPaid: false,
+            note: applied.note || "Розпізнано за фото лічильника",
+          });
+          this.recalculateFormCost();
         });
-        this.recalculateFormCost();
       }
     });
   }
 
   getPreviousDayIsoDate(): string {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
+    return resolveYesterdayIsoDate();
   }
 
   calculatedRatesText(): string {

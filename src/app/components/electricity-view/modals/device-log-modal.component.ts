@@ -1,5 +1,5 @@
 import { CommonModule } from "@angular/common";
-import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from "@angular/core";
+import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from "@angular/core";
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from "@angular/forms";
 import { MatIconModule } from "@angular/material/icon";
 import {
@@ -12,6 +12,7 @@ import { formatDateUa } from "../../../models/client.model";
 import { isAirConditionerDevice, resolveAirConditionerPowerProfile } from "../../../models/utility.model";
 import { computeDurationHoursHelper } from "../electricity-device-analytics.util";
 import { FormatDateUaPipe } from "../electricity-pipes";
+import { resolveYesterdayIsoDate } from "../electricity-reading-calc.util";
 import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
 
 @Component({
@@ -510,7 +511,7 @@ export class DeviceLogModalComponent {
 
   readonly deviceLogForm = new FormGroup({
     deviceId: new FormControl("", [Validators.required]),
-    date: new FormControl(new Date().toISOString().split("T")[0], [Validators.required]),
+    date: new FormControl(resolveYesterdayIsoDate(), [Validators.required]),
     endDate: new FormControl(""),
     startTime: new FormControl(""),
     endTime: new FormControl(""),
@@ -523,7 +524,7 @@ export class DeviceLogModalComponent {
   readonly currentFormLogWeather = computed<DailyWeatherPoint>(() => {
     this.deviceLogFormTrigger();
     const mode = this.deviceLogForm.get("entryMode")?.value;
-    const dStart = this.deviceLogForm.get("date")?.value || new Date().toISOString().split("T")[0];
+    const dStart = this.deviceLogForm.get("date")?.value || resolveYesterdayIsoDate();
     const dEnd = mode === "period_range" ? this.deviceLogForm.get("endDate")?.value : undefined;
     return this.ctx.getWeatherForDate(dStart, dEnd);
   });
@@ -567,42 +568,42 @@ export class DeviceLogModalComponent {
       const log = this.ctx.editingDeviceLogObj();
       const origDevId = this.ctx.editingDeviceLogOriginalDeviceId();
       const initDevId = this.ctx.initialLogDeviceId();
-      const devices = this.accountDevices();
 
-      if (log && origDevId) {
-        this.deviceLogForm.reset({
-          deviceId: origDevId,
-          date: log.date,
-          endDate: log.endDate || log.date,
-          startTime: log.startTime || "",
-          endTime: log.endTime || "",
-          consumedKwh: log.consumedKwh,
-          entryMode: log.entryMode || "single_day",
-          tariffSelection: log.tariffSelection || "auto_time",
-          comment: log.comment || "",
-        });
-        const effWeather = this.ctx.getEffectiveLogWeather(log);
-        this.logCustomTempAvgC.set(effWeather.tempAvgC);
-        this.logCustomWeatherCondition.set(effWeather.condition);
-        this.onDeviceLogFormChange(false);
-      } else {
-        const targetId = initDevId || (devices[0]?.id ?? "");
-        const today = new Date().toISOString().split("T")[0];
-        const selMonth = this.ctx.deviceSelectedMonth();
-        const defaultDate = today.startsWith(selMonth) ? today : `${selMonth}-15`;
-        this.deviceLogForm.reset({
-          deviceId: targetId,
-          date: defaultDate,
-          endDate: defaultDate,
-          startTime: "",
-          endTime: "",
-          consumedKwh: null,
-          entryMode: "single_day",
-          tariffSelection: "auto_time",
-          comment: "",
-        });
-        this.onDeviceLogFormChange(true);
-      }
+      untracked(() => {
+        const devices = this.accountDevices();
+        if (log && origDevId) {
+          this.deviceLogForm.reset({
+            deviceId: origDevId,
+            date: log.date,
+            endDate: log.endDate || log.date,
+            startTime: log.startTime || "",
+            endTime: log.endTime || "",
+            consumedKwh: log.consumedKwh,
+            entryMode: log.entryMode || "single_day",
+            tariffSelection: log.tariffSelection || "auto_time",
+            comment: log.comment || "",
+          });
+          const effWeather = this.ctx.getEffectiveLogWeather(log);
+          this.logCustomTempAvgC.set(effWeather.tempAvgC);
+          this.logCustomWeatherCondition.set(effWeather.condition);
+          this.onDeviceLogFormChange(false);
+        } else {
+          const targetId = initDevId || (devices[0]?.id ?? "");
+          const defaultDate = resolveYesterdayIsoDate();
+          this.deviceLogForm.reset({
+            deviceId: targetId,
+            date: defaultDate,
+            endDate: defaultDate,
+            startTime: "",
+            endTime: "",
+            consumedKwh: null,
+            entryMode: "single_day",
+            tariffSelection: "auto_time",
+            comment: "",
+          });
+          this.onDeviceLogFormChange(true);
+        }
+      });
     });
   }
 
@@ -617,6 +618,15 @@ export class DeviceLogModalComponent {
   onDeviceLogFormChange(syncWeatherFromDate = true): void {
     this.deviceLogFormTrigger.update((v) => v + 1);
     if (syncWeatherFromDate) {
+      const dStart = this.deviceLogForm.get("date")?.value;
+      if (dStart && /^\d{4}-\d{2}-\d{2}$/.test(dStart)) {
+        const wData = this.ctx.weatherData();
+        const hasDay = Boolean(wData?.dailyByDate?.[dStart]);
+        if (!hasDay) {
+          const city = this.ctx.currentAccount()?.city;
+          void this.ctx.loadWeatherForCurrentAccount(city, dStart.slice(0, 7), dStart);
+        }
+      }
       const w = this.currentFormLogWeather();
       this.logCustomTempAvgC.set(w.tempAvgC);
       this.logCustomWeatherCondition.set(w.condition);

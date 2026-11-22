@@ -1554,19 +1554,56 @@ export async function saveRevokedSessionJtiToCloudSql(
   }
 }
 
-export async function getSettingsFromCloudSql(): Promise<Record<string, unknown> | null> {
-  if (!isCloudSqlAvailable()) return null;
+export async function getSettingsFromCloudSql(mode?: DatabaseMode): Promise<Record<string, unknown> | null> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local' || !isCloudSqlAvailable(targetMode)) return null;
   try {
-    const allSettings = await db.select().from(settings);
-    if (allSettings.length > 0) {
-      const globalDoc = allSettings.find((s) => s.id === 'global') || allSettings[0];
+    const targetDb = getDbForMode(targetMode);
+    const allSettings = await targetDb.select().from(settings);
+    const validRows = allSettings.filter((s) => s.id !== '__db_mode__');
+    if (validRows.length > 0) {
+      const globalDoc = validRows.find((s) => s.id === 'global') || validRows[0];
       const rest = { ...globalDoc };
       delete (rest as { id?: string }).id;
       return rest as Record<string, unknown>;
     }
     return null;
   } catch (err: unknown) {
-    console.warn('[PostgreSQL] getSettings error:', err);
+    console.warn(`[PostgreSQL:${targetMode}] getSettings error:`, err);
+    return null;
+  }
+}
+
+export async function loadUserSettingsDirectlyFromDb(
+  mode?: DatabaseMode
+): Promise<Record<string, unknown>[] | null> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local' || !isCloudSqlAvailable(targetMode)) return null;
+  try {
+    const targetDb = getDbForMode(targetMode);
+    const rows = await targetDb.select().from(userSettings);
+    return rows as unknown as Record<string, unknown>[];
+  } catch (err: unknown) {
+    console.warn(`[PostgreSQL:${targetMode}] loadUserSettingsDirectlyFromDb error:`, err);
+    return null;
+  }
+}
+
+export async function loadSystemSettingsConfigDirectlyFromDb(
+  mode?: DatabaseMode
+): Promise<Record<string, unknown> | null> {
+  const targetMode = mode || getActiveDbMode();
+  if (targetMode === 'sqlite_local' || !isCloudSqlAvailable(targetMode)) return null;
+  try {
+    const targetDb = getDbForMode(targetMode);
+    const rows = await targetDb.select().from(systemSettingsConfig);
+    if (rows.length > 0) {
+      const globalCfg = rows.find((s) => s.id === 'global') || rows[0];
+      return { ...globalCfg } as unknown as Record<string, unknown>;
+    }
+    return null;
+  } catch (err: unknown) {
+    console.warn(`[PostgreSQL:${targetMode}] loadSystemSettingsConfigDirectlyFromDb error:`, err);
     return null;
   }
 }

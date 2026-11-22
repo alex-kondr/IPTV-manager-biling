@@ -1,5 +1,5 @@
 import { CommonModule } from "@angular/common";
-import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } from "@angular/core";
+import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, untracked } from "@angular/core";
 import { MatIconModule } from "@angular/material/icon";
 import {
   DailyWeatherPoint,
@@ -11,6 +11,7 @@ import {
 import { formatDateUa } from "../../../models/client.model";
 import { computeDurationHoursHelper, DEVICE_COLORS } from "../electricity-device-analytics.util";
 import { FormatDateUaPipe } from "../electricity-pipes";
+import { resolveYesterdayIsoDate } from "../electricity-reading-calc.util";
 import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
 
 @Component({
@@ -213,21 +214,28 @@ import { ELECTRICITY_VIEW_CTX } from "../electricity-view.context";
             }
 
             <!-- Step 4: AI Analysis Result & Adjustable kWh before saving -->
-            @if (screenshotAnalysisResult(); as aiRes) {
+            @if (screenshotAnalysisResult() || screenshotError()) {
               <div class="p-4 rounded-2xl bg-teal-50/70 border border-teal-300 space-y-3 animate-in fade-in duration-150">
-                <div class="flex items-center justify-between gap-2">
-                  <div class="flex items-center gap-1.5 text-xs font-bold text-teal-950">
-                    <mat-icon aria-hidden="true" class="text-teal-600 text-base leading-none">check_circle</mat-icon>
-                    <span>Результат AI-аналізу скріншоту та коментаря</span>
+                @if (screenshotAnalysisResult(); as aiRes) {
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-1.5 text-xs font-bold text-teal-950">
+                      <mat-icon aria-hidden="true" class="text-teal-600 text-base leading-none">check_circle</mat-icon>
+                      <span>Результат AI-аналізу скріншоту та коментаря</span>
+                    </div>
+                    <span class="px-2 py-0.5 rounded-full text-3xs font-bold uppercase bg-teal-200/80 text-teal-900">
+                      Розпізнано успішно
+                    </span>
                   </div>
-                  <span class="px-2 py-0.5 rounded-full text-3xs font-bold uppercase bg-teal-200/80 text-teal-900">
-                    Розпізнано успішно
-                  </span>
-                </div>
 
-                <p class="text-xs text-teal-900 bg-white/90 p-3 rounded-xl border border-teal-200 leading-relaxed">
-                  {{ aiRes.explanation }}
-                </p>
+                  <p class="text-xs text-teal-900 bg-white/90 p-3 rounded-xl border border-teal-200 leading-relaxed">
+                    {{ aiRes.explanation }}
+                  </p>
+                } @else {
+                  <div class="flex items-center gap-1.5 text-xs font-bold text-teal-950">
+                    <mat-icon aria-hidden="true" class="text-teal-600 text-base leading-none">edit_note</mat-icon>
+                    <span>Ручне введення споживання за скріншотом</span>
+                  </div>
+                }
 
                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                   <div>
@@ -342,7 +350,7 @@ export class DeviceScreenshotAiModalComponent {
   readonly screenshotTargetDeviceId = signal<string>("");
   readonly screenshotNewDeviceName = signal<string>("");
   readonly screenshotNewDeviceWatts = signal<number | null>(null);
-  readonly screenshotDate = signal<string>(new Date().toISOString().split("T")[0]);
+  readonly screenshotDate = signal<string>(resolveYesterdayIsoDate());
   readonly screenshotEndDate = signal<string>("");
   readonly screenshotStartTime = signal<string>("");
   readonly screenshotEndTime = signal<string>("");
@@ -356,7 +364,7 @@ export class DeviceScreenshotAiModalComponent {
 
   readonly currentScreenshotWeather = computed<DailyWeatherPoint>(() => {
     const mode = this.screenshotExtractedMode();
-    const dStart = this.screenshotDate() || new Date().toISOString().split("T")[0];
+    const dStart = this.screenshotDate() || resolveYesterdayIsoDate();
     const dEnd = mode === "period_range" ? this.screenshotEndDate() : undefined;
     return this.ctx.getWeatherForDate(dStart, dEnd);
   });
@@ -364,19 +372,19 @@ export class DeviceScreenshotAiModalComponent {
   constructor() {
     effect(() => {
       const initId = this.ctx.screenshotInitialDeviceId();
-      const devices = this.accountDevices();
-      if (initId) {
-        this.screenshotTargetDeviceId.set(initId);
-      } else if (devices.length > 0) {
-        this.screenshotTargetDeviceId.set(devices[0].id);
-      } else {
-        this.screenshotTargetDeviceId.set("__new__");
-      }
-      const today = new Date().toISOString().split("T")[0];
-      const selMonth = this.ctx.deviceSelectedMonth();
-      const defaultDate = today.startsWith(selMonth) ? today : `${selMonth}-15`;
-      this.screenshotDate.set(defaultDate);
-      this.screenshotEndDate.set(defaultDate);
+      untracked(() => {
+        const devices = this.accountDevices();
+        if (initId) {
+          this.screenshotTargetDeviceId.set(initId);
+        } else if (devices.length > 0) {
+          this.screenshotTargetDeviceId.set(devices[0].id);
+        } else {
+          this.screenshotTargetDeviceId.set("__new__");
+        }
+        const defaultDate = resolveYesterdayIsoDate();
+        this.screenshotDate.set(defaultDate);
+        this.screenshotEndDate.set(defaultDate);
+      });
     });
   }
 

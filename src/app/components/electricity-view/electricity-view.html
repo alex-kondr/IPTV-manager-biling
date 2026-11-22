@@ -1,170 +1,189 @@
-    <div id="electricity-container" class="space-y-6 max-w-7xl mx-auto">
+    <div id="electricity-container" class="space-y-5 animate-fade-in">
+      <!-- Top Back Navigation + Signature Tab Status Badge -->
+      <div class="flex items-center justify-between gap-3 flex-wrap">
+        <button
+          type="button"
+          (click)="backToHome.emit()"
+          [class]="viewMode() === 'schedule'
+            ? 'inline-flex items-center gap-2 text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors cursor-pointer bg-transparent border-0 p-0'
+            : 'inline-flex items-center gap-2 text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-amber-600 dark:hover:text-amber-400 transition-colors cursor-pointer bg-transparent border-0 p-0'"
+        >
+          <mat-icon aria-hidden="true" class="text-base leading-none">arrow_back</mat-icon>
+          <span>Назад до плиток</span>
+        </button>
+
+        @if (viewMode() === 'schedule') {
+          @if (dataService.dtekShutdownInfo()?.queueGroup) {
+            <span class="px-3 py-1 rounded-full text-xs font-bold bg-indigo-100 dark:bg-indigo-500/20 text-indigo-800 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/30">
+              Черга {{ dataService.dtekShutdownInfo()?.queueGroup }}
+            </span>
+          }
+        } @else if (currentAccount(); as headerAcc) {
+          @if (headerAcc.accountNumber) {
+            <span class="px-3 py-1 rounded-full text-xs font-bold bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30 font-mono">
+              Особовий рахунок № {{ headerAcc.accountNumber }}
+            </span>
+          }
+        }
+      </div>
+
       <!-- Unified House / Account Selector with Default House Persistence & Per-Tab Visibility -->
       @if (visibleAccountsForCurrentTab().length > 0 || hiddenAccountsForCurrentTab().length > 0 || (viewMode() !== 'schedule' && canEdit())) {
-        <div class="p-3 sm:p-4 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-2">
-          <div class="flex items-center justify-between gap-1.5 flex-wrap">
-            <div class="flex items-center gap-1.5 min-w-0">
-              <mat-icon aria-hidden="true" class="text-base text-amber-500 shrink-0">home_pin</mat-icon>
-              <span class="text-xs font-bold text-slate-800 truncate">
-                Будинок ({{ visibleAccountsForCurrentTab().length }}):
-              </span>
-              @if (viewMode() !== 'schedule' && canEdit()) {
-                <button
-                  type="button"
-                  (click)="openAccountModal(null)"
-                  aria-label="Додати будинок"
-                  title="Додати будинок"
-                  class="w-6 h-6 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white inline-flex items-center justify-center transition-colors shadow-2xs cursor-pointer shrink-0"
-                >
-                  <mat-icon aria-hidden="true" class="text-sm leading-none">add</mat-icon>
-                </button>
+        <div class="p-3 sm:p-4 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-2.5 relative">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div class="flex items-center gap-2 min-w-0 flex-1">
+              @if (visibleAccountsForCurrentTab().length > 0) {
+                <div class="relative flex items-center sm:w-auto sm:min-w-[240px] sm:max-w-[380px] flex-1 min-w-0">
+                  <select
+                    aria-label="Вибір будинку"
+                    [value]="currentAccount()?.id || ''"
+                    (change)="selectAccount($any($event.target).value)"
+                    class="h-9 w-full min-w-0 max-w-full appearance-none pl-3.5 pr-8 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200/70 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-amber-500 cursor-pointer transition-colors truncate"
+                  >
+                    @for (acc of visibleAccountsForCurrentTab(); track acc.id) {
+                      <option [value]="acc.id" [selected]="currentAccount()?.id === acc.id">
+                        {{ defaultDtekAccountId() === acc.id ? '★ ' : '' }}{{ acc.name }}
+                      </option>
+                    }
+                  </select>
+                  <mat-icon aria-hidden="true" class="text-base text-slate-500 pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 leading-none z-10">
+                    expand_more
+                  </mat-icon>
+                </div>
               }
-            </div>
-            <div class="flex items-center gap-1.5 flex-wrap justify-end">
-              @if (currentAccount(); as activeAcc) {
-                @if (defaultDtekAccountId() !== activeAcc.id) {
+
+              @if (canEdit() || hiddenAccountsForCurrentTab().length > 0 || (currentAccount() && defaultDtekAccountId() !== currentAccount()?.id)) {
+                <div class="relative shrink-0">
                   <button
                     type="button"
-                    (click)="setAsDefaultHouse(activeAcc.id)"
-                    [disabled]="isSavingDefaultHouse()"
-                    class="px-2 py-1 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-2xs font-bold inline-flex items-center gap-1 transition-colors cursor-pointer shadow-2xs disabled:opacity-50 shrink-0"
-                    title="Встановити цей будинок за замовчуванням"
+                    (click)="isHouseActionsMenuOpen.set(!isHouseActionsMenuOpen())"
+                    aria-label="Налаштування списку будинків"
+                    title="Дії з будинками (додати, редагувати, видалити, сховати, показати, за замовчуванням)"
+                    class="w-9 h-9 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 inline-flex items-center justify-center transition-colors shadow-2xs cursor-pointer relative"
+                    [class.bg-amber-500]="isHouseActionsMenuOpen()"
+                    [class.text-white]="isHouseActionsMenuOpen()"
+                    [class.border-amber-500]="isHouseActionsMenuOpen()"
                   >
-                    <mat-icon aria-hidden="true" class="text-xs">star</mat-icon>
-                    <span>{{ isSavingDefaultHouse() ? '...' : 'За замовч.' }}</span>
+                    <mat-icon aria-hidden="true" class="text-base leading-none">settings</mat-icon>
+                    @if (hiddenAccountsForCurrentTab().length > 0 && !isHouseActionsMenuOpen()) {
+                      <span class="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-amber-500 text-white text-[9px] font-extrabold flex items-center justify-center border border-white dark:border-slate-900">
+                        {{ hiddenAccountsForCurrentTab().length }}
+                      </span>
+                    }
                   </button>
-                }
-                @if (canEdit()) {
-                  <button
-                    type="button"
-                    (click)="toggleHideHouseInCurrentTab(activeAcc.id)"
-                    class="px-2 py-1 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-700 border border-slate-200 hover:border-rose-200 text-2xs font-semibold inline-flex items-center gap-1 transition-colors cursor-pointer shrink-0"
-                    title="Приховати поточний будинок лише на цій вкладці"
-                  >
-                    <mat-icon aria-hidden="true" class="text-xs">visibility_off</mat-icon>
-                    <span>Сховати</span>
-                  </button>
-                }
-              }
-              @if (hiddenAccountsForCurrentTab().length > 0) {
-                <button
-                  type="button"
-                  (click)="showHiddenHousesPanel.set(!showHiddenHousesPanel())"
-                  class="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-2xs font-semibold inline-flex items-center gap-1 transition-colors cursor-pointer shrink-0"
-                  title="Показати або сховати список прихованих будинків на цій вкладці"
-                >
-                  <mat-icon aria-hidden="true" class="text-xs text-slate-500">{{ showHiddenHousesPanel() ? 'visibility' : 'visibility_off' }}</mat-icon>
-                  <span>Приховані ({{ hiddenAccountsForCurrentTab().length }})</span>
-                </button>
+
+                  @if (isHouseActionsMenuOpen()) {
+                    <div
+                      class="fixed inset-0 z-40"
+                      (click)="isHouseActionsMenuOpen.set(false)"
+                    ></div>
+                    <div
+                      class="absolute right-0 sm:left-0 sm:right-auto top-full mt-2 w-60 max-w-[calc(100vw-2rem)] rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 shadow-xl z-50 p-1.5 space-y-1"
+                    >
+                      @if (currentAccount(); as activeAcc) {
+                        @if (defaultDtekAccountId() !== activeAcc.id) {
+                          <button
+                            type="button"
+                            (click)="isHouseActionsMenuOpen.set(false); setAsDefaultHouse(activeAcc.id)"
+                            [disabled]="isSavingDefaultHouse()"
+                            class="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/50 flex items-center gap-2 transition-colors cursor-pointer disabled:opacity-50"
+                            title="Встановити цей будинок за замовчуванням"
+                          >
+                            <mat-icon aria-hidden="true" class="text-base text-amber-500 leading-none">star</mat-icon>
+                            <span>{{ isSavingDefaultHouse() ? '...' : 'За замовчуванням' }}</span>
+                          </button>
+                        }
+                      }
+
+                      @if (canEdit()) {
+                        <button
+                          type="button"
+                          (click)="isHouseActionsMenuOpen.set(false); openAccountModal(null)"
+                          class="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 flex items-center gap-2 transition-colors cursor-pointer"
+                        >
+                          <mat-icon aria-hidden="true" class="text-base leading-none">add_circle_outline</mat-icon>
+                          <span>Додати будинок</span>
+                        </button>
+
+                        @if (currentAccount(); as activeAcc) {
+                          <button
+                            type="button"
+                            (click)="isHouseActionsMenuOpen.set(false); openAccountModal(activeAcc)"
+                            class="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 transition-colors cursor-pointer"
+                          >
+                            <mat-icon aria-hidden="true" class="text-base text-amber-500 leading-none">edit</mat-icon>
+                            <span>Редагувати будинок</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            (click)="isHouseActionsMenuOpen.set(false); toggleHideHouseInCurrentTab(activeAcc.id)"
+                            class="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 transition-colors cursor-pointer"
+                          >
+                            <mat-icon aria-hidden="true" class="text-base text-slate-500 leading-none">visibility_off</mat-icon>
+                            <span>Сховати поточний</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            (click)="isHouseActionsMenuOpen.set(false); confirmDeleteAccount(activeAcc)"
+                            class="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 flex items-center gap-2 transition-colors cursor-pointer"
+                          >
+                            <mat-icon aria-hidden="true" class="text-base leading-none">delete</mat-icon>
+                            <span>Видалити будинок</span>
+                          </button>
+                        }
+                      }
+
+                      @if (hiddenAccountsForCurrentTab().length > 0) {
+                        <div class="pt-1 mt-1 border-t border-slate-100 dark:border-slate-800 space-y-0.5">
+                          <button
+                            type="button"
+                            (click)="showHiddenHousesPanel.set(!showHiddenHousesPanel()); isHouseActionsMenuOpen.set(false)"
+                            class="w-full px-3 py-2 rounded-xl text-left text-xs font-semibold text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 flex items-center justify-between gap-2 transition-colors cursor-pointer"
+                          >
+                            <span class="inline-flex items-center gap-2">
+                              <mat-icon aria-hidden="true" class="text-base leading-none">visibility</mat-icon>
+                              <span>Показати приховані ({{ hiddenAccountsForCurrentTab().length }})</span>
+                            </span>
+                          </button>
+                          @for (hAcc of hiddenAccountsForCurrentTab(); track hAcc.id) {
+                            <button
+                              type="button"
+                              (click)="toggleHideHouseInCurrentTab(hAcc.id); isHouseActionsMenuOpen.set(false)"
+                              class="w-full px-3 py-1.5 rounded-lg text-left text-2xs font-medium text-slate-600 dark:text-slate-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 hover:text-emerald-700 dark:hover:text-emerald-300 flex items-center justify-between gap-2 transition-colors cursor-pointer"
+                            >
+                              <span class="truncate">• {{ hAcc.name }}</span>
+                              <span class="text-3xs font-bold text-emerald-600 dark:text-emerald-400 shrink-0">Показати</span>
+                            </button>
+                          }
+                        </div>
+                      }
+                    </div>
+                  }
+                </div>
               }
             </div>
           </div>
 
-          @if (visibleAccountsForCurrentTab().length > 0) {
-            <div class="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin">
-              @for (acc of visibleAccountsForCurrentTab(); track acc.id) {
-                <button
-                  type="button"
-                  (click)="selectAccount(acc.id)"
-                  [class.bg-slate-900]="currentAccount()?.id === acc.id"
-                  [class.text-white]="currentAccount()?.id === acc.id"
-                  [class.border-slate-900]="currentAccount()?.id === acc.id"
-                  [class.bg-slate-50]="currentAccount()?.id !== acc.id"
-                  [class.text-slate-700]="currentAccount()?.id !== acc.id"
-                  [class.border-slate-200]="currentAccount()?.id !== acc.id"
-                  class="px-3.5 py-2 rounded-xl border text-xs font-semibold flex items-center gap-2.5 shrink-0 transition-all shadow-2xs cursor-pointer hover:border-slate-400"
-                >
-                  <mat-icon aria-hidden="true" class="text-base" [class.text-amber-400]="currentAccount()?.id === acc.id" [class.text-amber-500]="currentAccount()?.id !== acc.id">
-                    {{ defaultDtekAccountId() === acc.id ? 'star' : 'home' }}
-                  </mat-icon>
-                  <div class="text-left">
-                    <div class="font-bold leading-tight flex items-center gap-1.5">
-                      <span>{{ acc.name }}</span>
-                      @if (defaultDtekAccountId() === acc.id) {
-                        <span
-                          class="px-1.5 py-0.2 rounded text-3xs font-extrabold uppercase"
-                          [class.bg-amber-400]="currentAccount()?.id === acc.id"
-                          [class.text-slate-950]="currentAccount()?.id === acc.id"
-                          [class.bg-amber-100]="currentAccount()?.id !== acc.id"
-                          [class.text-amber-900]="currentAccount()?.id !== acc.id"
-                        >
-                          За замовч.
-                        </span>
-                      }
-                    </div>
-                    <div class="text-3xs opacity-80">
-                      @if (viewMode() !== 'schedule' && acc.accountNumber) {
-                        № {{ acc.accountNumber }}
-                        @if (hasAccountAddress(acc)) {
-                          • {{ getAccountFormattedAddress(acc) }}
-                        }
-                      } @else if (hasAccountAddress(acc)) {
-                        {{ getAccountFormattedAddress(acc) }}
-                      } @else {
-                        Адресу будинку не вказано
-                      }
-                    </div>
-                  </div>
-                  @if (viewMode() !== 'schedule') {
-                    @let due = getHouseDueInfo(acc);
-                    <div class="flex items-center gap-1.5 shrink-0">
-                      @if (due.hasDue) {
-                        <span
-                          class="px-2 py-0.5 rounded-lg text-3xs font-extrabold whitespace-nowrap shadow-xs"
-                          [class.bg-amber-400]="!due.isZeroOrPaid && currentAccount()?.id === acc.id"
-                          [class.text-slate-950]="!due.isZeroOrPaid && currentAccount()?.id === acc.id"
-                          [class.bg-amber-100]="!due.isZeroOrPaid && currentAccount()?.id !== acc.id"
-                          [class.text-amber-900]="!due.isZeroOrPaid && currentAccount()?.id !== acc.id"
-                          [class.border]="!due.isZeroOrPaid && currentAccount()?.id !== acc.id"
-                          [class.border-amber-300]="!due.isZeroOrPaid && currentAccount()?.id !== acc.id"
-                          [class.bg-emerald-500/25]="due.isZeroOrPaid && currentAccount()?.id === acc.id"
-                          [class.text-emerald-300]="due.isZeroOrPaid && currentAccount()?.id === acc.id"
-                          [class.border]="due.isZeroOrPaid && currentAccount()?.id === acc.id"
-                          [class.border-emerald-500/40]="due.isZeroOrPaid && currentAccount()?.id === acc.id"
-                          [class.bg-emerald-100]="due.isZeroOrPaid && currentAccount()?.id !== acc.id"
-                          [class.text-emerald-800]="due.isZeroOrPaid && currentAccount()?.id !== acc.id"
-                          [class.border-emerald-200]="due.isZeroOrPaid && currentAccount()?.id !== acc.id"
-                        >
-                          @if (!due.isZeroOrPaid) {
-                            До сплати: {{ due.amount.toFixed(2) }} грн
-                          } @else {
-                            Сплачено (0.00 грн)
-                          }
-                        </span>
-                      }
-                      <span
-                        class="px-1.5 py-0.5 rounded text-3xs font-bold uppercase"
-                        [class.bg-white/20]="currentAccount()?.id === acc.id"
-                        [class.text-white]="currentAccount()?.id === acc.id"
-                        [class.bg-slate-200/80]="currentAccount()?.id !== acc.id"
-                        [class.text-slate-700]="currentAccount()?.id !== acc.id"
-                      >
-                        {{ acc.electricityTariffType === 'dual' ? '2-зонний' : '1-зонний' }}
-                      </span>
-                    </div>
-                  }
-                </button>
-              }
-            </div>
-          } @else {
+          @if (visibleAccountsForCurrentTab().length === 0) {
             <div class="p-3 rounded-xl bg-amber-50/70 border border-amber-200 text-xs text-amber-900 flex items-center justify-between gap-2 flex-wrap">
-              <span>Всі будинки приховано на цій вкладці. Натисніть «Повернути», щоб знову відобразити потрібний будинок.</span>
+              <span>Всі будинки приховано на цій вкладці. Натисніть «Показати», щоб знову відобразити потрібний будинок.</span>
             </div>
           }
 
           @if (hiddenAccountsForCurrentTab().length > 0 && (showHiddenHousesPanel() || visibleAccountsForCurrentTab().length === 0)) {
             <div class="pt-2 border-t border-slate-100 flex items-center gap-2 flex-wrap">
-              <span class="text-2xs font-bold text-slate-500">Приховані будинки:</span>
               @for (hAcc of hiddenAccountsForCurrentTab(); track hAcc.id) {
                 <button
                   type="button"
                   (click)="toggleHideHouseInCurrentTab(hAcc.id)"
                   class="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-800 border border-slate-200 hover:border-emerald-300 text-2xs font-semibold inline-flex items-center gap-1.5 transition-colors cursor-pointer"
-                  title="Повернути будинок на цю вкладку"
+                  title="Показати будинок на цій вкладці"
                 >
                   <mat-icon aria-hidden="true" class="text-xs text-emerald-600">visibility</mat-icon>
                   <span>{{ hAcc.name }}</span>
-                  <span class="text-3xs text-emerald-700 font-bold">(Повернути)</span>
+                  <span class="text-3xs text-emerald-700 font-bold">(Показати)</span>
                 </button>
               }
             </div>
@@ -173,247 +192,267 @@
       }
 
 
-      @if (viewMode() !== 'readings') {
-        @defer {
+      @defer (when viewMode() !== 'readings'; prefetch on idle) {
+        @if (viewMode() !== 'readings') {
           <app-dtek-schedule-section />
-        } @placeholder {
-          <div class="h-64 rounded-2xl bg-slate-100/70 animate-pulse"></div>
         }
+      } @loading (after 200ms; minimum 150ms) {
+        @if (viewMode() !== 'readings') {
+          <div class="h-64 rounded-3xl bg-slate-100/70 dark:bg-slate-800/50 animate-pulse"></div>
+        }
+      } @error {
+        @if (viewMode() !== 'readings') {
+          <div class="p-6 rounded-3xl bg-white dark:bg-[#111827] border border-amber-200/80 dark:border-amber-500/30 text-center space-y-2.5">
+            <p class="text-xs font-bold text-slate-700 dark:text-slate-200">Не вдалося завантажити блок графіка відключень</p>
+            <button type="button" (click)="reloadPageForChunkRecovery()" class="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold inline-flex items-center gap-1 cursor-pointer border-0">
+              <mat-icon class="text-sm leading-none">refresh</mat-icon>
+              <span>Оновити</span>
+            </button>
+          </div>
+        }
+      }
+
+      @if (electricityAccounts().length === 0) {
+        <!-- Empty Houses Alert -->
+        <div
+          role="alert"
+          class="p-6 sm:p-8 bg-white dark:bg-[#111827] rounded-3xl border border-amber-300/80 dark:border-amber-500/35 shadow-sm relative overflow-hidden space-y-5"
+        >
+          <div class="absolute top-0 inset-x-0 h-1.5 bg-gradient-to-r from-amber-400 via-orange-500 to-yellow-400"></div>
+          <div class="text-center space-y-2">
+            <div class="w-14 h-14 rounded-2xl bg-amber-100 dark:bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center mx-auto">
+              <mat-icon aria-hidden="true" class="text-3xl leading-none">add_home_work</mat-icon>
+            </div>
+            <h3 class="text-base sm:text-lg font-extrabold text-slate-900 dark:text-white">
+              Ще не додано жодного будинку
+            </h3>
+            <p class="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-lg mx-auto leading-relaxed">
+              Додайте свій перший будинок або квартиру (наприклад, «Квартира», «Будинок» чи «Дача»), щоб бачити графік відключень, вести облік споживання та передавати покази.
+            </p>
+          </div>
+
+          <div class="max-w-xl mx-auto rounded-2xl bg-amber-50/90 dark:bg-amber-500/10 border border-amber-200/90 dark:border-amber-500/25 p-3.5 sm:p-4 flex items-start gap-2.5 text-left">
+            <mat-icon aria-hidden="true" class="text-lg leading-none text-amber-600 dark:text-amber-400 shrink-0 mt-0.5">bolt</mat-icon>
+            <p class="text-xs text-amber-950 dark:text-amber-100/90 leading-relaxed">
+              <span class="font-extrabold">Важливо: введіть вірний особовий рахунок за електроенергію.</span>
+              Від точності особового рахунку залежить автоматичне отримання актуального рахунку до сплати (ООЕК) та коректна передача показів лічильника.
+            </p>
+          </div>
+
+          @if (canEdit()) {
+            <div class="text-center">
+              <button
+                type="button"
+                (click)="openAccountModal(null)"
+                class="px-5 py-2.5 rounded-2xl text-xs sm:text-sm font-bold bg-amber-500 hover:bg-amber-600 text-white transition-all inline-flex items-center gap-2 cursor-pointer border-0 shadow-lg shadow-amber-500/25 active:scale-95"
+              >
+                <mat-icon aria-hidden="true" class="text-lg leading-none">add_home</mat-icon>
+                <span>Додати новий будинок</span>
+              </button>
+            </div>
+          }
+        </div>
       }
 
       @if (viewMode() !== 'schedule') {
-      @if (electricityAccounts().length === 0) {
-        <!-- Empty Accounts State -->
-        <div class="p-8 text-center bg-white rounded-2xl border border-slate-200 shadow-2xs">
-          <div class="w-14 h-14 rounded-2xl bg-amber-50 text-amber-500 flex items-center justify-center mx-auto mb-3">
-            <mat-icon aria-hidden="true" class="text-3xl">bolt</mat-icon>
-          </div>
-          <h3 class="text-base font-bold text-slate-900">Немає доданих особових рахунків електроенергії</h3>
-          <p class="text-xs text-slate-500 max-w-md mx-auto mt-1 mb-4">
-            Додайте свій перший рахунок (наприклад, «Квартира», «Будинок» або «Дача»), щоб передавати покази та рахувати споживання.
-          </p>
-          @if (canEdit()) {
-            <button
-              type="button"
-              (click)="openAccountModal(null)"
-              class="px-4 py-2.5 rounded-xl text-xs font-semibold bg-amber-500 hover:bg-amber-600 text-white transition-colors inline-flex items-center gap-2 cursor-pointer shadow-sm shadow-amber-500/20"
-            >
-              <mat-icon aria-hidden="true" class="text-base">add</mat-icon>
-              <span>Створити перший особовий рахунок</span>
-            </button>
-          }
-        </div>
-      }
 
       @if (currentAccount(); as acc) {
-        <!-- Active Account Details Card -->
-        <div class="p-4 sm:p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-2xs space-y-4">
-          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
-            <div class="flex items-center gap-2.5 flex-1 min-w-0">
+        @let consSummary = collapsedConsumptionSummary();
+        @let due = getHouseDueInfo(acc);
+        <!-- Active Account Card (Signature Amber/Gold Style) -->
+        <div class="rounded-3xl p-6 sm:p-7 bg-white dark:bg-[#111827] border border-amber-200/80 dark:border-amber-500/25 shadow-sm relative overflow-hidden space-y-6">
+          <div class="absolute top-0 inset-x-0 h-1.5 bg-gradient-to-r from-amber-400 via-orange-500 to-yellow-400"></div>
+
+          <div class="flex items-start sm:items-center gap-3.5 pb-5 border-b border-slate-100 dark:border-slate-800">
+            <div class="w-12 h-12 rounded-2xl bg-amber-500 text-white flex items-center justify-center shadow-md shadow-amber-500/20 shrink-0">
+              <mat-icon aria-hidden="true" class="text-2xl leading-none">bolt</mat-icon>
+            </div>
+            <div class="min-w-0 flex-1">
+              <h1 class="text-xl sm:text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight truncate">
+                {{ acc.name }}
+              </h1>
+              <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                {{ acc.electricityTariffType === 'dual' ? 'Двозонний облік (День / Ніч)' : 'Однозонний облік' }}
+              </p>
+              @if (acc.address) {
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                  {{ acc.address }}
+                </p>
+              }
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <!-- Tile 1: Monthly Consumption + Average Daily Rate + Submit Readings Button -->
+            <div class="p-4 rounded-2xl bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/70 dark:border-amber-500/20 transition-all flex flex-col justify-between gap-3">
               <button
                 type="button"
-                (click)="isAccountCardExpanded.update(v => !v)"
-                class="w-8 h-8 rounded-xl bg-amber-500/10 dark:bg-amber-400/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 flex items-center justify-center transition-colors cursor-pointer shrink-0"
-                [title]="isAccountCardExpanded() ? 'Згорнути покази та кабінети будинку' : 'Розгорнути покази та кабінети будинку'"
+                (click)="openHouseInfoModal()"
+                class="w-full text-left cursor-pointer group bg-transparent border-0 p-0"
+                title="Натисніть, щоб переглянути останні покази, споживання, суму та діючий тариф"
               >
-                <mat-icon aria-hidden="true" class="text-xl leading-none transition-transform duration-200" [class.rotate-180]="!isAccountCardExpanded()">
-                  expand_more
-                </mat-icon>
-              </button>
-              <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-2 flex-wrap">
-                  <h3
-                    class="text-base font-bold text-slate-900 dark:text-white cursor-pointer hover:text-amber-600 dark:hover:text-amber-400 transition-colors"
-                    (click)="isAccountCardExpanded.update(v => !v)"
-                  >
-                    {{ acc.name }}
-                  </h3>
-                  <span class="px-2.5 py-0.5 rounded-full text-2xs font-bold"
-                    [class.bg-emerald-100]="acc.electricityTariffType === 'dual'"
-                    [class.text-emerald-800]="acc.electricityTariffType === 'dual'"
-                    [class.bg-blue-100]="acc.electricityTariffType === 'single'"
-                    [class.text-blue-800]="acc.electricityTariffType === 'single'"
-                  >
-                    {{ acc.electricityTariffType === 'dual' ? 'Двотарифний (День / Ніч)' : 'Однотарифний (Єдиний)' }}
-                  </span>
-                  @if (acc.meterNumber) {
-                    <span class="text-2xs text-slate-500 dark:text-slate-400 font-mono bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
-                      Лічильник № {{ acc.meterNumber }}
-                    </span>
+                <div class="flex items-center justify-between gap-2 w-full">
+                  <span class="text-2xs text-amber-800 dark:text-amber-300 uppercase tracking-wider font-bold">{{ consSummary.label }}</span>
+                  <mat-icon aria-hidden="true" class="text-sm text-amber-600 dark:text-amber-400 group-hover:translate-x-0.5 transition-transform leading-none">open_in_new</mat-icon>
+                </div>
+                <div class="text-xl font-extrabold text-slate-900 dark:text-white mt-1 font-mono tabular-nums">
+                  {{ consSummary.consumedKwh }} кВт·г
+                </div>
+                <div class="mt-2 pt-2 border-t border-amber-200/60 dark:border-amber-500/20 flex items-center gap-1.5 flex-wrap">
+                  <span class="text-2xs text-slate-500 dark:text-slate-400 font-semibold">Середній темп:</span>
+                  @if (consSummary.hasData && consSummary.dailyRate > 0) {
+                    <span class="text-xs font-extrabold text-slate-900 dark:text-white font-mono tabular-nums">{{ consSummary.dailyRate }}</span>
+                    <span class="text-2xs font-semibold text-slate-500 dark:text-slate-400 font-mono">кВт·г/добу</span>
+                    @if (consSummary.diffPercent !== null && consSummary.diffPercent > 0) {
+                      <span
+                        class="px-1.5 py-0.5 rounded-lg bg-rose-500/15 text-rose-600 dark:text-rose-400 inline-flex items-center gap-0.5 text-2xs font-extrabold font-mono tabular-nums shrink-0"
+                        [title]="'+' + consSummary.diffPercent + '% більше за попередній місяць'"
+                        aria-label="Більше споживання порівняно з попереднім місяцем"
+                      >
+                        <mat-icon aria-hidden="true" class="text-sm leading-none">arrow_upward</mat-icon>
+                        <span>на {{ consSummary.diffPercent }}%</span>
+                      </span>
+                    } @else if (consSummary.diffPercent !== null && consSummary.diffPercent < 0) {
+                      <span
+                        class="px-1.5 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 inline-flex items-center gap-0.5 text-2xs font-extrabold font-mono tabular-nums shrink-0"
+                        [title]="consSummary.diffPercent + '% менше за попередній місяць'"
+                        aria-label="Менше споживання порівняно з попереднім місяцем"
+                      >
+                        <mat-icon aria-hidden="true" class="text-sm leading-none">arrow_downward</mat-icon>
+                        <span>на {{ -consSummary.diffPercent }}%</span>
+                      </span>
+                    }
+                  } @else {
+                    <span class="text-xs font-extrabold text-slate-900 dark:text-white font-mono">—</span>
                   }
                 </div>
-                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
-                  Особовий рахунок: <span class="font-semibold text-slate-700 dark:text-slate-300 font-mono">{{ acc.accountNumber }}</span>
-                  @if (acc.address) {
-                    • <span class="text-slate-600 dark:text-slate-300">{{ acc.address }}</span>
-                  }
-                </p>
-              </div>
-            </div>
-
-            <div class="flex items-center gap-2 shrink-0 flex-wrap">
-              @if (!isAccountCardExpanded()) {
-                @if (latestAnyReading(); as lr) {
-                  <span class="text-2xs font-mono font-bold text-slate-700 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded-lg">
-                    Показ: {{ totalConsumedKwh(lr) }} кВт·г
-                  </span>
-                }
-                @if (acc.ooekBalanceUah !== undefined && acc.ooekBalanceUah !== null) {
-                  <span class="text-2xs font-bold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/60 px-2.5 py-1 rounded-lg border border-amber-200 dark:border-amber-800">
-                    ООЕК: {{ acc.ooekBalanceUah.toFixed(2) }} грн
-                  </span>
-                }
-              }
+                <div class="text-2xs text-slate-500 dark:text-slate-400 mt-1.5">
+                  Натисніть для детальних показів і тарифу
+                </div>
+              </button>
               @if (canEdit()) {
                 <button
                   type="button"
-                  (click)="openAccountModal(acc)"
-                  class="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center gap-1 transition-colors cursor-pointer"
+                  (click)="openDtekSubmitModal()"
+                  class="w-full px-4 py-2.5 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-600 text-white flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-md shadow-amber-500/20 whitespace-nowrap active:scale-98"
+                  title="Відкрити вікно передачі показів лічильника ДТЕК ОЕМ"
                 >
-                  <mat-icon aria-hidden="true" class="text-sm">edit</mat-icon>
-                  <span>Редагувати</span>
+                  <mat-icon aria-hidden="true" class="text-sm leading-none">send</mat-icon>
+                  <span>Передати покази</span>
                 </button>
+              }
+            </div>
+
+            <!-- Tile 2: OOEK Billing Status + Sync Icon next to amount + Direct Portmone Pay -->
+            <div
+              class="p-4 rounded-2xl border flex flex-col justify-between gap-3"
+              [class.bg-emerald-50/70]="due.hasDue && due.isZeroOrPaid"
+              [class.dark:bg-emerald-950/20]="due.hasDue && due.isZeroOrPaid"
+              [class.border-emerald-200/80]="due.hasDue && due.isZeroOrPaid"
+              [class.dark:border-emerald-500/25]="due.hasDue && due.isZeroOrPaid"
+              [class.bg-rose-50/60]="due.hasDue && !due.isZeroOrPaid"
+              [class.dark:bg-rose-950/20]="due.hasDue && !due.isZeroOrPaid"
+              [class.border-rose-200/80]="due.hasDue && !due.isZeroOrPaid"
+              [class.dark:border-rose-500/25]="due.hasDue && !due.isZeroOrPaid"
+              [class.bg-slate-50/90]="!due.hasDue"
+              [class.dark:bg-slate-800/50]="!due.hasDue"
+              [class.border-slate-200/80]="!due.hasDue"
+              [class.dark:border-slate-700/70]="!due.hasDue"
+            >
+              <div>
+                <span
+                  class="text-2xs block uppercase tracking-wider font-bold"
+                  [class.text-emerald-700]="due.hasDue && due.isZeroOrPaid"
+                  [class.dark:text-emerald-300]="due.hasDue && due.isZeroOrPaid"
+                  [class.text-rose-700]="due.hasDue && !due.isZeroOrPaid"
+                  [class.dark:text-rose-300]="due.hasDue && !due.isZeroOrPaid"
+                  [class.text-slate-500]="!due.hasDue"
+                  [class.dark:text-slate-400]="!due.hasDue"
+                >
+                  Нарахування ООЕК
+                </span>
+                <div class="flex items-center justify-between gap-2 mt-1">
+                  <div
+                    class="text-xl font-extrabold font-mono tabular-nums truncate"
+                    [class.text-emerald-600]="due.hasDue && due.isZeroOrPaid"
+                    [class.dark:text-emerald-400]="due.hasDue && due.isZeroOrPaid"
+                    [class.text-rose-600]="due.hasDue && !due.isZeroOrPaid"
+                    [class.dark:text-rose-400]="due.hasDue && !due.isZeroOrPaid"
+                    [class.text-slate-700]="!due.hasDue"
+                    [class.dark:text-slate-200]="!due.hasDue"
+                  >
+                    @if (due.hasDue) {
+                      @if (due.isZeroOrPaid) {
+                        Сплачено: 0.00 ₴
+                      } @else {
+                        {{ due.amount.toFixed(2) }} ₴
+                      }
+                    } @else {
+                      —
+                    }
+                  </div>
+                  @if (canEdit()) {
+                    <button
+                      type="button"
+                      (click)="syncOoekForCurrentAccount()"
+                      [disabled]="isSyncingOoek()"
+                      aria-label="Оновити нарахування з ООЕК"
+                      title="Оновити нараховану суму до сплати з ТОВ «ООЕК»"
+                      class="w-8 h-8 rounded-xl bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 flex items-center justify-center transition-colors cursor-pointer shrink-0 disabled:opacity-50 disabled:cursor-not-allowed shadow-2xs"
+                    >
+                      <mat-icon aria-hidden="true" class="text-base leading-none" [class.animate-spin]="isSyncingOoek()">sync</mat-icon>
+                    </button>
+                  }
+                </div>
+                <div class="text-2xs mt-1 text-slate-500 dark:text-slate-400 font-medium">
+                  @if (due.hasDue) {
+                    {{ due.isZeroOrPaid ? 'Заборгованість відсутня' : 'Оплата без комісії через Portmone' }}
+                  } @else {
+                    Натисніть іконку оновлення біля суми
+                  }
+                </div>
+              </div>
+              @if (portmoneQuickUrl()) {
+                <a
+                  [href]="portmoneQuickUrl()"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="w-full px-4 py-2.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-md shadow-emerald-600/20 whitespace-nowrap no-underline active:scale-98"
+                  title="Відкрити Portmone з уже підставленим особовим рахунком ООЕК та сумою"
+                >
+                  <mat-icon aria-hidden="true" class="text-sm leading-none">payments</mat-icon>
+                  <span>Сплатити</span>
+                </a>
+              } @else {
                 <button
                   type="button"
-                  (click)="confirmDeleteAccount(acc)"
-                  class="px-3 py-1.5 rounded-lg text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 border border-rose-200 dark:border-rose-800 flex items-center gap-1 transition-colors cursor-pointer"
+                  (click)="handlePayFallbackClick(acc)"
+                  class="w-full px-4 py-2.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-md shadow-emerald-600/20 whitespace-nowrap active:scale-98"
+                  title="Вказати особовий рахунок або оновити посилання Portmone"
                 >
-                  <mat-icon aria-hidden="true" class="text-sm">delete</mat-icon>
-                  <span>Видалити</span>
+                  <mat-icon aria-hidden="true" class="text-sm leading-none">payments</mat-icon>
+                  <span>Сплатити</span>
                 </button>
               }
             </div>
           </div>
-
-          @if (isAccountCardExpanded()) {
-            <!-- Stat Cards -->
-          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
-            <!-- Latest Reading -->
-            <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
-              <span class="text-3xs font-semibold uppercase tracking-wider text-slate-500 block">Останні покази</span>
-              @if (latestAnyReading(); as lr) {
-                @if (acc.electricityTariffType === 'dual') {
-                  <div class="text-sm font-extrabold text-slate-900 mt-1">
-                    День (Т2): {{ lr.readingT1 }} <span class="text-2xs font-normal text-slate-500">кВт·г</span>
-                  </div>
-                  <div class="text-sm font-extrabold text-slate-900">
-                    Ніч (Т1): {{ lr.readingT2 }} <span class="text-2xs font-normal text-slate-500">кВт·г</span>
-                  </div>
-                } @else {
-                  <div class="text-base font-extrabold text-slate-900 mt-1">
-                    {{ lr.readingT1 }} <span class="text-xs font-normal text-slate-500">кВт·г</span>
-                  </div>
-                }
-                <div class="flex items-center gap-1.5 mt-1 flex-wrap">
-                  <span class="text-3xs text-slate-500">{{ lr.date | formatDateUa }}</span>
-                  @if (lr.isControlOnly) {
-                    <span class="px-1.5 py-0.2 rounded bg-indigo-100 text-indigo-800 text-3xs font-bold border border-indigo-200">
-                      Контрольний
-                    </span>
-                  }
-                </div>
-              } @else {
-                <div class="text-xs text-slate-400 mt-1 italic">
-                  Початкові: {{ acc.electricityTariffType === 'dual' ? (acc.initialReadingT1 || 0) + ' / ' + (acc.initialReadingT2 || 0) : (acc.initialReadingT1 || 0) }} кВт·г
-                </div>
-              }
-            </div>
-
-            <!-- Last Consumption -->
-            <div class="p-3.5 rounded-xl bg-amber-50/70 border border-amber-200/80">
-              <span class="text-3xs font-semibold uppercase tracking-wider text-amber-800 block">Спожито за період</span>
-              @if (latestAnyReading(); as lr) {
-                <div class="text-base font-extrabold text-amber-950 mt-1">
-                  {{ totalConsumedKwh(lr) }} <span class="text-xs font-normal text-amber-700">кВт·г</span>
-                </div>
-                @if (acc.electricityTariffType === 'dual') {
-                  <div class="text-2xs text-amber-800 mt-0.5">
-                    День: {{ lr.consumptionT1 || 0 }} • Ніч: {{ lr.consumptionT2 || 0 }}
-                  </div>
-                }
-                @if (lr.isControlOnly) {
-                  <span class="text-3xs text-indigo-700 font-semibold mt-0.5 block">Для моніторингу</span>
-                }
-              } @else {
-                <div class="text-xs text-amber-600 mt-1 italic">Немає розрахунків</div>
-              }
-            </div>
-
-            <!-- Last Billing Accrual / Paid Status (Only official billing readings) -->
-            <div class="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200/80">
-              <span class="text-3xs font-semibold uppercase tracking-wider text-emerald-800 block">Сума за останній розрахунок</span>
-              @let lbr = latestBillingReading();
-              @let predictedAmt = lbr ? lbr.totalCost.toFixed(2) : '0.00';
-              @let ooekAmt = (acc.ooekBalanceUah !== undefined && acc.ooekBalanceUah !== null) ? acc.ooekBalanceUah.toFixed(2) : '—';
-              <div class="text-xs sm:text-sm font-extrabold text-emerald-950 mt-1 leading-snug">
-                Прогнозована {{ predictedAmt }} грн / ООЕК {{ ooekAmt }} грн
-              </div>
-              <div class="mt-1 flex items-center justify-between gap-1 flex-wrap">
-                @if (lbr) {
-                  @if (isReadingPaid(lbr, acc)) {
-                    <span class="inline-flex items-center gap-1 text-3xs font-bold text-emerald-700 bg-emerald-100/90 px-2 py-0.5 rounded">
-                      <mat-icon aria-hidden="true" class="text-xs leading-none">check_circle</mat-icon> Оплачено
-                    </span>
-                  } @else {
-                    <span class="inline-flex items-center gap-1 text-3xs font-bold text-rose-700 bg-rose-100/90 px-2 py-0.5 rounded">
-                      <mat-icon aria-hidden="true" class="text-xs leading-none">pending</mat-icon> До сплати
-                    </span>
-                  }
-                  <span class="text-3xs text-slate-500 font-mono">{{ acc.ooekBillUpdatedAt || formatDate(lbr.date) }}</span>
-                } @else if (acc.ooekBillUpdatedAt) {
-                  <span class="text-3xs text-emerald-800 font-mono">Рахунок ООЕК: {{ acc.ooekBillUpdatedAt }}</span>
-                } @else {
-                  <span class="text-3xs text-emerald-600 italic">Немає розрахунків</span>
-                }
-              </div>
-            </div>
-
-            <!-- Current Tariff Applied -->
-            <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
-              <span class="text-3xs font-semibold uppercase tracking-wider text-slate-500 block">Діючий тариф</span>
-              <div class="mt-1">
-                @if (acc.electricityTariffType === 'dual') {
-                  @let dualRates = currentDualRates();
-                  <div class="text-xs font-bold text-slate-900">
-                    День: {{ dualRates.dayRate }} <span class="text-3xs text-slate-500 font-normal">грн</span>
-                  </div>
-                  <div class="text-xs font-bold text-slate-900">
-                    Ніч: {{ dualRates.nightRate }} <span class="text-3xs text-slate-500 font-normal">грн</span>
-                  </div>
-                  <span class="inline-block mt-1 text-3xs font-semibold text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded border border-purple-200/60">
-                    {{ dualRates.season === 'summer' ? 'Літній сезон (01.05 – 30.09)' : 'Зимовий сезон (01.10 – 30.04)' }}
-                  </span>
-                } @else {
-                  <div class="text-base font-extrabold text-slate-900">
-                    {{ currentSingleRate() }} <span class="text-xs font-normal text-slate-500">грн/кВт·г</span>
-                  </div>
-                  <span class="inline-block mt-1 text-3xs font-semibold text-slate-600 bg-slate-200/60 px-1.5 py-0.5 rounded">
-                    Єдиний на весь рік
-                  </span>
-                }
-              </div>
-            </div>
-          </div>
-
-
-            @if (canEdit()) {
-              @defer {
-                <app-utility-cabinets-sync />
-              } @placeholder {
-                <div class="h-16 rounded-xl bg-slate-100/70 animate-pulse"></div>
-              }
-            }
-
-        }
-      </div>
+        </div>
 
         <!-- Mode Switcher: History Table vs Devices vs Trend Analytics -->
-        <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3 rounded-2xl border border-slate-200/90 dark:border-slate-800 shadow-2xs">
+        <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-white dark:bg-[#111827] p-3.5 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm">
           <!-- Left: Mode Dropdown & Context Period Picker -->
-          <div class="flex flex-wrap items-center gap-2.5">
-            <div class="relative flex items-center min-w-[200px] sm:min-w-[230px]">
+          <div class="flex flex-nowrap items-center gap-2 w-full lg:w-auto min-w-0">
+            <div
+              class="relative flex items-center min-w-0"
+              [class.flex-1]="activeTab() === 'devices'"
+              [class.sm:flex-initial]="activeTab() === 'devices'"
+              [class.sm:min-w-[215px]]="activeTab() === 'devices'"
+              [class.w-full]="activeTab() !== 'devices'"
+              [class.sm:w-auto]="activeTab() !== 'devices'"
+              [class.sm:min-w-[225px]]="activeTab() !== 'devices'"
+            >
               <mat-icon aria-hidden="true"
-                class="text-base pointer-events-none absolute left-3"
+                class="text-base pointer-events-none absolute left-2.5 sm:left-3"
                 [class.text-amber-500]="activeTab() === 'table'"
                 [class.text-emerald-600]="activeTab() === 'devices'"
                 [class.text-indigo-600]="activeTab() === 'analytics'"
@@ -424,7 +463,7 @@
                 aria-label="Режим перегляду електроенергії"
                 [value]="activeTab()"
                 (change)="activeTab.set($any($event.target).value)"
-                class="h-9 w-full appearance-none pl-9 pr-8 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200/70 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-xs sm:text-sm font-bold text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 cursor-pointer transition-colors"
+                class="h-9 w-full min-w-0 appearance-none pl-8 sm:pl-9 pr-7 sm:pr-8 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200/70 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-xs sm:text-sm font-bold text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 cursor-pointer transition-colors truncate"
               >
                 <option value="table" [selected]="activeTab() === 'table'">
                   Журнал ({{ accountReadings().length }})
@@ -436,20 +475,20 @@
                   Графіки
                 </option>
               </select>
-              <mat-icon aria-hidden="true" class="text-base text-slate-500 dark:text-slate-400 pointer-events-none absolute right-2.5">
+              <mat-icon aria-hidden="true" class="text-base text-slate-500 dark:text-slate-400 pointer-events-none absolute right-2 sm:right-2.5">
                 expand_more
               </mat-icon>
             </div>
 
             @if (activeTab() === 'devices') {
-              <div class="h-9 flex items-center gap-2 bg-slate-100 dark:bg-slate-800 px-3 rounded-xl border border-slate-200 dark:border-slate-700">
-                <mat-icon aria-hidden="true" class="text-sm text-slate-500 dark:text-slate-400 leading-none">calendar_month</mat-icon>
-                <span class="text-3xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Місяць:</span>
+              <div class="h-9 flex items-center gap-1.5 sm:gap-2 bg-slate-100 dark:bg-slate-800 px-2.5 sm:px-3 rounded-xl border border-slate-200 dark:border-slate-700 shrink-0">
+                <mat-icon aria-hidden="true" class="text-sm text-slate-500 dark:text-slate-400 leading-none shrink-0">calendar_month</mat-icon>
+                <span class="hidden sm:inline text-3xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 shrink-0">Місяць:</span>
                 <input
                   type="month"
                   [value]="deviceSelectedMonth()"
                   (change)="onDeviceMonthChange($any($event.target).value)"
-                  class="bg-transparent text-xs font-bold text-slate-900 dark:text-white focus:outline-none cursor-pointer"
+                  class="bg-transparent text-xs font-bold text-slate-900 dark:text-white focus:outline-none cursor-pointer w-[114px] sm:w-auto min-w-0"
                 />
               </div>
             }
@@ -458,17 +497,6 @@
           <!-- Right: Contextual Actions / Filters -->
           @if (activeTab() === 'table') {
             <div class="flex items-center justify-between sm:justify-end gap-2 flex-wrap">
-              @if (canEdit()) {
-                <button
-                  type="button"
-                  (click)="openScreenshotModal()"
-                  class="h-9 px-3 rounded-xl text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 flex items-center gap-1.5 cursor-pointer transition-colors shrink-0"
-                  title="Завантажити скріншот споживання пристрою з коментарем для AI-аналізу"
-                >
-                  <mat-icon aria-hidden="true" class="text-sm leading-none text-emerald-600 dark:text-emerald-400">add_photo_alternate</mat-icon>
-                  <span>Скріншот (ШІ)</span>
-                </button>
-              }
               <!-- Filter Pills -->
               <div class="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-200/80 dark:border-slate-700 overflow-x-auto text-2xs">
                 <button
@@ -507,51 +535,27 @@
                 </button>
               </div>
             </div>
-          } @else if (activeTab() === 'devices' && canEdit()) {
-            <div class="flex items-center gap-2 flex-wrap sm:justify-end">
-              <button
-                type="button"
-                (click)="openAddDeviceLogModal()"
-                class="h-9 px-3 rounded-xl text-xs font-semibold bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors inline-flex items-center gap-1.5 cursor-pointer shrink-0"
-                title="Внести споживання приладу на обрану дату або період"
-              >
-                <mat-icon aria-hidden="true" class="text-sm text-amber-600 dark:text-amber-400 leading-none">playlist_add</mat-icon>
-                <span>+ Споживання на дату</span>
-              </button>
-
-              <button
-                type="button"
-                (click)="openScreenshotModal()"
-                class="h-9 px-3 rounded-xl text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors inline-flex items-center gap-1.5 shadow-2xs cursor-pointer shrink-0"
-                title="Завантажити скріншот з розумної розетки та додати коментар для ШІ-аналізу"
-              >
-                <mat-icon aria-hidden="true" class="text-sm leading-none">add_photo_alternate</mat-icon>
-                <span>Скріншот + ШІ</span>
-              </button>
-
-              <button
-                type="button"
-                (click)="openDeviceModal()"
-                class="h-9 px-3 rounded-xl text-xs font-semibold bg-slate-900 dark:bg-slate-800 hover:bg-slate-800 dark:hover:bg-slate-700 text-white border border-slate-800 dark:border-slate-700 transition-colors inline-flex items-center gap-1.5 shadow-2xs cursor-pointer shrink-0"
-                title="Додати новий електроприлад до будинку"
-              >
-                <mat-icon aria-hidden="true" class="text-sm leading-none">add</mat-icon>
-                <span>Додати пристрій</span>
-              </button>
-            </div>
           }
         </div>
 
 
         @if (activeTab() === 'devices') {
-          @defer (when activeTab() === 'devices') {
+          @defer (on immediate) {
             <app-electricity-devices-dashboard />
-          } @placeholder {
-            <div class="h-64 rounded-2xl bg-slate-100/70 animate-pulse"></div>
+          } @loading (after 200ms; minimum 150ms) {
+            <div class="h-64 rounded-3xl bg-slate-100/70 dark:bg-slate-800/50 animate-pulse"></div>
+          } @error {
+            <div class="p-6 rounded-3xl bg-white dark:bg-[#111827] border border-amber-200/80 dark:border-amber-500/30 text-center space-y-2.5">
+              <p class="text-xs font-bold text-slate-700 dark:text-slate-200">Не вдалося завантажити панель пристроїв</p>
+              <button type="button" (click)="reloadPageForChunkRecovery()" class="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold inline-flex items-center gap-1 cursor-pointer border-0">
+                <mat-icon class="text-sm leading-none">refresh</mat-icon>
+                <span>Оновити</span>
+              </button>
+            </div>
           }
         } @else if (activeTab() === 'analytics') {
           <!-- Charts Section -->
-          <div class="p-4 sm:p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-2xs space-y-4">
+          <div class="p-5 sm:p-6 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-4">
             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
               <div class="flex items-center gap-2.5">
                 <button
@@ -577,65 +581,35 @@
                   </p>
                 </div>
               </div>
-
-              <div class="flex items-center gap-2 flex-wrap">
-                <button
-                  type="button"
-                  (click)="activeTab.set('devices')"
-                  class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
-                >
-                  <mat-icon aria-hidden="true" class="text-sm text-emerald-600 dark:text-emerald-400">electrical_services</mat-icon>
-                  <span>Пристрої ({{ accountDevices().length }})</span>
-                </button>
-                @if (canEdit()) {
-                  <button
-                    type="button"
-                    (click)="openReadingModal(true)"
-                    class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/70 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
-                  >
-                    <mat-icon aria-hidden="true" class="text-sm text-indigo-600 dark:text-indigo-400">visibility</mat-icon>
-                    <span>+ Контрольний замір</span>
-                  </button>
-                }
-                <button
-                  type="button"
-                  (click)="isAnalyticsChartExpanded.update(v => !v)"
-                  class="p-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer"
-                  [title]="isAnalyticsChartExpanded() ? 'Згорнути' : 'Розгорнути'"
-                >
-                  <mat-icon aria-hidden="true" class="text-base leading-none">
-                    {{ isAnalyticsChartExpanded() ? 'expand_less' : 'expand_more' }}
-                  </mat-icon>
-                </button>
-              </div>
             </div>
 
             @if (isAnalyticsChartExpanded()) {
-              @defer {
-<app-electricity-chart
-                [timeline]="electricityTimelineData()"
-                [monthly]="electricityMonthlyData()"
-                [stats]="electricityStatsKPIs()"
-              />
-} @placeholder {
-  <div class="h-80 rounded-2xl bg-slate-100/70 animate-pulse"></div>
-}
+              @defer (on immediate) {
+                <app-electricity-chart
+                  [timeline]="electricityTimelineData()"
+                  [monthly]="electricityMonthlyData()"
+                  [stats]="electricityStatsKPIs()"
+                />
+              } @loading (after 200ms; minimum 150ms) {
+                <div class="h-80 rounded-2xl bg-slate-100/70 dark:bg-slate-800/50 animate-pulse"></div>
+              } @error {
+                <div class="p-6 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-center space-y-2">
+                  <p class="text-xs font-bold text-slate-700 dark:text-slate-200">Не вдалося завантажити графік споживання</p>
+                  <button type="button" (click)="reloadPageForChunkRecovery()" class="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold inline-flex items-center gap-1 cursor-pointer border-0">
+                    <mat-icon class="text-sm leading-none">refresh</mat-icon>
+                    <span>Оновити</span>
+                  </button>
+                </div>
+              }
             } @else {
-              <div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-2xs text-slate-600 dark:text-slate-300 flex items-center justify-between gap-2">
+              <div class="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-2xs text-slate-600 dark:text-slate-300 flex items-center justify-between gap-2">
                 <span>Графіки помісячного споживання та аналітики зон згорнуто для економії місця.</span>
-                <button
-                  type="button"
-                  (click)="isAnalyticsChartExpanded.set(true)"
-                  class="text-3xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
-                >
-                  Розгорнути графіки
-                </button>
               </div>
             }
           </div>
         } @else {
           <!-- Readings History Section -->
-          <div class="p-4 sm:p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 shadow-2xs space-y-4">
+          <div class="p-5 sm:p-6 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200/80 dark:border-slate-800 shadow-sm space-y-4">
             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border-b border-slate-100 dark:border-slate-800 pb-3">
               <div class="flex items-center gap-2.5">
                 <button
@@ -668,14 +642,6 @@
                 @if (canEdit()) {
                   <button
                     type="button"
-                    (click)="openReadingModal(false)"
-                    class="px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-2xs sm:text-xs font-semibold bg-amber-500 hover:bg-amber-600 text-white transition-colors flex items-center gap-1 sm:gap-1.5 shadow-2xs cursor-pointer shrink-0"
-                  >
-                    <mat-icon aria-hidden="true" class="text-sm sm:text-base leading-none">add</mat-icon>
-                    <span>Внести покази</span>
-                  </button>
-                  <button
-                    type="button"
                     (click)="openReadingModal(true)"
                     class="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-2xs sm:text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/70 border border-indigo-300 dark:border-indigo-800 text-indigo-900 dark:text-indigo-200 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 transition-colors flex items-center gap-1 sm:gap-1.5 shadow-2xs cursor-pointer shrink-0"
                     title="Внести контрольний замір"
@@ -687,23 +653,12 @@
                     type="button"
                     (click)="openCameraModal()"
                     class="px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-2xs sm:text-xs font-semibold bg-amber-50 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors flex items-center gap-1 sm:gap-1.5 shadow-2xs cursor-pointer shrink-0"
-                    title="Сфотографувати лічильник та розпізнати покази"
+                    title="Розпізнати покази лічильника"
                   >
                     <mat-icon aria-hidden="true" class="text-sm sm:text-base text-amber-600 dark:text-amber-400 leading-none">photo_camera</mat-icon>
-                    <span>Зробити фото</span>
+                    <span>Розпізнати покази</span>
                   </button>
                 }
-
-                <button
-                  type="button"
-                  (click)="isHistoryTableExpanded.update(v => !v)"
-                  class="p-1.5 sm:p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors cursor-pointer shrink-0"
-                  [title]="isHistoryTableExpanded() ? 'Згорнути журнал' : 'Розгорнути журнал'"
-                >
-                  <mat-icon aria-hidden="true" class="text-base leading-none">
-                    {{ isHistoryTableExpanded() ? 'expand_less' : 'expand_more' }}
-                  </mat-icon>
-                </button>
               </div>
             </div>
 
@@ -1079,7 +1034,7 @@
                         class="px-3 py-1.5 rounded-xl text-xs font-semibold bg-amber-50 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
                       >
                         <mat-icon aria-hidden="true" class="text-base text-amber-600 dark:text-amber-400 leading-none">photo_camera</mat-icon>
-                        <span>Зробити фото</span>
+                        <span>Розпізнати покази</span>
                       </button>
                     </div>
                   }
@@ -1108,25 +1063,72 @@
     <!-- DEFERRED MODALS                                          -->
     <!-- ======================================================== -->
     @if (isAccountModalOpen()) {
-      @defer {
+      @defer (on immediate) {
         <app-utility-account-modal />
+      } @error {
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div class="p-5 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 text-center space-y-3 max-w-xs w-full">
+            <p class="text-xs font-bold text-slate-800 dark:text-slate-100">Не вдалося відкрити вікно після оновлення</p>
+            <button type="button" (click)="reloadPageForChunkRecovery()" class="px-4 py-2 rounded-xl bg-amber-500 text-white text-xs font-bold cursor-pointer border-0">Оновити сторінку</button>
+          </div>
+        </div>
+      }
+    }
+
+    @if (isHouseInfoModalOpen()) {
+      @defer (on immediate) {
+        <app-house-info-modal />
+      } @error {
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div class="p-5 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 text-center space-y-3 max-w-xs w-full">
+            <p class="text-xs font-bold text-slate-800 dark:text-slate-100">Не вдалося відкрити вікно після оновлення</p>
+            <button type="button" (click)="reloadPageForChunkRecovery()" class="px-4 py-2 rounded-xl bg-amber-500 text-white text-xs font-bold cursor-pointer border-0">Оновити сторінку</button>
+          </div>
+        </div>
+      }
+    }
+
+    @if (isDtekSubmitModalOpen()) {
+      @defer (on immediate) {
+        <app-dtek-reading-submit-modal />
+      } @error {
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div class="p-5 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 text-center space-y-3 max-w-xs w-full">
+            <p class="text-xs font-bold text-slate-800 dark:text-slate-100">Не вдалося відкрити вікно після оновлення</p>
+            <button type="button" (click)="reloadPageForChunkRecovery()" class="px-4 py-2 rounded-xl bg-amber-500 text-white text-xs font-bold cursor-pointer border-0">Оновити сторінку</button>
+          </div>
+        </div>
       }
     }
 
     @if (isReadingModalOpen()) {
-      @defer {
+      @defer (on immediate) {
         <app-meter-reading-modal />
+      } @error {
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div class="p-5 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 text-center space-y-3 max-w-xs w-full">
+            <p class="text-xs font-bold text-slate-800 dark:text-slate-100">Не вдалося відкрити вікно після оновлення</p>
+            <button type="button" (click)="reloadPageForChunkRecovery()" class="px-4 py-2 rounded-xl bg-amber-500 text-white text-xs font-bold cursor-pointer border-0">Оновити сторінку</button>
+          </div>
+        </div>
       }
     }
 
     @if (selectedReadingForBreakdown()) {
-      @defer {
+      @defer (on immediate) {
         <app-reading-breakdown-modal />
+      } @error {
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div class="p-5 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 text-center space-y-3 max-w-xs w-full">
+            <p class="text-xs font-bold text-slate-800 dark:text-slate-100">Не вдалося відкрити вікно після оновлення</p>
+            <button type="button" (click)="reloadPageForChunkRecovery()" class="px-4 py-2 rounded-xl bg-amber-500 text-white text-xs font-bold cursor-pointer border-0">Оновити сторінку</button>
+          </div>
+        </div>
       }
     }
 
     @if (isCameraModalOpen()) {
-      @defer {
+      @defer (on immediate) {
         <app-meter-camera-modal
           utilityType="electricity"
           [electricityTariffType]="currentAccount()?.electricityTariffType || 'single'"
@@ -1134,23 +1136,51 @@
           (closeModal)="closeCameraModal()"
           (readingApplied)="onCameraReadingApplied($event)"
         />
+      } @error {
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div class="p-5 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 text-center space-y-3 max-w-xs w-full">
+            <p class="text-xs font-bold text-slate-800 dark:text-slate-100">Не вдалося відкрити камеру після оновлення</p>
+            <button type="button" (click)="reloadPageForChunkRecovery()" class="px-4 py-2 rounded-xl bg-amber-500 text-white text-xs font-bold cursor-pointer border-0">Оновити сторінку</button>
+          </div>
+        </div>
       }
     }
 
     @if (isDeviceModalOpen()) {
-      @defer {
+      @defer (on immediate) {
         <app-device-edit-modal />
+      } @error {
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div class="p-5 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 text-center space-y-3 max-w-xs w-full">
+            <p class="text-xs font-bold text-slate-800 dark:text-slate-100">Не вдалося відкрити вікно після оновлення</p>
+            <button type="button" (click)="reloadPageForChunkRecovery()" class="px-4 py-2 rounded-xl bg-amber-500 text-white text-xs font-bold cursor-pointer border-0">Оновити сторінку</button>
+          </div>
+        </div>
       }
     }
 
     @if (isDeviceLogModalOpen()) {
-      @defer {
+      @defer (on immediate) {
         <app-device-log-modal />
+      } @error {
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div class="p-5 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 text-center space-y-3 max-w-xs w-full">
+            <p class="text-xs font-bold text-slate-800 dark:text-slate-100">Не вдалося відкрити вікно після оновлення</p>
+            <button type="button" (click)="reloadPageForChunkRecovery()" class="px-4 py-2 rounded-xl bg-amber-500 text-white text-xs font-bold cursor-pointer border-0">Оновити сторінку</button>
+          </div>
+        </div>
       }
     }
 
     @if (isScreenshotModalOpen()) {
-      @defer {
+      @defer (on immediate) {
         <app-device-screenshot-ai-modal />
+      } @error {
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4">
+          <div class="p-5 rounded-3xl bg-white dark:bg-[#111827] border border-slate-200 dark:border-slate-700 text-center space-y-3 max-w-xs w-full">
+            <p class="text-xs font-bold text-slate-800 dark:text-slate-100">Не вдалося відкрити вікно після оновлення</p>
+            <button type="button" (click)="reloadPageForChunkRecovery()" class="px-4 py-2 rounded-xl bg-amber-500 text-white text-xs font-bold cursor-pointer border-0">Оновити сторінку</button>
+          </div>
+        </div>
       }
     }
